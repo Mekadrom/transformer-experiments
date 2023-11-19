@@ -1,0 +1,16 @@
+<main>
+  <div class="navbar">
+    <img class="navbar_logo" src="assets/polyglotnet-logo.png" alt="Polyglotnet Logo">
+    <div class="navbar_links disable-text-selection">
+      <div class="navbar_link" (click)="home_link.click()" [ngClass]="{'selected-tab': getCurrentRoute() === '/'}">
+        <a routerLink="/" #home_link routerLinkActive="active">Home</a>
+      </div>
+      <div class="navbar_link" (click)="help_link.click()" [ngClass]="{'selected-tab': getCurrentRoute() === '/help'}">
+        <a routerLink="/help" #help_link routerLinkActive="active">Help</a>
+      </div>
+    </div>
+    <div class="dummy"></div>
+  </div>
+</main>
+
+<router-outlet></router-outlet>

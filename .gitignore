@@ -1,0 +1,9 @@
+.venv/
+
+**/.vscode/
+**/__pycache__/
+**/runs/
+
+**/*.src
+**/*.tgt
+**/environment*.ts

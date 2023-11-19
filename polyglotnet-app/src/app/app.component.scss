@@ -1,0 +1,57 @@
+@import '../styles.scss';
+
+$navbar-height: 80px;
+
+.dummy {
+    width: $navbar-height;
+    background-color: $color-primary;
+}
+
+.navbar {
+    width: 100%;
+    height: $navbar-height;
+    background-color: $color-primary;
+    color: $color-primary-text;
+    position: absolute;
+    top: 0;
+    left: 0;
+    justify-content: space-between;
+    align-items: center;
+    justify-items: center;
+    display: flex;
+}
+
+.navbar_logo {
+    width: $navbar-height;
+    height: $navbar-height;
+}
+
+.navbar_links {
+    width: 200px;
+    height: $navbar-height;
+    justify-content: space-between;
+    align-items: end;
+    justify-items: center;
+    display: flex;
+}
+
+.navbar_link {
+    height: 50%;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    align-items: center;
+    justify-items: center;
+    display: flex;
+    cursor: pointer;
+}
+
+.navbar_link a {
+    text-decoration: none;
+    font-size: 1.5rem;
+    text-align: center;
+    margin: auto;
+}
+
+.selected-tab {
+    background-color: $color-accent;
+}
