@@ -43,7 +43,7 @@ def main(args):
             maxlen=args.maxlen,
         )
     elif args.positional_encoding_type == 'rotary':
-        positional_encoding = RotaryEmbedding(dim=64)
+        positional_encoding = RotaryEmbedding(dim=args.rotary_positional_encoding_dim)
 
     print('Initializing model...')
 
@@ -53,6 +53,10 @@ def main(args):
         print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
         model = checkpoint['model']
         optimizer = checkpoint['optimizer']
+        saved_positional_encoding = checkpoint['positional_encoding']
+        if type(positional_encoding) != type(saved_positional_encoding):
+            print("WARNING: positional encoding type mismatch between args and saved model. Using positional encoding from args.")
+        positional_encoding = saved_positional_encoding
     else:
         print("Starting from scratch...")
         model = NewTransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model, positional_encoding=positional_encoding)
@@ -92,7 +96,7 @@ def main(args):
         tokens_in_batch=args.tokens_in_batch
     )
 
-    print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters')
+    print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters')
 
     criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(args.device)
 
@@ -139,8 +143,9 @@ def main(args):
         )
 
         # Save checkpoint
-        save_checkpoint(epoch, model, optimizer, prefix=f"runs/{args.run_name}/")
+        save_checkpoint(epoch, model, optimizer, positional_encoding=positional_encoding, prefix=f"runs/{args.run_name}/")
 
+    average_checkpoints(args.run_name)
     sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
 
 def train(args, train_loader, test_loader, src_bpe_model, tgt_bpe_model, model, criterion, optimizer, epoch, epochs, step, summary_writer):
@@ -238,7 +243,7 @@ def train(args, train_loader, test_loader, src_bpe_model, tgt_bpe_model, model, 
 
             # If this is the last one or two epochs, save checkpoints at regular intervals for averaging
             if epoch in [epochs - 1, epochs - 2] and step % 1500 == 0:  # 'epoch' is 0-indexed
-                save_checkpoint(epoch, model, optimizer, prefix=f"runs/{args.run_name}/step{str(step)}_")
+                save_checkpoint(epoch, model, optimizer, positional_encoding=model.positional_encoding, prefix=f"runs/{args.run_name}/step{str(step)}_")
 
         # Reset data time
         start_data_time = time.time()
@@ -302,10 +307,12 @@ if __name__ == '__main__':
     argparser.add_argument('--d_queries', type=int, default=64)
     argparser.add_argument('--d_values', type=int, default=64)
     argparser.add_argument('--d_inner', type=int, default=2048)
-    argparser.add_argument('--n_layers', type=int, default=6)
+    argparser.add_argument('--n_encoder_layers', type=int, default=6)
+    argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)
     argparser.add_argument('--maxlen', type=int, default=160)
     argparser.add_argument('--positional_encoding_type', type=str, default='sinusoidal')
+    argparser.add_argument('--rotary_positional_encoding_dim', type=int, default=64)
 
     argparser.add_argument('--start_epoch', type=int, default=0)
     argparser.add_argument('--tokens_in_batch', type=int, default=2000)
@@ -316,6 +323,14 @@ if __name__ == '__main__':
     argparser.add_argument('--beta2', type=float, default=0.98)
     argparser.add_argument('--epsilon', type=float, default=1e-9)
     argparser.add_argument('--label_smoothing', type=float, default=0.1)
+    argparser.add_argument('--continue_from', action='store_true')
+
+    # non-standard configurations sourced from various papers
+    argparser.add_argument('--m_encoder_independent_layers', type=int, default=0)
+    argparser.add_argument('--m_decoder_independent_layers', type=int, default=0)
+    argparser.add_argument('--encoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'all'])
+    argparser.add_argument('--decoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'all'])
+    argparser.add_argument('--activation_function', type=str, default='relu', choices=['relu', 'gelu', 'elu', 'pau'])
 
     argparser.add_argument('--print_frequency', type=int, default=20)
 
@@ -323,6 +338,9 @@ if __name__ == '__main__':
     cudnn.benchmark = False
 
     args, unk = argparser.parse_known_args()
+
+    if len(unk) > 0:
+        print(f"unknown arguments: {unk}")
 
     args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
     args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))

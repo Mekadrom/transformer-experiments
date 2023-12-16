@@ -7,6 +7,7 @@ import math
 import os
 import torch
 import youtokentome
+import torch.nn as nn
 import torch.nn.functional as F
 import sacrebleu
 
@@ -39,7 +40,7 @@ def get_buffered_positional_encoding(d_model, maxlen=100):
 
     return positional_encoding.unsqueeze(0)  # (1, max_length, d_model)
 
-def save_checkpoint(epoch, model, optimizer, prefix=''):
+def save_checkpoint(epoch, model, optimizer, positional_encoding, prefix=''):
     """
     Checkpoint saver. Each save overwrites previous save.
 
@@ -48,7 +49,7 @@ def save_checkpoint(epoch, model, optimizer, prefix=''):
     :param optimizer: optimized
     :param prefix: checkpoint filename prefix
     """
-    state = {'epoch': epoch, 'model': model, 'optimizer': optimizer}
+    state = {'epoch': epoch, 'model': model, 'optimizer': optimizer, 'positional_encoding': positional_encoding}
     filename = prefix + 'transformer_checkpoint.pth.tar'
     torch.save(state, filename)
 
@@ -283,3 +284,17 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
             print("\n")
         print(
             "The first value (13a tokenization, cased) is how the BLEU score is officially calculated by WMT (mteval-v13a.pl). \nThis is probably not how it is calculated in the 'Attention Is All You Need' paper, however.\nSee https://github.com/tensorflow/tensor2tensor/issues/317#issuecomment-380970191 for more details.\n")
+
+def create_activation_function(activation_function_name):
+    if activation_function_name == 'relu':
+        return nn.ReLU()
+    elif activation_function_name == 'gelu':
+        return nn.GELU()
+    elif activation_function_name == 'elu':
+        return nn.ELU()
+    elif activation_function_name == 'selu':
+        return nn.SELU()
+    elif activation_function_name == 'prelu':
+        return nn.PReLU()
+    elif activation_function_name == 'leaky_relu':
+        return nn.LeakyReLU()

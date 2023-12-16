@@ -1,6 +1,4 @@
-@import '../styles.scss';
-
-$navbar-height: 80px;
+@import "../styles.scss";
 
 .dummy {
     width: $navbar-height;
@@ -12,13 +10,14 @@ $navbar-height: 80px;
     height: $navbar-height;
     background-color: $color-primary;
     color: $color-primary-text;
-    position: absolute;
+    position: fixed;
     top: 0;
     left: 0;
     justify-content: space-between;
     align-items: center;
     justify-items: center;
     display: flex;
+    z-index: 1000;
 }
 
 .navbar_logo {
@@ -27,7 +26,6 @@ $navbar-height: 80px;
 }
 
 .navbar_links {
-    width: 200px;
     height: $navbar-height;
     justify-content: space-between;
     align-items: end;
@@ -39,19 +37,32 @@ $navbar-height: 80px;
     height: 50%;
     padding-left: 1rem;
     padding-right: 1rem;
-    align-items: center;
-    justify-items: center;
-    display: flex;
     cursor: pointer;
+    border-radius: 5px 5px 0px 0px;
 }
 
 .navbar_link a {
     text-decoration: none;
     font-size: 1.5rem;
     text-align: center;
-    margin: auto;
 }
 
-.selected-tab {
+.navbar_link button {
+    text-decoration: none;
+    font-size: 1.5rem;
+    text-align: center;
+}
+
+.selected_tab {
     background-color: $color-accent;
+}
+
+.logout_button {
+    height: 50%;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    cursor: pointer;
+    background: none;
+    border: none;
+    border-radius: 5px 0px 0px 0px;
 }

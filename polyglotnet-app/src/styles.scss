@@ -4,6 +4,19 @@ $color-primary: #98dfaa;
 $color-accent: #d6bfeb;
 
 $color-primary-text: #000000;
+$color-accent-text: #ffffff;
+
+$color-window-gray: #7c7c7c;
+$color-window-text: #ffffff;
+
+$color-accent-table-background: #6b5183;
+$color-accent-table-background-dark: #ba94dd;
+$color-accent-table-background-light: #d4a8fd;
+
+$color-accent-table-background-hover: #c7a0f9;
+
+$navbar-height: 60px;
+$step-progress-height: 50px;
 
 * {
     // --bright-blue: oklch(51.01% 0.274 263.83);
@@ -46,26 +59,35 @@ $color-primary-text: #000000;
     //     "Segoe UI Emoji",
     //     "Segoe UI Symbol",
     //     "Courier New";
-    font-family: 'Courier New', Courier, monospace;
+    font-family: "Courier New", Courier, monospace;
     box-sizing: border-box;
 
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
 
-body {
+html {
     width: 100%;
     height: 100%;
+}
 
+body {
     margin: 0;
     padding: 0;
 
     background-color: $color-accent;
     font-size: 16px;
+    padding-top: $navbar_height;
 }
 
-a {   
-    color: $color-primary-text;   
+main {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+a {
+    color: $color-primary-text;
 }
 
 a:active {
@@ -84,4 +106,53 @@ a[tabindex]:focus {
     -moz-user-select: none;
     -ms-user-select: none;
     user-select: none;
+}
+
+.horizontal-center-container {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+}
+
+.vertical-center-container {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.full-child {
+    width: 100%;
+    height: 100%;
+}
+
+.arrow_button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+    text-align: center;
+    clip-path: polygon(
+        0 0,
+        30px 50%,
+        0 100%,
+        calc(100% - 30px) 100%,
+        100% 50%,
+        calc(100% - 30px) 0
+    );
+    background-color: $color-window-gray;
+    color: $color-window-text;
+}
+
+.right_end_arrow_button {
+    clip-path: polygon(
+        0 0,
+        30px 50%,
+        0 100%,
+        calc(100% - 30px) 100%,
+        calc(100% - 30px) 0%,
+    );
 }

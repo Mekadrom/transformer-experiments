@@ -1,1 +1,18 @@
-<p>project-view works!</p>
+<app-step-progress></app-step-progress>
+<div class="project-view-content">
+    <div class="project-selector-container">
+        <div class="button-panel">
+            <button class="project-button" (click)="createProject()">Create Project</button>
+            <button class="project-button" (click)="deleteProject()">Delete Project</button>
+        </div>
+        <div *ngFor="let project of projects" class="project-selector" (click)="selectProject(project)">
+            <div class="project-selector-title">
+                {{project.name}}
+            </div>
+        </div>
+    </div>
+    <div class="selected-project">
+        <h1>{{activeProject?.name || 'Select a project to continue'}}</h1>
+        <p>{{activeProject?.description}}</p>
+    </div>
+</div>

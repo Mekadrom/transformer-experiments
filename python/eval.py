@@ -22,10 +22,10 @@ args, unk = argparser.parse_known_args()
 
 run_dir = f"runs/{args.run_name}"
 
-src_bpe_model = youtokentome.BPE(model=f"{run_dir}/src_tokenizer.model")
+src_bpe_model = youtokentome.BPE(model=os.path.join(run_dir, 'src_tokenizer.model'))
 
 if os.path.exists(os.path.join(run_dir, 'tgt_tokenizer.model')):
-    tgt_bpe_model = youtokentome.BPE(model=f"{run_dir}/tgt_tokenizer.model")
+    tgt_bpe_model = youtokentome.BPE(model=os.path.join(run_dir, 'tgt_tokenizer.model'))
 else:
     tgt_bpe_model = src_bpe_model
 
@@ -43,4 +43,4 @@ sacrebleu_in_python = args.sacrebleu_in_python
 # Make sure the right model checkpoint is selected in translate.py
 
 if __name__ == '__main__':
-    evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=sacrebleu_in_python)
+    sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=sacrebleu_in_python)

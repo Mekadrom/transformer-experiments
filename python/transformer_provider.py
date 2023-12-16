@@ -1,6 +1,7 @@
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
 from rotary_embedding_torch import RotaryEmbedding
+from utils import *
 
 import math
 import torch
@@ -22,8 +23,8 @@ class NewTransformerModelProvider:
             d_queries=args.d_queries,
             d_values=args.d_values,
             d_inner=args.d_inner,
-            n_encoder_layers=args.n_layers,
-            n_decoder_layers=args.n_layers,
+            n_encoder_layers=args.n_encoder_layers,
+            n_decoder_layers=args.n_decoder_layers,
             dropout=args.dropout
         )
 
@@ -202,8 +203,7 @@ class PositionWiseFCNetwork(nn.Module):
         # A linear layer to project from the input size to an intermediate size
         self.fc1 = nn.Linear(d_model, d_inner)
 
-        # ReLU
-        self.relu = nn.ReLU()
+        self.activation = create_activation_function(args.activation_function)
 
         # A linear layer to project from the intermediate size to the output size (same as the input size)
         self.fc2 = nn.Linear(d_inner, d_model)
@@ -225,7 +225,7 @@ class PositionWiseFCNetwork(nn.Module):
         sequences = self.layer_norm(sequences)  # (N, pad_length, d_model)
 
         # Transform position-wise
-        sequences = self.apply_dropout(self.relu(self.fc1(sequences)))  # (N, pad_length, d_inner)
+        sequences = self.apply_dropout(self.activation(self.fc1(sequences)))  # (N, pad_length, d_inner)
         sequences = self.fc2(sequences)  # (N, pad_length, d_model)
 
         # Apply dropout and residual connection
@@ -272,7 +272,7 @@ class Encoder(nn.Module):
             self.positional_encoding.requires_grad = False
 
         # Encoder layers
-        self.encoder_layers = nn.ModuleList([self.make_encoder_layer() for i in range(n_layers)])
+        self.encoder_layers = self.make_encoder_layers(n_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers)
 
         # Dropout layer
         self.apply_dropout = nn.Dropout(dropout)
@@ -280,25 +280,62 @@ class Encoder(nn.Module):
         # Layer-norm layer
         self.layer_norm = nn.LayerNorm(d_model)
 
-    def make_encoder_layer(self):
+    def make_encoder_layers(self, n_layers, param_sharing_type='none', m_independent_layers=0):
+        layers = []
+        for i in range(n_layers):
+            if i == 0:
+                layers.append(self.make_encoder_layer())
+            elif param_sharing_type == 'sequence':
+                if (i - 1) % math.floor(n_layers / m_independent_layers) == 0:
+                    layers.append(self.make_encoder_layer())
+                else:
+                    layers.append(self.make_encoder_layer(share_params_with=layers[i - 1]))
+            elif param_sharing_type == 'cycle':
+                if i <= m_independent_layers:
+                    layers.append(self.make_encoder_layer())
+                else:
+                    res_idx = ((i - 1) % m_independent_layers) + 1
+                    layers.append(self.make_encoder_layer(share_params_with=layers[res_idx]))
+            elif param_sharing_type == 'cycle-rev':
+                if i <= m_independent_layers:
+                    layers.append(self.make_encoder_layer())
+                elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
+                    res_idx = ((i - 1) % m_independent_layers) + 1
+                    layers.append(self.make_encoder_layer(share_params_with=layers[res_idx]))
+                else:
+                    res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
+                    layers.append(self.make_encoder_layer(share_params_with=layers[res_idx]))
+            elif param_sharing_type == 'all':
+                layers.append(self.make_encoder_layer(share_params_with=layers[0]))
+            else:
+                layers.append(self.make_encoder_layer())
+        return nn.ModuleList([nn.ModuleList(enc) for enc in layers])
+
+    def make_encoder_layer(self, share_params_with=None):
         """
         Creates a single layer in the Encoder by combining a multi-head attention sublayer and a position-wise FC sublayer.
         """
-        # A ModuleList of sublayers
-        encoder_layer = nn.ModuleList([MultiHeadAttention(args=self.args,
-                                                          d_model=self.d_model,
-                                                          n_heads=self.n_heads,
-                                                          d_queries=self.d_queries,
-                                                          d_values=self.d_values,
-                                                          dropout=self.dropout,
-                                                          positional_encoding=self.positional_encoding,
-                                                          in_decoder=False),
-                                       PositionWiseFCNetwork(args=self.args,
-                                                             d_model=self.d_model,
-                                                             d_inner=self.d_inner,
-                                                             dropout=self.dropout)])
 
-        return encoder_layer
+        if share_params_with is not None:
+            return share_params_with
+        return [
+            MultiHeadAttention(
+                args=self.args,
+                d_model=self.d_model,
+                n_heads=self.n_heads,
+                d_queries=self.d_queries,
+                d_values=self.d_values,
+                dropout=self.dropout,
+                positional_encoding=self.positional_encoding,
+                in_decoder=False
+            ),
+            PositionWiseFCNetwork(
+                args=self.args,
+                d_model=self.d_model,
+                d_inner=self.d_inner,
+                dropout=self.dropout
+            )
+        ]
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):
         """
@@ -368,7 +405,7 @@ class Decoder(nn.Module):
             self.positional_encoding.requires_grad = False
 
         # Decoder layers
-        self.decoder_layers = nn.ModuleList([self.make_decoder_layer() for i in range(n_layers)])
+        self.decoder_layers = self.make_decoder_layers(n_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers)
 
         # Dropout layer
         self.apply_dropout = nn.Dropout(dropout)
@@ -379,33 +416,74 @@ class Decoder(nn.Module):
         # Output linear layer that will compute logits for the vocabulary
         self.fc = nn.Linear(d_model, vocab_size)
 
-    def make_decoder_layer(self):
+    def make_decoder_layers(self, n_layers, param_sharing_type='none', m_independent_layers=0):
+        layers = []
+        for i in range(n_layers):
+            if i == 0:
+                layers.append(self.make_decoder_layer())
+            elif param_sharing_type == 'sequence':
+                if (i - 1) % math.floor(n_layers / m_independent_layers) == 0:
+                    layers.append(self.make_decoder_layer())
+                else:
+                    layers.append(self.make_decoder_layer(share_params_with=layers[i - 1]))
+            elif param_sharing_type == 'cycle':
+                if i <= m_independent_layers:
+                    layers.append(self.make_decoder_layer())
+                else:
+                    res_idx = ((i - 1) % m_independent_layers) + 1
+                    layers.append(self.make_decoder_layer(share_params_with=layers[res_idx]))
+            elif param_sharing_type == 'cycle-rev':
+                if i <= m_independent_layers:
+                    layers.append(self.make_decoder_layer())
+                elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
+                    res_idx = ((i - 1) % m_independent_layers) + 1
+                    layers.append(self.make_decoder_layer(share_params_with=layers[res_idx]))
+                else:
+                    res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
+                    layers.append(self.make_decoder_layer(share_params_with=layers[res_idx]))
+            elif param_sharing_type == 'all':
+                layers.append(self.make_decoder_layer(share_params_with=layers[0]))
+            else:
+                layers.append(self.make_decoder_layer())
+        return nn.ModuleList([nn.ModuleList(dec) for dec in layers])
+
+    def make_decoder_layer(self, share_params_with=None):
         """
         Creates a single layer in the Decoder by combining two multi-head attention sublayers and a position-wise FC sublayer.
         """
-        # A ModuleList of sublayers
-        decoder_layer = nn.ModuleList([MultiHeadAttention(args=self.args,
-                                                          d_model=self.d_model,
-                                                          n_heads=self.n_heads,
-                                                          d_queries=self.d_queries,
-                                                          d_values=self.d_values,
-                                                          dropout=self.dropout,
-                                                          positional_encoding=self.positional_encoding,
-                                                          in_decoder=True),
-                                       MultiHeadAttention(args=self.args,
-                                                          d_model=self.d_model,
-                                                          n_heads=self.n_heads,
-                                                          d_queries=self.d_queries,
-                                                          d_values=self.d_values,
-                                                          dropout=self.dropout,
-                                                          positional_encoding=self.positional_encoding,
-                                                          in_decoder=True),
-                                       PositionWiseFCNetwork(args=self.args,
-                                                             d_model=self.d_model,
-                                                             d_inner=self.d_inner,
-                                                             dropout=self.dropout)])
 
-        return decoder_layer
+        if share_params_with is not None:
+            return share_params_with
+        else:
+            return [
+                MultiHeadAttention(
+                    args=self.args,
+                    d_model=self.d_model,
+                    n_heads=self.n_heads,
+                    d_queries=self.d_queries,
+                    d_values=self.d_values,
+                    dropout=self.dropout,
+                    positional_encoding=self.positional_encoding,
+                    in_decoder=True
+                ),
+                MultiHeadAttention(
+                    args=self.args,
+                    d_model=self.d_model,
+                    n_heads=self.n_heads,
+                    d_queries=self.d_queries,
+                    d_values=self.d_values,
+                    dropout=self.dropout,
+                    positional_encoding=self.positional_encoding,
+                    in_decoder=True
+                ),
+                PositionWiseFCNetwork(
+                    args=self.args,
+                    d_model=self.d_model,
+                    d_inner=self.d_inner,
+                    dropout=self.dropout
+                )
+            ]
+        return [enc_mha, dec_mha, ffn]
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
         """
@@ -456,7 +534,8 @@ class Transformer(nn.Module):
         :param d_queries: size of query vectors (and also the size of the key vectors) in the multi-head attention
         :param d_values: size of value vectors in the multi-head attention
         :param d_inner: an intermediate size in the position-wise FC
-        :param n_layers: number of layers in the Encoder and Decoder
+        :param n_encoder_layers: number of layers in the Encoder
+        :param n_decoder_layers: number of layers in the Decoder
         :param dropout: dropout probability
         """
         super(Transformer, self).__init__()

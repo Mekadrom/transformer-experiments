@@ -84,7 +84,7 @@ if __name__ == '__main__':
     argparser.add_argument('--src_vocab_size', type=int, default=37000)
     argparser.add_argument('--tgt_vocab_size', type=int, default=37000)
     argparser.add_argument('--shared_vocab', action='store_true')
-    argparser.add_argument('--max_length', type=int, default=100)
+    argparser.add_argument('--max_length', type=int, default=150)
     argparser.add_argument('--min_length', type=int, default=3)
     argparser.add_argument('--max_length_ratio', type=float, default=1.5)
 

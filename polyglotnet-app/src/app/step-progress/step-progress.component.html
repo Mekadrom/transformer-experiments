@@ -1,0 +1,21 @@
+<div class="steps-container">
+    <div class="step" *ngFor="let step of steps; let i = index">
+        <div
+            class="arrow_button"
+            [ngClass]="{ selected_arrow_button: isActiveStep(i), completed_arrow_button: isCompletedStep(i), disabled_arrow_button: isDisabledStep(i) }"
+            (click)="onStepClick('step' + i)"
+        >
+            {{ step }}
+        </div>
+    </div>
+    <div class="step">
+        <div 
+            class="arrow_button right_end_arrow_button"
+            [ngClass]="{ selected_arrow_button: isInferenceActive(), disabled_arrow_button: isInferenceDisabled() }"
+            (click)="onStepClick('inference')"
+        >
+            Inference
+        </div>
+    </div>
+    <mat-divider></mat-divider>
+</div>

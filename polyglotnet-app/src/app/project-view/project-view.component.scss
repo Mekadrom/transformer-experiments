@@ -1,0 +1,69 @@
+@import '../../styles.scss';
+
+.project-view-content {
+    height: 89vh;
+    margin: 8px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.project-selector-container {
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    background-color: $color-accent-table-background;
+    flex: 1;
+}
+
+.project-selector:nth-of-type(even) {
+    background-color: $color-accent-table-background-dark;
+    transition: filter 0.25s ease;
+}
+
+.project-selector:nth-of-type(odd) {
+    background-color: $color-accent-table-background-light;
+    transition: filter 0.25s ease;
+}
+
+.project-selector:hover {
+    filter: brightness(80%);
+}
+
+.selected-project {
+    flex: 1;
+
+    & > h1 {
+        margin: 0;
+        padding: 0;
+        font-size: 2rem;
+        text-align: center;
+    }
+
+    & > p {
+        margin: 0;
+        padding: 0;
+        font-size: 1.25rem;
+        text-align: center;
+    }
+}
+
+.button-panel {
+    width: 100%;
+    height: 20px;
+    background-color: $color-primary;
+}
+
+.project-button {
+    width: auto;
+    height: 100%;
+
+    border-radius: 0;
+    border: none;
+
+    background-color: $color-window-gray;
+    color: $color-window-text;
+}
+
+.project-button:hover {
+    filter: brightness(80%);
+}

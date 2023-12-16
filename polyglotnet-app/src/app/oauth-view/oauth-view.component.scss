@@ -1,0 +1,14 @@
+@import "../../styles.scss";
+
+.google-button-container {
+    width: 500px;
+    height: 300px;
+    background-color: $color-window-gray;
+    border: 1px solid #000;
+    border-radius: 8px;
+    color: $color-window-text;
+}
+
+.login-provider {
+    margin-top: 10px;
+}
