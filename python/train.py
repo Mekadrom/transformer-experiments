@@ -49,7 +49,8 @@ def main(args):
 
     if os.path.exists(os.path.join(run_dir, 'transformer_checkpoint.pth.tar')):
         checkpoint = torch.load(os.path.join(run_dir, 'transformer_checkpoint.pth.tar'))
-        args.start_epoch = checkpoint['epoch'] + 1
+        if args.start_epoch == 0:
+            args.start_epoch = checkpoint['epoch'] + 1
         print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
         model = checkpoint['model']
         optimizer = checkpoint['optimizer']
@@ -106,7 +107,6 @@ def main(args):
 
     step = 1
     epochs = (args.n_steps // (train_loader.n_batches // args.batches_per_step)) + 1
-
 
     print(f"Training for {epochs} epochs...")
     for epoch in range(args.start_epoch, epochs):
