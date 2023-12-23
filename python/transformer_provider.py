@@ -305,6 +305,15 @@ class Encoder(nn.Module):
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     layers.append(self.make_encoder_layer(share_params_with=layers[res_idx]))
+            elif param_sharing_type == 'ffn-cycle-rev':
+                if i <= m_independent_layers:
+                    layers.append(self.make_encoder_layer())
+                elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
+                    res_idx = ((i - 1) % m_independent_layers) + 1
+                    layers.append(self.make_encoder_layer(share_params_with=[None, layers[res_idx][1]]))
+                else:
+                    res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
+                    layers.append(self.make_encoder_layer(share_params_with=[None, layers[res_idx][1]]))
             elif param_sharing_type == 'all':
                 layers.append(self.make_encoder_layer(share_params_with=layers[0]))
             else:
@@ -316,26 +325,24 @@ class Encoder(nn.Module):
         Creates a single layer in the Encoder by combining a multi-head attention sublayer and a position-wise FC sublayer.
         """
 
-        if share_params_with is not None:
-            return share_params_with
-        return [
-            MultiHeadAttention(
-                args=self.args,
-                d_model=self.d_model,
-                n_heads=self.n_heads,
-                d_queries=self.d_queries,
-                d_values=self.d_values,
-                dropout=self.dropout,
-                positional_encoding=self.positional_encoding,
-                in_decoder=False
-            ),
-            PositionWiseFCNetwork(
-                args=self.args,
-                d_model=self.d_model,
-                d_inner=self.d_inner,
-                dropout=self.dropout
-            )
-        ]
+        mha = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(
+            args=self.args,
+            d_model=self.d_model,
+            n_heads=self.n_heads,
+            d_queries=self.d_queries,
+            d_values=self.d_values,
+            dropout=self.dropout,
+            positional_encoding=self.positional_encoding,
+            in_decoder=False
+        )
+        ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else PositionWiseFCNetwork(
+            args=self.args,
+            d_model=self.d_model,
+            d_inner=self.d_inner,
+            dropout=self.dropout
+        )
+
+        return [mha, ffn]
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):
         """
@@ -441,6 +448,15 @@ class Decoder(nn.Module):
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     layers.append(self.make_decoder_layer(share_params_with=layers[res_idx]))
+            elif param_sharing_type == 'ffn-cycle-rev':
+                if i <= m_independent_layers:
+                    layers.append(self.make_decoder_layer())
+                elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
+                    res_idx = ((i - 1) % m_independent_layers) + 1
+                    layers.append(self.make_decoder_layer(share_params_with=[None, None, layers[res_idx][2]]))
+                else:
+                    res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
+                    layers.append(self.make_decoder_layer(share_params_with=[None, None, layers[res_idx][2]]))
             elif param_sharing_type == 'all':
                 layers.append(self.make_decoder_layer(share_params_with=layers[0]))
             else:
@@ -452,38 +468,34 @@ class Decoder(nn.Module):
         Creates a single layer in the Decoder by combining two multi-head attention sublayers and a position-wise FC sublayer.
         """
 
-        if share_params_with is not None:
-            return share_params_with
-        else:
-            return [
-                MultiHeadAttention(
-                    args=self.args,
-                    d_model=self.d_model,
-                    n_heads=self.n_heads,
-                    d_queries=self.d_queries,
-                    d_values=self.d_values,
-                    dropout=self.dropout,
-                    positional_encoding=self.positional_encoding,
-                    in_decoder=True
-                ),
-                MultiHeadAttention(
-                    args=self.args,
-                    d_model=self.d_model,
-                    n_heads=self.n_heads,
-                    d_queries=self.d_queries,
-                    d_values=self.d_values,
-                    dropout=self.dropout,
-                    positional_encoding=self.positional_encoding,
-                    in_decoder=True
-                ),
-                PositionWiseFCNetwork(
-                    args=self.args,
-                    d_model=self.d_model,
-                    d_inner=self.d_inner,
-                    dropout=self.dropout
-                )
-            ]
-        return [enc_mha, dec_mha, ffn]
+        mha_1 = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(
+            args=self.args,
+            d_model=self.d_model,
+            n_heads=self.n_heads,
+            d_queries=self.d_queries,
+            d_values=self.d_values,
+            dropout=self.dropout,
+            positional_encoding=self.positional_encoding,
+            in_decoder=True
+        )
+        mha_2 = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else MultiHeadAttention(
+            args=self.args,
+            d_model=self.d_model,
+            n_heads=self.n_heads,
+            d_queries=self.d_queries,
+            d_values=self.d_values,
+            dropout=self.dropout,
+            positional_encoding=self.positional_encoding,
+            in_decoder=True
+        )
+        ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else PositionWiseFCNetwork(
+            args=self.args,
+            d_model=self.d_model,
+            d_inner=self.d_inner,
+            dropout=self.dropout
+        )
+
+        return [mha_1, mha_2, ffn]
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
         """
