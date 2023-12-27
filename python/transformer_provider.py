@@ -314,6 +314,15 @@ class Encoder(nn.Module):
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     layers.append(self.make_encoder_layer(share_params_with=[None, layers[res_idx][1]]))
+            elif param_sharing_type == 'heads-cycle-rev':
+                if i <= m_independent_layers:
+                    layers.append(self.make_encoder_layer())
+                elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
+                    res_idx = ((i - 1) % m_independent_layers) + 1
+                    layers.append(self.make_encoder_layer(share_params_with=[layers[res_idx][0], None]))
+                else:
+                    res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
+                    layers.append(self.make_encoder_layer(share_params_with=[layers[res_idx][0], None]))
             elif param_sharing_type == 'all':
                 layers.append(self.make_encoder_layer(share_params_with=layers[0]))
             else:
@@ -453,10 +462,19 @@ class Decoder(nn.Module):
                     layers.append(self.make_decoder_layer())
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_decoder_layer(share_params_with=[None, None, layers[res_idx][2]]))
+                    layers.append(self.make_decoder_layer(share_params_with=[layers[res_idx][0], layers[res_idx][1], None]))
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
-                    layers.append(self.make_decoder_layer(share_params_with=[None, None, layers[res_idx][2]]))
+                    layers.append(self.make_decoder_layer(share_params_with=[layers[res_idx][0], layers[res_idx][1], None]))
+            elif param_sharing_type == 'heads-cycle-rev':
+                if i <= m_independent_layers:
+                    layers.append(self.make_decoder_layer())
+                elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
+                    res_idx = ((i - 1) % m_independent_layers) + 1
+                    layers.append(self.make_decoder_layer(share_params_with=[layers[res_idx][0], layers[res_idx][1], None]))
+                else:
+                    res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
+                    layers.append(self.make_decoder_layer(share_params_with=[layers[res_idx][0], layers[res_idx][1], None]))
             elif param_sharing_type == 'all':
                 layers.append(self.make_decoder_layer(share_params_with=layers[0]))
             else:

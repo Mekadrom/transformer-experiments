@@ -328,8 +328,8 @@ if __name__ == '__main__':
     # non-standard configurations sourced from various papers
     argparser.add_argument('--m_encoder_independent_layers', type=int, default=0)
     argparser.add_argument('--m_decoder_independent_layers', type=int, default=0)
-    argparser.add_argument('--encoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'ffn-cycle-rev', 'all'])
-    argparser.add_argument('--decoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'ffn-cycle-rev', 'all'])
+    argparser.add_argument('--encoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'ffn-cycle-rev', 'heads-cycle-rev', 'all'])
+    argparser.add_argument('--decoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'ffn-cycle-rev', 'heads-cycle-rev', 'all'])
     argparser.add_argument('--activation_function', type=str, default='relu', choices=['relu', 'gelu', 'elu', 'pau'])
 
     argparser.add_argument('--print_frequency', type=int, default=20)
