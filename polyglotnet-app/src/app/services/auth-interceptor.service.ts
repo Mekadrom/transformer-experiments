@@ -23,7 +23,7 @@ export class AuthInterceptorService implements HttpInterceptor {
             if (user) {
                 this.cookieService.set(
                     cookies_constants.authorization,
-                    `Bearer ${user.idToken}`,
+                    `${user.idToken}`,
                 );
                 this.cookieService.set(cookies_constants.sessionId, user.id);
             }
@@ -34,6 +34,7 @@ export class AuthInterceptorService implements HttpInterceptor {
         req: HttpRequest<any>,
         next: HttpHandler,
     ): Observable<HttpEvent<any>> {
+        console.log('intercepting')
         if (!req.url.startsWith(environment.apiBaseUrl)) {
             return next.handle(req);
         }
@@ -53,12 +54,24 @@ export class AuthInterceptorService implements HttpInterceptor {
             console.log('no session id, getting from token');
             sessionId = utils.getSub(token);
         }
-        req = req.clone({
-            setHeaders: {
-                Authorization: `Bearer ${token}`,
-                'X-Session-Id': sessionId,
-            },
-        });
+        if (environment.production) {
+            req = req.clone({
+                setHeaders: {
+                    'Authorization': `Bearer ${token}`,
+                    'X-Session-Id': sessionId,
+                    'Content-Type': 'application/json',
+                },
+            });
+        } else {
+            req = req.clone({
+                setHeaders: {
+                    'Authorization': `Bearer ${token}`,
+                    'X-Session-Id': sessionId,
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                },
+            });
+        }
         return next.handle(req);
     }
 }

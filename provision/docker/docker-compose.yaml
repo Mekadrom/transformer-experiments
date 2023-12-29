@@ -2,6 +2,8 @@ version: '3'
 services:
   postgres:
     image: postgres
+    ports:
+      - 5432:5432
     environment:
       POSTGRES_USER: myuser
       POSTGRES_PASSWORD: mypassword
@@ -11,8 +13,14 @@ services:
     build:
       context: ../../python/server
     ports:
-      - 8080:8080
+      - 5000:5000
     depends_on:
       - postgres
     environment:
-      DATABASE_URL: postgresql://myuser:mypassword@postgres/mydatabase
+      POSTGRES_URL: postgres:5432
+      POSTGRES_USER: myuser
+      POSTGRES_PW: mypassword
+      POSTGRES_DB: mydatabase
+      POSTGRES_SCHEMA: myschema
+      SERVER_HOST_URL: 0.0.0.0
+      SERVER_PORT: 5000

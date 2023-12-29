@@ -1,6 +1,6 @@
 import { SocialAuthService } from '@abacritt/angularx-social-login';
 import { CommonModule } from '@angular/common';
-import { Component, isDevMode, Renderer2, OnInit } from '@angular/core';
+import { Component, Renderer2 } from '@angular/core';
 import {
     Router,
     RouterLink,
@@ -9,6 +9,8 @@ import {
 } from '@angular/router';
 import { CookieService } from 'ngx-cookie-service';
 import { cookies_constants } from './constants/cookies-constants';
+
+import { environment } from './environments/environment';
 
 @Component({
     selector: 'app-root',
@@ -40,7 +42,7 @@ export class AppComponent {
     ) {}
 
     navigate(e: MouseEvent, id: string): void {
-        if (isDevMode()) {
+        if (environment.production) {
             console.log(e);
         }
 

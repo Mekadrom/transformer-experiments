@@ -1,0 +1,9 @@
+Flask==3.0.0
+flask_sqlalchemy==3.1.1
+prettytable==3.9.0
+Requests==2.31.0
+rotary_embedding_torch==0.5.2
+sacrebleu==2.4.0
+torch==2.0.1+cu117
+tqdm==4.66.1
+youtokentome==1.0.6

@@ -30,7 +30,7 @@ export class OauthViewComponent implements OnInit {
             if (user) {
                 this.cookieService.set(
                     cookies_constants.authorization,
-                    `Bearer ${user.idToken}`,
+                    `${user.idToken}`,
                 );
                 this.cookieService.set(cookies_constants.sessionId, user.id);
                 this.router.navigate(['/']);

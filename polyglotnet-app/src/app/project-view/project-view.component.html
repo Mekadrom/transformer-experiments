@@ -2,17 +2,17 @@
 <div class="project-view-content">
     <div class="project-selector-container">
         <div class="button-panel">
-            <button class="project-button" (click)="createProject()">Create Project</button>
-            <button class="project-button" (click)="deleteProject()">Delete Project</button>
+            <button class="table-button" (click)="createProject()">Create Project</button>
+            <button class="table-button" (click)="deleteProject()">Delete Project</button>
         </div>
-        <div *ngFor="let project of projects" class="project-selector" (click)="selectProject(project)">
+        <div *ngFor="let project of projects" class="project-selector" (click)="dataService.setActiveProject(project)">
             <div class="project-selector-title">
                 {{project.name}}
             </div>
         </div>
     </div>
     <div class="selected-project">
-        <h1>{{activeProject?.name || 'Select a project to continue'}}</h1>
-        <p>{{activeProject?.description}}</p>
+        <h1>{{dataService.getActiveProject()?.name || 'Select a project to continue'}}</h1>
+        <p>{{dataService.getActiveProject()?.description}}</p>
     </div>
 </div>

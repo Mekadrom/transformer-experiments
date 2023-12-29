@@ -14,12 +14,12 @@ import { HelpViewComponent } from './help-view/help-view.component';
 export const routes: Routes = [
     { path: '', component: AutoRedirectComponent },
     { path: 'login', component: OauthViewComponent },
-    { path: 'step1', component: ProjectViewComponent },
+    { path: 'step0', component: ProjectViewComponent },
+    { path: 'step1', component: LexiconViewComponent },
     { path: 'step2', component: DatasetViewComponent },
-    { path: 'step3', component: LexiconViewComponent },
-    { path: 'step4', component: HyperParametersViewComponent },
-    { path: 'step5', component: TrainModelViewComponent },
-    { path: 'step6', component: FineTuneViewComponent },
-    { path: 'inference', component: InferenceViewComponent },
+    // { path: 'step3', component: HyperParametersViewComponent },
+    // { path: 'step4', component: TrainModelViewComponent },
+    // { path: 'step5', component: FineTuneViewComponent },
+    // { path: 'inference', component: InferenceViewComponent },
     { path: 'help', component: HelpViewComponent },
 ];

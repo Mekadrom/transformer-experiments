@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 
 # Expose the port on which the server will run
-EXPOSE 8080
+EXPOSE 5000
 
 # Set the entrypoint command to start the server
 CMD ["python", "main.py"]

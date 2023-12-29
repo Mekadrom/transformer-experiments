@@ -11,7 +11,7 @@ import { utils } from '../utils/utils';
 })
 export class DataService {
     project: Project | null = null;
-    datasets: Dataset[] | null = null;
+    datasets: Dataset[] | null = null; // 0 is training, 1 is validation
     lexicon: Lexicon | null = null;
     hyperparameters: Hyperparameters | null = null;
     trainedModelRef: TrainedModelRef | null = null;
@@ -43,6 +43,28 @@ export class DataService {
             throw new Error('No project selected');
         }
         return this.httpClient.delete(`${environment.apiBaseUrl}/projects/${this.project.projectKey}`);
+    }
+
+    public fetchLexicon(): Observable<Lexicon> {
+        return this.httpClient.get<Lexicon>(`${environment.apiBaseUrl}/lexicons`);
+    }
+
+    public getLexicon(): Lexicon | null {
+        return this.lexicon;
+    }
+
+    public setLexicon(lexicon: Lexicon): void {
+        this.lexicon = lexicon;
+    }
+
+    public upsertLexicon(): Observable<Lexicon> {
+        if (!this.project) {
+            throw new Error('No project selected');
+        }
+        if (!this.lexicon) {
+            throw new Error('No lexicon selected');
+        }
+        return this.httpClient.post<Lexicon>(`${environment.apiBaseUrl}/projects/${this.project.projectKey}/lexicon`, this.lexicon);
     }
 
     public fetchDatasets(): Observable<Dataset[]> {
@@ -95,28 +117,6 @@ export class DataService {
             throw new Error('No project selected');
         }
         return this.httpClient.patch<Dataset>(`${environment.apiBaseUrl}/projects/${this.project.projectKey}/datasets/${dataset.datasetKey}/append`, newData);
-    }
-
-    public fetchLexicon(): Observable<Lexicon> {
-        return this.httpClient.get<Lexicon>(`${environment.apiBaseUrl}/lexicons`);
-    }
-
-    public getLexicon(): Lexicon | null {
-        return this.lexicon;
-    }
-
-    public setLexicon(lexicon: Lexicon): void {
-        this.lexicon = lexicon;
-    }
-
-    public upsertLexicon(): Observable<Lexicon> {
-        if (!this.project) {
-            throw new Error('No project selected');
-        }
-        if (!this.lexicon) {
-            throw new Error('No lexicon selected');
-        }
-        return this.httpClient.post<Lexicon>(`${environment.apiBaseUrl}/projects/${this.project.projectKey}/lexicon`, this.lexicon);
     }
 
     public fetchHyperparameterConfigurations(): Observable<Hyperparameters[]> {

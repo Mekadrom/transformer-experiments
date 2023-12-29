@@ -2,7 +2,7 @@ import {
     GoogleLoginProvider,
     SocialAuthServiceConfig,
 } from '@abacritt/angularx-social-login';
-import { HTTP_INTERCEPTORS, provideHttpClient } from '@angular/common/http';
+import { HTTP_INTERCEPTORS, provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 import { ApplicationConfig } from '@angular/core';
 import { provideRouter } from '@angular/router';
 
@@ -13,7 +13,7 @@ import { AuthInterceptorService } from './services/auth-interceptor.service';
 export const appConfig: ApplicationConfig = {
     providers: [
         provideRouter(routes),
-        provideHttpClient(),
+        provideHttpClient(withInterceptorsFromDi()),
         {
             provide: 'SocialAuthServiceConfig',
             useValue: {

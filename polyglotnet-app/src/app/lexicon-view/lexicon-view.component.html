@@ -1,1 +1,18 @@
-<p>lexicon-view works!</p>
+<app-step-progress></app-step-progress>
+<div class="lexicon-view-content">
+    <div class="word-selector-container">
+        <div class="button-panel">
+            <button class="table-button" (click)="addWord()">Add Word</button>
+            <button class="table-button" (click)="deleteWord()">Delete Word</button>
+        </div>
+        <div *ngFor="let word of dataService.getLexicon().data" class="word-selector" (click)="selectWord(word)">
+            <div class="word-selector-title">
+                {{project.name}}
+            </div>
+        </div>
+    </div>
+    <div class="selected-word">
+        <h1>{{dataService.getActiveProject()?.name || 'Select a word to continue'}}</h1>
+        <p>{{dataService.getActiveProject()?.description}}</p>
+    </div>
+</div>

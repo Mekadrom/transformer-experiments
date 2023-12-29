@@ -52,18 +52,3 @@
     height: 20px;
     background-color: $color-primary;
 }
-
-.project-button {
-    width: auto;
-    height: 100%;
-
-    border-radius: 0;
-    border: none;
-
-    background-color: $color-window-gray;
-    color: $color-window-text;
-}
-
-.project-button:hover {
-    filter: brightness(80%);
-}

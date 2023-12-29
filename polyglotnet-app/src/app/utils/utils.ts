@@ -29,21 +29,21 @@ export const utils = {
     },
     getMaxValidStep: function (project: Project | null, datasets: Dataset[] | null, lexicon: Lexicon | null, hyperparameters: Hyperparameters | null, trainedModelRef: TrainedModelRef | null): number {
         if (!project) {
+            return 0;
+        }
+        if (!lexicon) {
             return 1;
         }
         if (!datasets) {
             return 2;
         }
-        if (!lexicon) {
+        if (!hyperparameters) {
             return 3;
         }
-        if (!hyperparameters) {
+        if (!trainedModelRef) {
             return 4;
         }
-        if (!trainedModelRef) {
-            return 5;
-        }
-        // 6 and 7 both open up if there is a trained model for this project
-        return 7;
+        // 5 and 6 both open up if there is a trained model for this project
+        return 6;
     }
 };

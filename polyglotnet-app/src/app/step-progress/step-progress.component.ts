@@ -15,11 +15,11 @@ import { DataService } from '../services/data.service';
 export class StepProgressComponent {
     steps: string[] = [
         'Project',
-        'Training Data',
         'Lexicon',
-        'Hyperparameters',
-        'Train Model',
-        'Fine Tune',
+        'Training Data',
+        // 'Hyperparameters',
+        // 'Train Model',
+        // 'Fine Tune',
     ];
 
     constructor(private router: Router, private dataService: DataService) { }
@@ -35,7 +35,7 @@ export class StepProgressComponent {
     }
 
     isDisabledStep(index: number): boolean {
-        return this.dataService.getMaxValidStep() < index + 1;
+        return this.dataService.getMaxValidStep() < index;
     }
 
     isInferenceActive(): boolean {
@@ -47,7 +47,8 @@ export class StepProgressComponent {
     }
 
     onStepClick(path: string): void {
-        if (this.isDisabledStep(+path.slice(-1) - 1)) {
+        if (this.isDisabledStep(+path.slice(-1))) {
+            console.log(`path ${path} is disabled`);
             return;
         }
         if (path === 'inference' && this.isInferenceDisabled()) {

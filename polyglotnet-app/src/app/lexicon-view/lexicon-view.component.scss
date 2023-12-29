@@ -1,0 +1,30 @@
+@import '../../styles.scss';
+
+.lexicon-view-content {
+    height: 89vh;
+    margin: 8px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.lexicon-selector-container {
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    background-color: $color-accent-table-background;
+    flex: 1;
+}
+
+.lexicon-selector:nth-of-type(even) {
+    background-color: $color-accent-table-background-dark;
+    transition: filter 0.25s ease;
+}
+
+.lexicon-selector:nth-of-type(odd) {
+    background-color: $color-accent-table-background-light;
+    transition: filter 0.25s ease;
+}
+
+.lexicon-selector:hover {
+    filter: brightness(80%);
+}

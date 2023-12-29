@@ -33,7 +33,7 @@ export class AutoRedirectComponent {
                 this.router.navigate([`/step${lastStep}`]);
             } else {
                 // redirect to step 1
-                this.router.navigate(['/step1']);
+                this.router.navigate(['/step0']);
             }
         }
     }

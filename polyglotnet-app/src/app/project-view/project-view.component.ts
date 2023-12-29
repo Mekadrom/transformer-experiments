@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { CookieService } from 'ngx-cookie-service';
 
+import { cookies_constants } from '../constants/cookies-constants';
 import { DataService } from '../services/data.service';
 import { Project } from '../models/models';
 import { StepProgressComponent } from '../step-progress/step-progress.component';
@@ -16,14 +17,9 @@ import { utils } from '../utils/utils';
     styleUrl: './project-view.component.scss',
 })
 export class ProjectViewComponent implements OnInit {
-    activeProject: Project | null = null;
     projects: Project[] = [];
 
-    constructor(private cookieService: CookieService, private dataService: DataService, private router: Router) { }
-
-    selectProject(project: Project): void {
-        this.activeProject = project;
-    }
+    constructor(private cookieService: CookieService, public dataService: DataService, private router: Router) { }
 
     ngOnInit(): void {
         if (utils.isNeedsAuth(this.cookieService)) {
@@ -37,8 +33,13 @@ export class ProjectViewComponent implements OnInit {
                 return;
             }
             this.dataService.setActiveProject(projects[0]);
-            this.selectProject(projects[0]);
         });
+
+        this.cookieService.set(cookies_constants.lastStep, '0');
+    }
+
+    selectProject(project: Project): void {
+        this.dataService.setActiveProject(project);
     }
 
     nextStep(): void {
@@ -47,29 +48,27 @@ export class ProjectViewComponent implements OnInit {
 
     createProject(): void {
         const newProject = {name: 'New project', description: ''} as Project;
+        this.dataService.setActiveProject(newProject);
         this.dataService.upsertProject().subscribe((project) => {
             this.dataService.fetchProjects().subscribe((projects) => {
                 this.projects = projects;
                 this.dataService.setActiveProject(project);
-                this.selectProject(project);
             });
         });
     }
 
     deleteProject(): void {
-        if (!this.activeProject) {
+        if (!this.dataService.getActiveProject()) {
             throw new Error('No active project');
         }
         this.dataService.deleteProject().subscribe(() => {
             this.dataService.fetchProjects().subscribe((projects) => {
                 this.projects = projects;
                 if (projects.length === 0) {
-                    this.activeProject = null;
                     this.dataService.setActiveProject(null);
                     return;
                 }
                 this.dataService.setActiveProject(projects[0]);
-                this.selectProject(projects[0]);
             });
         });
     }
