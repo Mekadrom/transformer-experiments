@@ -1,11 +1,11 @@
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
 from rotary_embedding_torch import RotaryEmbedding
-from utils import *
 
 import math
 import torch
 import torch.nn.functional as F
+import utils
 
 class NewTransformerModelProvider:
     def __init__(self):
@@ -203,7 +203,7 @@ class PositionWiseFCNetwork(nn.Module):
         # A linear layer to project from the input size to an intermediate size
         self.fc1 = nn.Linear(d_model, d_inner)
 
-        self.activation = create_activation_function(args.activation_function)
+        self.activation = utils.create_activation_function(args.activation_function)
 
         # A linear layer to project from the intermediate size to the output size (same as the input size)
         self.fc2 = nn.Linear(d_inner, d_model)

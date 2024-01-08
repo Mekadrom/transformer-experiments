@@ -1,5 +1,6 @@
 import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { CookieService } from 'ngx-cookie-service';
 
@@ -12,12 +13,15 @@ import { utils } from '../utils/utils';
 @Component({
     selector: 'app-project-view',
     standalone: true,
-    imports: [CommonModule, StepProgressComponent],
+    imports: [CommonModule, StepProgressComponent, FormsModule],
     templateUrl: './project-view.component.html',
     styleUrl: './project-view.component.scss',
 })
 export class ProjectViewComponent implements OnInit {
     projects: Project[] = [];
+    srcLanguage: string = '';
+    tgtLanguage: string = '';
+    notes: string = '';
 
     constructor(private cookieService: CookieService, public dataService: DataService, private router: Router) { }
 
@@ -47,12 +51,20 @@ export class ProjectViewComponent implements OnInit {
     }
 
     createProject(): void {
-        const newProject = {name: 'New project', description: ''} as Project;
+        const newProject = {name: 'New project', notes: ''} as Project;
         this.dataService.setActiveProject(newProject);
-        this.dataService.upsertProject().subscribe((project) => {
+        this.dataService.upsertProject().subscribe((response1) => {
             this.dataService.fetchProjects().subscribe((projects) => {
                 this.projects = projects;
-                this.dataService.setActiveProject(project);
+                this.dataService.setActiveProject(projects[0]);
+
+                const lexicon = {projectKey: projects[0].projectKey, srcLanguage: '', tgtLanguage: '', data: []};
+                this.dataService.setLexicon(lexicon);
+                this.dataService.upsertLexicon().subscribe((response2) => {
+                    this.dataService.fetchLexicon().subscribe((lexicon) => {
+                        this.dataService.setLexicon(lexicon);
+                    });
+                });
             });
         });
     }
@@ -71,5 +83,26 @@ export class ProjectViewComponent implements OnInit {
                 this.dataService.setActiveProject(projects[0]);
             });
         });
+    }
+
+    fieldLostFocus(e: any): void {
+        const project: Project | null = this.dataService.getActiveProject();
+        if (project != null && project != undefined) {
+            project.notes = this.notes;
+            this.dataService.upsertProject().subscribe((project) => {
+                this.dataService.setActiveProject(project);
+            });
+
+            this.dataService.fetchLexicon().subscribe((lexicon) => {
+                lexicon.srcLanguage = this.srcLanguage;
+                lexicon.tgtLanguage = this.tgtLanguage;
+                this.dataService.upsertLexicon().subscribe((lexicon) => {
+                    this.dataService.setLexicon(lexicon);
+                });
+            });
+        }
+        else {
+        throw new Error('No active project');
+        }
     }
 }

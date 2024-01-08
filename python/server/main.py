@@ -82,13 +82,13 @@ def fetch_all_projects_for_user():
         return jsonify({'message': 'Session ID is missing. Please login.'}), 500
 
     try:
-        result = connection.execute(text('SELECT project_key, name, description FROM myschema.projects WHERE user_id = :session_id'), {'session_id': session_id})
+        result = connection.execute(text('SELECT project_key, name, notes FROM myschema.projects WHERE user_id = :session_id'), {'session_id': session_id})
         projects = []
         for row in result:
             projects.append({
                 'projectKey': row[0],
                 'name': row[1],
-                'description': row[2],
+                'notes': row[2],
             })
         return jsonify(projects)
     except Exception as e:
@@ -123,11 +123,11 @@ def upsert_project():
         if 'projectKey' not in body or body['projectKey'] is None:
             # Insert
             app.logger.error('Inserting new project')
-            connection.execute(text('INSERT INTO projects (name, description, user_id) VALUES (:name, :description, :session_id);').execution_options(autocommit=True), {'name': body['name'], 'description': body['description'], 'session_id': session_id})
+            connection.execute(text('INSERT INTO projects (name, notes, user_id) VALUES (:name, :notes, :session_id);').execution_options(autocommit=True), {'name': body['name'], 'notes': body['notes'], 'session_id': session_id})
         else:
             # Update
             app.logger.error('Updating project')
-            connection.execute(text('UPDATE projects SET name = :name, description = :description WHERE project_key = :project_key AND user_id = :session_id').execution_options(autocommit=True), {'name': body['name'], 'description': body['description'], 'project_key': body['projectKey'], 'session_id': session_id})
+            connection.execute(text('UPDATE projects SET name = :name, notes = :notes WHERE project_key = :project_key AND user_id = :session_id').execution_options(autocommit=True), {'name': body['name'], 'notes': body['notes'], 'project_key': body['projectKey'], 'session_id': session_id})
         connection.commit()
         return jsonify({'message': 'Project created/updated successfully'}), 200
     except Exception as e:
@@ -154,13 +154,13 @@ def fetch_project(project_key):
         return jsonify({'message': 'Session ID is missing. Please login.'}), 500
 
     try:
-        result = connection.execute(text('SELECT project_key, name, description FROM projects WHERE project_key = :project_key AND user_id = :session_id LIMIT 1'), {'project_key': project_key, 'session_id': session_id})
+        result = connection.execute(text('SELECT project_key, name, notes FROM projects WHERE project_key = :project_key AND user_id = :session_id LIMIT 1'), {'project_key': project_key, 'session_id': session_id})
         if result.rowcount == 1:
             row = result.fetchone()
             return jsonify({
                 'projectKey': row[0],
                 'name': row[1],
-                'description': row[2],
+                'notes': row[2],
             })
         elif result.rowcount == 0:
             return jsonify({'message': 'Project not found or not under this user'}), 404
@@ -290,14 +290,14 @@ def fetch_all_datasets_for_project(project_key):
         return jsonify({'message': 'Session ID is missing. Please login.'}), 500
 
     try:
-        result = connection.execute(text('SELECT project_key, dataset_key, name, description FROM datasets WHERE project_key = :project_key AND user_id = :session_id'), {'project_key': project_key, 'session_id': session_id})
+        result = connection.execute(text('SELECT project_key, dataset_key, name, notes FROM datasets WHERE project_key = :project_key AND user_id = :session_id'), {'project_key': project_key, 'session_id': session_id})
         datasets = []
         for row in result:
             datasets.append({
                 'projectKey': row[0],
                 'datasetKey': row[1],
                 'name': row[2],
-                'description': row[3],
+                'notes': row[3],
             })
         return jsonify(datasets)
     except Exception as e:
@@ -323,14 +323,14 @@ def fetch_dataset_data(project_key, dataset_key):
         return jsonify({'message': 'Session ID is missing. Please login.'}), 500
 
     try:
-        result = connection.execute(text('SELECT project_key, dataset_key, name, description, data FROM datasets WHERE project_key = :project_key AND dataset_key = :dataset_key AND user_id = :session_id LIMIT 1'), {'project_key': project_key, 'dataset_key': dataset_key, 'session_id': session_id})
+        result = connection.execute(text('SELECT project_key, dataset_key, name, notes, data FROM datasets WHERE project_key = :project_key AND dataset_key = :dataset_key AND user_id = :session_id LIMIT 1'), {'project_key': project_key, 'dataset_key': dataset_key, 'session_id': session_id})
         if result.rowcount == 1:
             row = result.fetchone()
             return jsonify({
                 'projectKey': row[0],
                 'datasetKey': row[1],
                 'name': row[2],
-                'description': row[3],
+                'notes': row[3],
                 'data': row[4],
             })
         elif result.rowcount == 0:
@@ -368,10 +368,10 @@ def upsert_dataset(project_key):
     try:
         if 'datasetKey' not in body or body['datasetKey'] is None:
             # Insert
-            connection.execute(text('INSERT INTO datasets (name, description, data, project_key, user_id) VALUES (:name, :description, :data, :project_key, :session_id)').execution_options(autocommit=True), {'name': body['name'], 'description': body['description'], 'data': body['data'], 'project_key': project_key, 'session_id': session_id})
+            connection.execute(text('INSERT INTO datasets (name, notes, data, project_key, user_id) VALUES (:name, :notes, :data, :project_key, :session_id)').execution_options(autocommit=True), {'name': body['name'], 'notes': body['notes'], 'data': body['data'], 'project_key': project_key, 'session_id': session_id})
         else:
             # Update
-            connection.execute(text('UPDATE datasets SET name = :name, description = :description, data = :data WHERE dataset_key = :dataset_key AND project_key = :project_key AND user_id = :session_id').execution_options(autocommit=True), {'name': body['name'], 'description': body['description'], 'data': body['data'], 'dataset_key': body['datasetKey'], 'project_key': project_key, 'session_id': session_id})
+            connection.execute(text('UPDATE datasets SET name = :name, notes = :notes, data = :data WHERE dataset_key = :dataset_key AND project_key = :project_key AND user_id = :session_id').execution_options(autocommit=True), {'name': body['name'], 'notes': body['notes'], 'data': body['data'], 'dataset_key': body['datasetKey'], 'project_key': project_key, 'session_id': session_id})
         return jsonify()
     except Exception as e:
         app.logger.error(e)
@@ -479,7 +479,7 @@ def append_to_dataset(project_key, dataset_key):
 #                project_key
 #               ,hyperparameters_key
 #               ,name
-#               ,description
+#               ,notes
 #               ,data
 #           FROM hyperparameter_configurations 
 #          WHERE project_key = :project_key 
@@ -492,7 +492,7 @@ def append_to_dataset(project_key, dataset_key):
 #                 'projectKey': row[0],
 #                 'hyperparametersKey': row[1],
 #                 'name': row[2],
-#                 'description': row[3],
+#                 'notes': row[3],
 #                 'tokenizer': data['tokenizer'],
 #                 'src_vocab_size': data['src_vocab_size'],
 #                 'tgt_vocab_size': data['tgt_vocab_size'],
@@ -550,7 +550,7 @@ def append_to_dataset(project_key, dataset_key):
 #                project_key
 #               ,hyperparameters_key
 #               ,name
-#               ,description
+#               ,notes
 #               ,data
 #           FROM hyperparameter_configurations 
 #          WHERE project_key = :project_key 
@@ -564,7 +564,7 @@ def append_to_dataset(project_key, dataset_key):
 #                 'projectKey': row[0],
 #                 'hyperparametersKey': row[1],
 #                 'name': row[2],
-#                 'description': row[3],
+#                 'notes': row[3],
 #                 'tokenizer': data['tokenizer'],
 #                 'src_vocab_size': data['src_vocab_size'],
 #                 'tgt_vocab_size': data['tgt_vocab_size'],
@@ -626,10 +626,10 @@ def append_to_dataset(project_key, dataset_key):
 #     try:
 #         if 'hyperparametersKey' not in body or body['hyperparametersKey'] is None:
 #             # Insert
-#             connection.execute(text('INSERT INTO hyperparameter_configurations (name, description, project_key, data, user_id) VALUES (:name, :description, :project_key, :data, :session_id)').execution_options(autocommit=True), {'name': body['name'], 'description': body['description'], 'project_key': project_key, 'data': body['data'], 'session_id': session_id})
+#             connection.execute(text('INSERT INTO hyperparameter_configurations (name, notes, project_key, data, user_id) VALUES (:name, :notes, :project_key, :data, :session_id)').execution_options(autocommit=True), {'name': body['name'], 'notes': body['notes'], 'project_key': project_key, 'data': body['data'], 'session_id': session_id})
 #         else:
 #             # Update
-#             connection.execute(text('UPDATE hyperparameter_configurations SET name = :name, description = :description, data = :data WHERE hyperparameters_key = :hyperparameters_key AND project_key = :project_key AND user_id = :session_id').execution_options(autcommit=True), {'name': body['name'], 'description': body['description'], 'data': body['data'], 'hyperparameters_key': body['hyperparametersKey'], 'project_key': project_key, 'session_id': session_id})
+#             connection.execute(text('UPDATE hyperparameter_configurations SET name = :name, notes = :notes, data = :data WHERE hyperparameters_key = :hyperparameters_key AND project_key = :project_key AND user_id = :session_id').execution_options(autcommit=True), {'name': body['name'], 'notes': body['notes'], 'data': body['data'], 'hyperparameters_key': body['hyperparametersKey'], 'project_key': project_key, 'session_id': session_id})
 #         return jsonify()
 #     except Exception as e:
 #         app.logger.error(e)
@@ -690,7 +690,7 @@ def append_to_dataset(project_key, dataset_key):
 #               ,hyperparameters_key
 #               ,model_key
 #               ,name
-#               ,description
+#               ,notes
 #               ,data
 #           FROM trained_models 
 #          WHERE project_key = :project_key 
@@ -703,7 +703,7 @@ def append_to_dataset(project_key, dataset_key):
 #                 'hyperparametersKey': row[1],
 #                 'modelKey': row[2],
 #                 'name': row[3],
-#                 'description': row[4],
+#                 'notes': row[4],
 #                 'data': json.loads(row[5]),
 #             })
 
@@ -739,7 +739,7 @@ def append_to_dataset(project_key, dataset_key):
 #               ,model_key
 #               ,hyperparameters_key
 #               ,name
-#               ,description
+#               ,notes
 #           FROM trained_models 
 #          WHERE project_key = :project_key 
 #            AND model_key = :model_key
@@ -753,7 +753,7 @@ def append_to_dataset(project_key, dataset_key):
 #                 'hyperparametersKey': row[1],
 #                 'modelKey': row[2],
 #                 'name': row[3],
-#                 'description': row[4],
+#                 'notes': row[4],
 #             })
 #         elif result.rowcount == 0:
 #             return jsonify({'message': 'Model not found or not under this project'}), 404

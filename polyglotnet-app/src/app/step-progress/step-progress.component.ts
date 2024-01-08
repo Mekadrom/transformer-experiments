@@ -31,7 +31,7 @@ export class StepProgressComponent {
 
     isCompletedStep(index: number): boolean {
         const activeStep = +this.router.url.slice(-1);
-        return index + 1 < activeStep;
+        return index < activeStep;
     }
 
     isDisabledStep(index: number): boolean {

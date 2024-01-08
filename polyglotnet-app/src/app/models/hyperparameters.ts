@@ -1,6 +1,6 @@
 export default interface Hyperparameters {
     name: string; // a name for this set of hyperparameters
-    description: string; // a description for this set of hyperparameters, basically a place for users to store comments for later reference
+    notes: string; // a description for this set of hyperparameters, basically a place for users to store comments for later reference
     projectKey: string | null; // a uuid reference to the project that owns this set of hyperparameters. many-to-one relationship (one project has many hyperparameters). null when new hyperparameters
     hyperparametersKey: string | null; // a uuid reference to this set of hyperparameters. null when new hyperparameters
 
@@ -41,7 +41,7 @@ export default interface Hyperparameters {
 // default parameters. these will be updated as better on average parameters are found
 export const defaultHyperparameters: Hyperparameters = {
     name: "New Hyperparameters",
-    description: "",
+    notes: "",
     projectKey: null,
     hyperparametersKey: null,
 

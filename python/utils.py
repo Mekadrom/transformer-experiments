@@ -1,14 +1,18 @@
 from collections import OrderedDict
 from dataloader import SequenceLoader
+from rotary_embedding_torch import RotaryEmbedding
 from tqdm import tqdm
+from transformer_provider import *
 
 import codecs
 import math
 import os
 import torch
 import youtokentome
+import time
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.utils.prune as prune
 import sacrebleu
 
 def get_lr(step, d_model, warmup_steps):
@@ -39,6 +43,106 @@ def get_buffered_positional_encoding(d_model, maxlen=100):
                 positional_encoding[i, j] = math.cos(i / math.pow(10000, (j - 1) / d_model))
 
     return positional_encoding.unsqueeze(0)  # (1, max_length, d_model)
+
+def load_tokenizers(run_dir):
+    src_tokenizer_file = os.path.join(run_dir, 'src_tokenizer.model')
+    tgt_tokenizer_file = os.path.join(run_dir, 'tgt_tokenizer.model')
+
+    if not os.path.exists(src_tokenizer_file):
+        raise Exception(f"Source tokenizer file {src_tokenizer_file} does not exist")
+
+    print(f"Loading source tokenizer from {src_tokenizer_file}")
+    src_bpe_model = youtokentome.BPE(model=src_tokenizer_file)
+
+    if os.path.exists(tgt_tokenizer_file):
+        print(f"Loading target tokenizer from {tgt_tokenizer_file}")
+        tgt_bpe_model = youtokentome.BPE(model=tgt_tokenizer_file)
+    else:
+        print(f"Sharing tokenizer between source and target languages")
+        tgt_bpe_model = src_bpe_model
+
+    return src_bpe_model, tgt_bpe_model
+
+def get_positional_encoding(args):
+    if args.positional_encoding_type == 'sinusoidal' or args.positional_encoding_type == 'buffer':
+        positional_encoding = get_buffered_positional_encoding(
+            d_model=args.d_model,
+            maxlen=args.maxlen,
+        )
+    elif args.positional_encoding_type == 'rotary':
+        positional_encoding = RotaryEmbedding(dim=args.rotary_positional_encoding_dim)
+    return positional_encoding
+
+def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar'):
+    print('Initializing model...')
+
+    if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
+        checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
+        if hasattr(args, 'start_epoch') and args.start_epoch == 0:
+            args.start_epoch = checkpoint['epoch'] + 1
+            print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
+
+        model = checkpoint['model']
+
+        if 'optimizer' in checkpoint:
+            optimizer = checkpoint['optimizer']
+        else:
+            optimizer = None
+
+        if 'positional_encoding' in checkpoint:
+            positional_encoding = checkpoint['positional_encoding']
+            if (type(positional_encoding) == 'RotaryEmbedding' and args.positional_encoding_type != 'RotaryEmbedding') or (type(positional_encoding) != 'RotaryEmbedding' and args.positional_encoding_type == 'RotaryEmbedding'):
+                print("WARNING: positional encoding type mismatch between args and saved model. Using positional encoding from args instead.")
+                positional_encoding = get_positional_encoding(args)
+        else:
+            positional_encoding = None
+    else:
+        print("Starting from scratch...")
+        positional_encoding = get_positional_encoding(args)
+        model = NewTransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model, positional_encoding=positional_encoding)
+        optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
+
+    return model, optimizer, positional_encoding
+
+def print_model(model):
+    print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters')
+    print(f'The model has {sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad):,} non-zero trainable parameters')
+    print(f"Model structure: \n {model}")
+
+def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model):
+    print('Loading training data SequenceLoader...')
+    train_loader = SequenceLoader(
+        src_bpe_model=src_bpe_model,
+        tgt_bpe_model=tgt_bpe_model,
+        data_folder=os.path.join(run_dir),
+        source_suffix="src",
+        target_suffix="tgt",
+        split="train",
+        tokens_in_batch=tokens_in_batch
+    )
+
+    print('Loading validation data SequenceLoader...')
+    val_loader = SequenceLoader(
+        src_bpe_model=src_bpe_model,
+        tgt_bpe_model=tgt_bpe_model,
+        data_folder=os.path.join(run_dir),
+        source_suffix="src",
+        target_suffix="tgt",
+        split="val",
+        tokens_in_batch=tokens_in_batch
+    )
+
+    print('Loading test data SequenceLoader...')
+    test_loader = SequenceLoader(
+        src_bpe_model=src_bpe_model,
+        tgt_bpe_model=tgt_bpe_model,
+        data_folder=os.path.join(run_dir),
+        source_suffix="src",
+        target_suffix="tgt",
+        split="test",
+        tokens_in_batch=tokens_in_batch
+    )
+    return train_loader, val_loader, test_loader
 
 def save_checkpoint(epoch, model, optimizer, positional_encoding, prefix=''):
     """
@@ -230,7 +334,15 @@ def average_checkpoints(source_folder, starts_with='step', ends_with='.pth.tar')
     torch.save({'model': averaged_checkpoint}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
 def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python):
-    if args.continue_from and os.path.exists(os.path.join(run_dir, "translated_test.tgt")):
+    """
+    Returns None when command line sacrebleu is used
+    """
+
+    before_nanos = time.time_ns()
+
+    bleu_score = None
+
+    if os.path.exists(os.path.join(run_dir, "translated_test.tgt")) and args.sacrebleu_interrupted:
         pass
     else:
         # Data loader
@@ -245,7 +357,8 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
 
     # Evaluate
     with torch.no_grad():
-        if args.continue_from and os.path.exists(os.path.join(run_dir, "translated_test.tgt")) and not sacrebleu_in_python:
+
+        if os.path.exists(os.path.join(run_dir, "translated_test.tgt")) and (not sacrebleu_in_python) and args.sacrebleu_interrupted:
             pass
         else:
             hypotheses = list()
@@ -256,7 +369,8 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
 
         if sacrebleu_in_python:
             print("\n13a tokenization, cased:\n")
-            print(sacrebleu.corpus_bleu(hypotheses, [references]))
+            bleu_score = sacrebleu.corpus_bleu(hypotheses, [references])
+            print(bleu_score)
             print("\n13a tokenization, caseless:\n")
             print(sacrebleu.corpus_bleu(hypotheses, [references], lowercase=True))
             print("\nInternational tokenization, cased:\n")
@@ -267,7 +381,7 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
         else:
             cat_command = "cat" if os.name == "posix" else "type"
 
-            if args.continue_from and os.path.exists(os.path.join(run_dir, "translated_test.tgt")):
+            if os.path.exists(os.path.join(run_dir, "translated_test.tgt")) and args.sacrebleu_interrupted:
                 pass
             else:
                 with codecs.open(os.path.join(run_dir, "translated_test.tgt"), "w", encoding="utf-8") as f:
@@ -284,6 +398,57 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
             print("\n")
         print(
             "The first value (13a tokenization, cased) is how the BLEU score is officially calculated by WMT (mteval-v13a.pl). \nThis is probably not how it is calculated in the 'Attention Is All You Need' paper, however.\nSee https://github.com/tensorflow/tensor2tensor/issues/317#issuecomment-380970191 for more details.\n")
+        
+    after_nanos = time.time_ns()
+
+    print(f"Time taken for sacrebleu evaluation: {(after_nanos - before_nanos) / 1e9} seconds")
+
+    return bleu_score
+
+def prune_structured(layer, is_encoder_layer, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type):
+    # todo: implement this
+    print("Pruning structured not supported yet")
+
+    # if prune_type in ['heads', 'all']:
+    #     prune.ln_structured(layer[0], name='weight', amount=prune_heads_amount, n=prune_heads_norm, dim=0)
+
+    # if is_encoder_layer:
+    #     if prune_type in ['ffn', 'all']:
+    #         prune.ln_structured(layer[1], name='weight', amount=prune_ffn_amount, n=prune_ffn_norm, dim=0)
+    # else:
+    #     if prune_type in ['heads', 'all']:
+    #         prune.ln_structured(layer[1], name='weight', amount=prune_heads_amount, n=prune_heads_norm, dim=0)
+
+    #     if prune_type in ['ffn', 'all']:
+    #         prune.ln_structured(layer[2], name='weight', amount=prune_ffn_amount, n=prune_ffn_norm, dim=0)
+
+def prune_unstructured(layer, is_encoder_layer, prune_heads_amount, prune_ffn_amount, prune_type):
+    if prune_type in ['heads', 'all']:
+        prune.l1_unstructured(layer[0], name='weight', amount=prune_heads_amount, dim=0)
+
+    if is_encoder_layer:
+        if prune_type in ['ffn', 'all']:
+            prune.l1_unstructured(layer[1], name='weight', amount=prune_ffn_amount, dim=0)
+    else:
+        if prune_type in ['heads', 'all']:
+            prune.l1_unstructured(layer[1], name='weight', amount=prune_heads_amount, dim=0)
+
+        if prune_type in ['ffn', 'all']:
+            prune.l1_unstructured(layer[2], name='weight', amount=prune_ffn_amount, dim=0)
+
+def prune_model(model, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, is_prune_structured, prune_type):
+    """
+    Prune the model.
+
+    :param args: command-line arguments
+    :param model: transformer model
+    """
+
+    for encoder_layer in model.encoder.encoder_layers:
+        if is_prune_structured:
+            prune_structured(encoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
+        else:
+            prune_unstructured(encoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
 
 def create_activation_function(activation_function_name):
     if activation_function_name == 'relu':
