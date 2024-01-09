@@ -157,6 +157,17 @@ def save_checkpoint(epoch, model, optimizer, positional_encoding, prefix=''):
     filename = prefix + 'transformer_checkpoint.pth.tar'
     torch.save(state, filename)
 
+def save_model(model, prefix=''):
+    """
+    Model saver. Each save overwrites previous save.
+
+    :param model: transformer model
+    :param prefix: checkpoint filename prefix
+    """
+    state = {'model': model}
+    filename = prefix + 'transformer_checkpoint.pth.tar'
+    torch.save(state, filename)
+
 def change_lr(optimizer, new_lr):
     """
     Scale learning rate by a specified factor.
@@ -305,11 +316,11 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_s
 
         return best_hypothesis, all_hypotheses
 
-def average_checkpoints(source_folder, starts_with='step', ends_with='.pth.tar'):
+def average_checkpoints(source_folder, model_name_prefix='step', model_name_suffix='.pth.tar'):
     source_folder = f"runs/{source_folder}" if not source_folder.startswith('runs/') else source_folder
     
     # Get list of checkpoint names
-    checkpoint_names = [f for f in os.listdir(source_folder) if f.startswith(starts_with) and f.endswith(ends_with)]
+    checkpoint_names = [f for f in os.listdir(source_folder) if f.startswith(model_name_prefix) and f.endswith(model_name_suffix)]
     assert len(checkpoint_names) > 0, "Did not find any checkpoints!"
 
     # Average parameters from checkpoints
@@ -446,9 +457,15 @@ def prune_model(model, prune_heads_amount, prune_heads_norm, prune_ffn_amount, p
 
     for encoder_layer in model.encoder.encoder_layers:
         if is_prune_structured:
-            prune_structured(encoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
+            prune_structured(encoder_layer, True, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
         else:
-            prune_unstructured(encoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
+            prune_unstructured(encoder_layer, True, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
+
+    for decoder_layer in model.decoder.decoder_layers:
+        if is_prune_structured:
+            prune_structured(decoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
+        else:
+            prune_unstructured(decoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
 
 def create_activation_function(activation_function_name):
     if activation_function_name == 'relu':
@@ -463,3 +480,5 @@ def create_activation_function(activation_function_name):
         return nn.PReLU()
     elif activation_function_name == 'leaky_relu':
         return nn.LeakyReLU()
+    else:
+        raise Exception(f"Unknown activation function {activation_function_name}")
