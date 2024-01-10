@@ -10,7 +10,14 @@ import time
 import torch
 import torch.backends.cudnn as cudnn
 
-class DistillationTrainer():
+"""
+    This entire project is a heavily modified version of https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Transformers. Credit to them for the workflow and the implementation of most of the transformer model architecture code in transformer_provider.py.
+"""
+class Trainer():
+    def train(self, args, model_name_prefix=''):
+        raise NotImplementedError
+
+class DistillationTrainer(Trainer):
     def train(self, args, model_name_prefix=''):
         run_dir = os.path.join('runs', args.run_name)
 
@@ -53,8 +60,8 @@ class DistillationTrainer():
             criterion=criterion,
             summary_writer=summary_writer
         )
-        sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
-        return model
+        sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, distilled_model, sacrebleu_in_python=True)
+        return distilled_model
     
     def train_n_epochs(self, args, epochs, teacher_model, distilled_model, train_loader, val_loader, test_loader, src_bpe_model, tgt_bpe_model, criterion, optimizer, positional_encoding, summary_writer, model_name_prefix=''):
         step = 1
@@ -110,6 +117,16 @@ class DistillationTrainer():
             target_sequences = target_sequences.to(args.device) # (N, max_target_sequence_pad_length_this_batch)
             source_sequence_lengths = source_sequence_lengths.to(args.device) # (N)
             target_sequence_lengths = target_sequence_lengths.to(args.device) # (N)
+
+            target_sequences = teacher_model(source_sequences, target_sequences, source_sequence_lengths, target_sequence_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+            # get length of target sequences
+            mask = (torch.argmax(target_sequences, dim=-1) == tgt_bpe_model.eos_id).cumsum(dim=-1) == 1
+
+            # calculate lengths
+            target_sequence_lengths = mask.sum(dim=-1)
+
+            # if EOS is never found, use maximum sequence length for this batch
+            target_sequence_lengths[target_sequence_lengths == 0] = target_sequences.size(1)
 
             # Time taken to load data
             data_time.update(time.time() - start_data_time)
@@ -230,10 +247,7 @@ class DistillationTrainer():
         print(f"src: {src} | prediction: {best} | actual: {tgt}")
         print(debug_validate_table)
 
-class Trainer():
-    """
-    This entire project is a heavily modified version of https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Transformers. Credit to them for the workflow and the implementation of most of the transformer model architecture code in transformer_provider.py.
-    """
+class ClassicTrainer(Trainer):
     def train(self, args, model_name_prefix=''):
         run_dir = os.path.join('runs', args.run_name)
 
@@ -348,6 +362,8 @@ class Trainer():
 
             # Forward prop.
             predicted_sequences = model(source_sequences, target_sequences, source_sequence_lengths, target_sequence_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+
+            print(f"output looks like: {predicted_sequences.shape}")
 
             # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
             # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
@@ -468,6 +484,8 @@ if __name__ == '__main__':
     argparser.add_argument('--run_name', type=str, required=True)
     argparser.add_argument('--tokenizer_run_name', type=str, required=True)
 
+    argparser.add_argument('--distillation_teacher_run_name', type=str, default=None)
+
     argparser.add_argument('--d_model', type=int, default=512)
     argparser.add_argument('--n_heads', type=int, default=8)
     argparser.add_argument('--d_queries', type=int, default=64)
@@ -476,8 +494,8 @@ if __name__ == '__main__':
     argparser.add_argument('--n_encoder_layers', type=int, default=6)
     argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)
-    argparser.add_argument('--maxlen', type=int, default=160)
-    argparser.add_argument('--positional_encoding_type', type=str, default='sinusoidal')
+    argparser.add_argument('--maxlen', type=int, default=150)
+    argparser.add_argument('--positional_encoding_type', type=str, default='rotary', choices=['rotary', 'sinusoidal'])
     argparser.add_argument('--rotary_positional_encoding_dim', type=int, default=64)
 
     argparser.add_argument('--start_epoch', type=int, default=0)
@@ -526,26 +544,32 @@ if __name__ == '__main__':
 
     print(f"using learning rate {args.lr}")
 
-    trainer = Trainer()
-
-    if args.prune_mode == 'train-prune':
-        model = trainer.train(args)
-        prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
-
-
-    elif args.prune_mode == 'train-prune-retrain':
-        model = trainer.train(args)
-
-        args.n_steps = args.prune_retrain_n_steps
-        args.warmup_steps = args.prune_retrain_warmup_steps
-
-        for i in range(args.n_prune_retrains):
+    def do_training(trainer):
+        if args.prune_mode == 'train-prune':
+            model = trainer.train(args)
             prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
-            trainer.train(args, model_name_prefix=f"pruned_{i}_")
-    elif args.prune_mode == 'only-prune':
-        src_bpe_model, tgt_bpe_model = load_tokenizers(os.path.join('runs', args.run_name))
-        model, _, _ = load_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name='averaged_transformer_checkpoint.pth.tar')
-        prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
-        sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
+        elif args.prune_mode == 'train-prune-retrain':
+            model = trainer.train(args)
+
+            args.n_steps = args.prune_retrain_n_steps
+            args.warmup_steps = args.prune_retrain_warmup_steps
+
+            for i in range(args.n_prune_retrains):
+                prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
+                trainer.train(args, model_name_prefix=f"pruned_{i}_")
+        elif args.prune_mode == 'only-prune':
+            src_bpe_model, tgt_bpe_model = load_tokenizers(os.path.join('runs', args.run_name))
+            model, _, _ = load_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name='averaged_transformer_checkpoint.pth.tar')
+            prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
+            sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
+        else:
+            trainer.train(args)
+
+    trainer: Trainer | None = None
+
+    if args.distillation_teacher_run_name is not None:
+        trainer = DistillationTrainer()
     else:
-        trainer.train(args)
+        trainer = ClassicTrainer()
+
+    do_training(trainer)
