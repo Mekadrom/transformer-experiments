@@ -363,8 +363,6 @@ class ClassicTrainer(Trainer):
             # Forward prop.
             predicted_sequences = model(source_sequences, target_sequences, source_sequence_lengths, target_sequence_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
-            print(f"output looks like: {predicted_sequences.shape}")
-
             # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
             # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
             # Therefore, pads start after (length - 1) positions
