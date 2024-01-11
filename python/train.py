@@ -497,7 +497,7 @@ if __name__ == '__main__':
     argparser.add_argument('--rotary_positional_encoding_dim', type=int, default=64)
 
     argparser.add_argument('--start_epoch', type=int, default=0)
-    argparser.add_argument('--tokens_in_batch', type=int, default=2000)
+    argparser.add_argument('--tokens_in_batch', type=int, default=5000)
     argparser.add_argument('--target_tokens_per_batch', type=int, default=25000)
     argparser.add_argument('--n_steps', type=int, default=100000)
     argparser.add_argument('--warmup_steps', type=int, default=8000)
