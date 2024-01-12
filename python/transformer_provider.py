@@ -530,7 +530,7 @@ class Decoder(nn.Module):
         # Sum vocab embeddings and position embeddings
         decoder_sequences = self.embedding(decoder_sequences) * math.sqrt(self.d_model) # (N, pad_length, d_model)
         if self.positional_encoding is not None and type(self.positional_encoding) != RotaryEmbedding:
-            decoder_sequences += self.positional_encoding[:, :pad_length, :].to(self.args.device) 
+            decoder_sequences += self.positional_encoding[:, :pad_length, :].to(self.args.device)
 
         # Dropout
         decoder_sequences = self.apply_dropout(decoder_sequences)

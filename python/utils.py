@@ -67,7 +67,7 @@ def get_positional_encoding(args):
     if args.positional_encoding_type == 'sinusoidal' or args.positional_encoding_type == 'buffer':
         positional_encoding = get_buffered_positional_encoding(
             d_model=args.d_model,
-            maxlen=args.maxlen,
+            maxlen=args.maxlen+1,
         )
     elif args.positional_encoding_type == 'rotary':
         positional_encoding = RotaryEmbedding(dim=args.rotary_positional_encoding_dim)
