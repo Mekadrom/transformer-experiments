@@ -51,7 +51,7 @@ class MultiHeadAttention(nn.Module):
 
         self.d_queries = d_queries
         self.d_values = d_values
-        self.d_keys = d_queries  # size of key vectors, same as of the query vectors to allow dot-products for similarity
+        self.d_keys = d_queries # size of key vectors, same as of the query vectors to allow dot-products for similarity
 
         self.positional_encoding = positional_encoding
         self.in_decoder = in_decoder
@@ -60,7 +60,8 @@ class MultiHeadAttention(nn.Module):
         self.cast_queries = nn.Linear(d_model, n_heads * d_queries)
 
         # A linear projection to cast (n_heads sets of) keys and values from the input reference sequences
-        self.cast_keys_values = nn.Linear(d_model, n_heads * (d_queries + d_values))
+        self.cast_keys = nn.Linear(d_model, n_heads * self.d_keys)
+        self.cast_values = nn.Linear(d_model, n_heads * self.d_values)
 
         # A linear projection to cast (n_heads sets of) computed attention-weighted vectors to output vectors (of the same size as input query vectors)
         self.cast_output = nn.Linear(n_heads * d_values, d_model)
@@ -74,7 +75,7 @@ class MultiHeadAttention(nn.Module):
         # Dropout layer
         self.apply_dropout = nn.Dropout(dropout)
 
-    def forward(self, query_sequences, key_value_sequences, key_value_sequence_lengths):
+    def forward(self, query_sequences, key_sequences, value_sequences, key_value_sequence_lengths):
         """
         Forward prop.
 
@@ -102,7 +103,8 @@ class MultiHeadAttention(nn.Module):
 
         # Project input sequences to queries, keys, values
         queries = self.cast_queries(query_sequences) # (N, query_sequence_pad_length, n_heads * d_queries)
-        keys, values = self.cast_keys_values(key_value_sequences).split(split_size=self.n_heads * self.d_keys, dim=-1) # (N, key_value_sequence_pad_length, n_heads * d_keys), (N, key_value_sequence_pad_length, n_heads * d_values)
+        keys = self.cast_keys(key_sequences) # (N, key_value_sequence_pad_length, n_heads * d_keys)
+        values = self.cast_values(value_sequences) # (N, key_value_sequence_pad_length, n_heads * d_values)
 
         # Split the last dimension by the n_heads subspaces
         queries = queries.contiguous().view(batch_size, query_sequence_pad_length, self.n_heads, self.d_queries) # (N, query_sequence_pad_length, n_heads, d_queries)
@@ -178,6 +180,56 @@ class MultiHeadAttention(nn.Module):
         sequences = self.apply_dropout(sequences) + input_to_add # (N, query_sequence_pad_length, d_model)
 
         return sequences
+
+class MultiCastAttention(nn.Module):
+    def __init__(self, args, attn_config, d_queries, d_values, dropout, positional_encoding=None, in_decoder=False, sequential=False):
+        super(MultiCastAttention, self).__init__()
+
+        self.args = args
+
+        self.d_queries = args.d_queries
+        self.d_values = args.d_values
+        self.dropout = args.dropout
+
+        self.positional_encoding = positional_encoding
+        self.in_decoder = in_decoder
+        self.sequential = sequential
+
+        self.layers, self.embed_dim_list = nn.ModuleList(self.build_layers_from_attn_config(attn_config))
+
+    def build_layers_from_attn_config(self, attn_config):
+        layer_configs = attn_config.split(',')
+        layers = []
+        for i, layer_config in enumerate(layer_configs):
+            layer_config_parts = layer_config.split(':')
+            layer_type = layer_config_parts[0]
+            layer_output_dim = int(layer_config_parts[1])
+            layer_n_heads = int(layer_config_parts[2])
+            if layer_type == 'MultiHeadAttention':
+                layers.append(MultiHeadAttention(
+                    args=self.args,
+                    d_model=layer_output_dim,
+                    n_heads=layer_n_heads,
+                    d_queries=self.d_queries,
+                    d_values=self.d_values,
+                    dropout=self.dropout,
+                    positional_encoding=self.positional_encoding,
+                    in_decoder=self.in_decoder
+                ))
+            else:
+                raise Exception(f"Unknown attention layer type: {layer_type}")
+        return layers
+    
+    def forward(self, query_sequences, key_sequences, value_sequences, key_value_sequence_lengths):
+        if self.sequential:
+            for layer in self.layers:
+                query_sequences = layer(query_sequences, key_sequences, value_sequences, key_value_sequence_lengths)
+            return query_sequences
+        else:
+            layer_outputs = []
+            for layer in self.layers:
+                layer_outputs.append(layer(query_sequences, key_sequences, value_sequences, key_value_sequence_lengths))
+            return torch.cat(layer_outputs, dim=-1)
 
 class PositionWiseFCNetwork(nn.Module):
     """
@@ -334,14 +386,13 @@ class Encoder(nn.Module):
         Creates a single layer in the Encoder by combining a multi-head attention sublayer and a position-wise FC sublayer.
         """
 
-        mha = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(
-            args=self.args,
-            d_model=self.d_model,
-            n_heads=self.n_heads,
-            d_queries=self.d_queries,
-            d_values=self.d_values,
-            dropout=self.dropout,
-            positional_encoding=self.positional_encoding,
+        attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiCastAttention(
+            self.args,
+            self.args.encoder_layer_attn_config,
+            self.args.d_queries,
+            self.args.d_values,
+            self.args.dropout,
+            self.positional_encoding,
             in_decoder=False
         )
         ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else PositionWiseFCNetwork(
@@ -351,7 +402,7 @@ class Encoder(nn.Module):
             dropout=self.dropout
         )
 
-        return [mha, ffn]
+        return [attn_layers, ffn]
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):
         """
@@ -374,7 +425,7 @@ class Encoder(nn.Module):
         # Encoder layers
         for encoder_layer in self.encoder_layers:
             # Sublayers
-            encoder_sequences = encoder_layer[0](query_sequences=encoder_sequences, key_value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
+            encoder_sequences = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
             encoder_sequences = encoder_layer[1](sequences=encoder_sequences) # (N, pad_length, d_model)
 
         # Apply layer-norm
@@ -486,9 +537,9 @@ class Decoder(nn.Module):
         Creates a single layer in the Decoder by combining two multi-head attention sublayers and a position-wise FC sublayer.
         """
 
-        mha_1 = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(
+        self_attn = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiCastAttention(
             args=self.args,
-            d_model=self.d_model,
+            attn_config=self.args.decoder_layer_self_attn_config,
             n_heads=self.n_heads,
             d_queries=self.d_queries,
             d_values=self.d_values,
@@ -496,7 +547,7 @@ class Decoder(nn.Module):
             positional_encoding=self.positional_encoding,
             in_decoder=True
         )
-        mha_2 = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else MultiHeadAttention(
+        cross_attn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else MultiHeadAttention(
             args=self.args,
             d_model=self.d_model,
             n_heads=self.n_heads,
@@ -513,7 +564,7 @@ class Decoder(nn.Module):
             dropout=self.dropout
         )
 
-        return [mha_1, mha_2, ffn]
+        return [self_attn, cross_attn, ffn]
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
         """
@@ -538,8 +589,8 @@ class Decoder(nn.Module):
         # Decoder layers
         for decoder_layer in self.decoder_layers:
             # Sublayers
-            decoder_sequences = decoder_layer[0](query_sequences=decoder_sequences, key_value_sequences=decoder_sequences, key_value_sequence_lengths=decoder_sequence_lengths) # (N, pad_length, d_model)
-            decoder_sequences = decoder_layer[1](query_sequences=decoder_sequences, key_value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
+            decoder_sequences = decoder_layer[0](query_sequences=decoder_sequences, key_sequences=decoder_sequences, value_sequences=decoder_sequences, key_value_sequence_lengths=decoder_sequence_lengths) # (N, pad_length, d_model)
+            decoder_sequences = decoder_layer[1](query_sequences=decoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
             decoder_sequences = decoder_layer[2](sequences=decoder_sequences) # (N, pad_length, d_model)
 
         # Apply layer-norm
