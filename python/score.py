@@ -8,7 +8,8 @@ if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
 
     argparser.add_argument('--base_run_name', type=str, required=True)
-    argparser.add_argument('--sacrebleu_score_model_name', type=str, default=None)
+    argparser.add_argument('--tokenizer_run_name', type=str, required=True)
+    argparser.add_argument('--sacrebleu_score_model_name', type=str, default='averaged_transformer_checkpoint.pth.tar')
 
     argparser.add_argument('--device', type=str, default='cuda:0')
     cudnn.benchmark = False
@@ -27,7 +28,7 @@ if __name__ == '__main__':
         print(f"run directory {run_dir} does not exist")
         exit(1)
 
-    src_bpe_model, tgt_bpe_model = load_tokenizers(run_dir)
+    src_bpe_model, tgt_bpe_model = load_tokenizers(os.path.join('runs', args.tokenizer_run_name))
 
     model, _, _ = load_checkpoint_or_generate_new(args, run_dir, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, checkpoint_model_name=args.sacrebleu_score_model_name)
 

@@ -1,3 +1,4 @@
+from criteria.labelsmooth import LabelSmoothedCE
 from dataloader import SequenceLoader
 from prettytable import PrettyTable
 from torch.utils.tensorboard import SummaryWriter
@@ -505,6 +506,7 @@ if __name__ == '__main__':
     # the dim values summed up have to be divisible by the n_heads
     argparser.add_argument('--encoder_layer_self_attn_config', type=str, default=None)
     argparser.add_argument('--decoder_layer_self_attn_config', type=str, default=None)
+    argparser.add_argument('--kernel_sizes', type=str, default='3,5,7,9,11,15')
 
     argparser.add_argument('--start_epoch', type=int, default=0)
     argparser.add_argument('--tokens_in_batch', type=int, default=5000)
@@ -554,7 +556,10 @@ if __name__ == '__main__':
         args.__setattr__('encoder_layer_self_attn_config', f"MultiHeadAttention:{args.d_model}:{args.n_heads}")
 
     if args.decoder_layer_self_attn_config is None:
-        args.__setattr__('decoder_layer_self_attn_config', f"MultiHeadAttention:{args.d_model}:{args.n_heads}")
+        args.__setattr__('decoder_layer_self_attn_config', "shared")
+
+    if args.decoder_layer_self_attn_config == 'shared':
+        args.__setattr__('decoder_layer_self_attn_config', args.encoder_layer_self_attn_config)
 
     print(f"using learning rate {args.lr}")
 
