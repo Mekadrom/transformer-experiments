@@ -1,3 +1,4 @@
+from criteria.labelsmooth import LabelSmoothedCE
 from dataloader import SequenceLoader
 from prettytable import PrettyTable
 from torch.utils.tensorboard import SummaryWriter
@@ -484,7 +485,10 @@ if __name__ == '__main__':
 
     argparser.add_argument('--distillation_teacher_run_name', type=str, default=None)
 
-    argparser.add_argument('--d_model', type=int, default=512)
+    # ease of changing default
+    default_d_model = 512
+
+    argparser.add_argument('--d_model', type=int, default=default_d_model)
     argparser.add_argument('--n_heads', type=int, default=8)
     argparser.add_argument('--d_queries', type=int, default=64)
     argparser.add_argument('--d_values', type=int, default=64)
@@ -493,8 +497,16 @@ if __name__ == '__main__':
     argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)
     argparser.add_argument('--maxlen', type=int, default=150)
-    argparser.add_argument('--positional_encoding_type', type=str, default='rotary', choices=['rotary', 'sinusoidal'])
+    argparser.add_argument('--positional_encoding_type', type=str, default='rotary', choices=['rotary', 'sinusoidal', 'none'])
     argparser.add_argument('--rotary_positional_encoding_dim', type=int, default=64)
+    argparser.add_argument('--qkv_config', type=str, default='qkv', choices=['qkv', 'kv+pos', 'kv'])
+
+    # values configured like so: "LayerType:LayerDim,LayerType:LayerDim,..."
+    # eg "MultiHeadAttention:512,LightweightConv1d:256,DynamicConv1d:256"
+    # the dim values summed up have to be divisible by the n_heads
+    argparser.add_argument('--encoder_layer_self_attn_config', type=str, default=None)
+    argparser.add_argument('--decoder_layer_self_attn_config', type=str, default=None)
+    argparser.add_argument('--kernel_sizes', type=str, default='3,5,7,9,11,15')
 
     argparser.add_argument('--start_epoch', type=int, default=0)
     argparser.add_argument('--tokens_in_batch', type=int, default=5000)
@@ -539,6 +551,15 @@ if __name__ == '__main__':
 
     args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
     args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))
+
+    if args.encoder_layer_self_attn_config is None:
+        args.__setattr__('encoder_layer_self_attn_config', f"MultiHeadAttention:{args.d_model}:{args.n_heads}")
+
+    if args.decoder_layer_self_attn_config is None:
+        args.__setattr__('decoder_layer_self_attn_config', "shared")
+
+    if args.decoder_layer_self_attn_config == 'shared':
+        args.__setattr__('decoder_layer_self_attn_config', args.encoder_layer_self_attn_config)
 
     print(f"using learning rate {args.lr}")
 
