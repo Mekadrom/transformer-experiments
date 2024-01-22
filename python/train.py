@@ -11,6 +11,8 @@ import time
 import torch
 import torch.backends.cudnn as cudnn
 
+torch.autograd.set_detect_anomaly(True)
+
 """
     This entire project is a heavily modified version of https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Transformers. Credit to them for the workflow and the implementation of most of the transformer model architecture code in transformer_provider.py.
 """

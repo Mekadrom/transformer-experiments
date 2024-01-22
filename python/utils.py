@@ -68,7 +68,7 @@ def get_positional_encoding(args):
         positional_encoding = get_buffered_positional_encoding(
             d_model=args.d_model,
             maxlen=args.maxlen+1,
-        )
+        ).to(args.device)
     elif args.positional_encoding_type == 'rotary':
         positional_encoding = RotaryEmbedding(dim=args.rotary_positional_encoding_dim)
     return positional_encoding

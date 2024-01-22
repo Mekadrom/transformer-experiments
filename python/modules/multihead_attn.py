@@ -79,6 +79,13 @@ class MultiHeadAttention(nn.Module):
             key_sequences = self.layer_norm(key_sequences) # (N, key_value_sequence_pad_length, d_model)
             value_sequences = self.layer_norm(value_sequences) # (N, key_value_sequence_pad_length, d_model)
 
+        if self.args.qkv_config == 'kv+pos' and type(self.positional_encoding) != RotaryEmbedding:
+            pos = self.positional_encoding[:, :key_value_sequence_pad_length, :] # (1, key_value_sequence_pad_length, d_model)
+            print(f"sequences: {key_sequences.shape}")
+            print(f"pos: {pos.shape}")
+            key_sequences = key_sequences + pos # (N, n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+            print(f"key_sequences: {key_sequences.shape}")
+
         # Project input sequences to queries, keys, values
         queries = self.cast_queries(query_sequences) # (N, query_sequence_pad_length, n_heads * d_queries)
         keys = self.cast_keys(key_sequences) # (N, key_value_sequence_pad_length, n_heads * d_keys)
@@ -110,10 +117,12 @@ class MultiHeadAttention(nn.Module):
 
         # Perform dot-products
         if self.args.qkv_config == 'kv+pos' and type(self.positional_encoding) != RotaryEmbedding:
-            # todo: figure this out
-            pos = self.positional_encoding[:key_value_sequence_pad_length, :].unsqueeze(0) # (1, key_value_sequence_pad_length, d_model)
-            attention_weights = torch.bmm(keys, keys.permute(0, 2, 1)) / math.sqrt(int(self.args.d_model / self.args.n_heads)) # (N, key_value_sequence_pad_length, key_value_sequence_pad_length)
-            attention_weights = attention_weights + pos # (N, query_sequence_pad_length, key_value_sequence_pad_length)
+            print(f"queries: {queries.shape}")
+            print(f"keys: {keys.shape}")
+            print(f"values: {values.shape}")
+            print(f"keys.permute(0, 2, 1): {keys.permute(0, 2, 1).shape}")
+            attention_weights = torch.bmm(keys if query_sequence_pad_length == key_value_sequence_pad_length else queries, keys.permute(0, 2, 1)) / math.sqrt(int(self.args.d_model / self.args.n_heads)) # (N, key_value_sequence_pad_length, key_value_sequence_pad_length)
+            print(f"attention_weights: {attention_weights.shape}")
         else:
             attention_weights = torch.bmm(queries, keys.permute(0, 2, 1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
