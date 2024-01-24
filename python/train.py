@@ -84,8 +84,8 @@ class Trainer():
         target_tokens = tgt_bpe_model.decode(target_sequence[0].tolist())
         target_sequence_length = target_sequence.size(1)
 
-        input_sequence = self.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
-        input_sequence = self.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
+        input_sequence = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
+        input_sequence = model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
         # input_sequence = self.apply_dropout(input_sequence) # (N, pad_length, d_model) # don't apply dropout for visualization
 
         for e, encoder_layer in enumerate(model.encoder.encoder_layers):
@@ -100,8 +100,8 @@ class Trainer():
 
         input_sequence = model.encoder.layer_norm(input_sequence)
 
-        target_sequence = self.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
-        target_sequence = self.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
+        target_sequence = model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
+        target_sequence = model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
         # target_sequence = self.apply_dropout(target_sequence) # (N, pad_length, d_model) # don't apply dropout for visualization
 
         for d, decoder_layer in enumerate(model.decoder.decoder_layers):
