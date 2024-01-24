@@ -79,10 +79,10 @@ class Trainer():
     def visualize_attention_weights(self, args, model, src_bpe_model, tgt_bpe_model, src, tgt, step, summary_writer):
         input_sequence = torch.LongTensor(src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(args.device) # (1, input_sequence_length)
         input_tokens = src_bpe_model.decode(input_sequence[0].tolist())
-        input_sequence_length = input_sequence.size(1)
+        input_sequence_length = torch.LongTensor(input_sequence.size(1)).unsqueeze(0).to(args.device) # (1)
         target_sequence = torch.LongTensor(tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0).to(args.device) # (1, target_sequence_length)
         target_tokens = tgt_bpe_model.decode(target_sequence[0].tolist())
-        target_sequence_length = target_sequence.size(1)
+        target_sequence_length = torch.LongTensor(target_sequence.size(1)).unsqueeze(0).to(args.device) # (1)
 
         input_sequence = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
         input_sequence = model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
