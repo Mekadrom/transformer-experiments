@@ -61,7 +61,7 @@ class Trainer():
             
             print("\nValidation loss: %.3f\n\n" % losses.avg)
 
-            self.visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, "", "", step, summary_writer)
+            self.visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", step, summary_writer)
 
     def evaluate(self, args, model, src_bpe_model, tgt_bpe_model, src, tgt):
         best, _ = beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
