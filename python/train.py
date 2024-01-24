@@ -6,10 +6,15 @@ from tqdm import tqdm
 from utils import *
 
 import argparse
+import io
+import matplotlib.pyplot as plt
+import numpy as np
 import os
+import seaborn as sns
 import time
 import torch
 import torch.backends.cudnn as cudnn
+
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -19,8 +24,121 @@ torch.autograd.set_detect_anomaly(True)
 class Trainer():
     def train(self, args, model_name_prefix=''):
         raise NotImplementedError
+    
+    def validate_epoch(self, args, step, val_loader, model, src_bpe_model, tgt_bpe_model, criterion, summary_writer):
+        """
+        One epoch's validation.
+
+        :param val_loader: loader for validation data
+        :param model: model
+        :param criterion: label-smoothed cross-entropy loss
+        """
+        model.eval()  # eval mode disables dropout
+
+        # Prohibit gradient computation explicitly
+        with torch.no_grad():
+            losses = AverageMeter()
+            # Batches
+            for i, (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in enumerate(tqdm(val_loader, total=val_loader.n_batches)):
+                source_sequence = source_sequence.to(args.device) # (1, source_sequence_length)
+                target_sequence = target_sequence.to(args.device) # (1, target_sequence_length)
+                source_sequence_length = source_sequence_length.to(args.device) # (1)
+                target_sequence_length = target_sequence_length.to(args.device) # (1)
+
+                # Forward prop.
+                predicted_sequence = model(source_sequence, target_sequence, source_sequence_length, target_sequence_length) # (1, target_sequence_length, vocab_size)
+
+                # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
+                # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
+                # Therefore, pads start after (length - 1) positions
+                loss = criterion(inputs=predicted_sequence, targets=target_sequence[:, 1:], lengths=target_sequence_length - 1) # scalar
+
+                # Keep track of losses
+                losses.update(loss.item(), (target_sequence_length - 1).sum().item())
+
+            # Log to TensorBoard
+            summary_writer.add_scalar('Validation Loss', losses.avg, step)
+            
+            print("\nValidation loss: %.3f\n\n" % losses.avg)
+
+            self.visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, "", "", step, summary_writer)
+
+    def evaluate(self, args, model, src_bpe_model, tgt_bpe_model, src, tgt):
+        best, _ = beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
+
+        debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
+        debug_validate_table.add_row([src, best, tgt])
+
+        console_size = os.get_terminal_size()
+        debug_validate_table.max_width = (console_size.columns // 3) - 15
+        debug_validate_table.min_width = (console_size.columns // 3) - 15
+
+        print(f"src: {src} | prediction: {best} | actual: {tgt}")
+        print(debug_validate_table)
+
+    def visualize_attention_weights(self, args, model, src_bpe_model, tgt_bpe_model, src, tgt, step, summary_writer):
+        input_sequence = torch.LongTensor(src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(args.device) # (1, input_sequence_length)
+        input_tokens = src_bpe_model.decode(input_sequence[0].tolist())
+        input_sequence_length = input_sequence.size(1)
+        target_sequence = torch.LongTensor(tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0).to(args.device) # (1, target_sequence_length)
+        target_tokens = tgt_bpe_model.decode(target_sequence[0].tolist())
+        target_sequence_length = target_sequence.size(1)
+
+        input_sequence = self.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
+        input_sequence = self.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
+        # input_sequence = self.apply_dropout(input_sequence) # (N, pad_length, d_model) # don't apply dropout for visualization
+
+        for e, encoder_layer in enumerate(model.encoder.encoder_layers):
+            input_sequence, activation_weights = encoder_layer[0](query_sequences=input_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length)
+
+            # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
+            for i in range(activation_weights.size(1)):
+                image_data = self.visualize_attention_weights_for_layer(activation_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, input_tokens, input_sequence_length)
+                summary_writer.add_image(f"Encoder Layer {e} Head {i} Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+
+            input_sequence = encoder_layer[1](sequences=input_sequence) # (N, pad_length, d_model)
+
+        input_sequence = model.encoder.layer_norm(input_sequence)
+
+        target_sequence = self.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
+        target_sequence = self.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
+        # target_sequence = self.apply_dropout(target_sequence) # (N, pad_length, d_model) # don't apply dropout for visualization
+
+        for d, decoder_layer in enumerate(model.decoder.decoder_layers):
+            target_sequence, activation_weights = decoder_layer[0](query_sequences=target_sequence, key_sequences=target_sequence, value_sequences=target_sequence, key_value_sequence_lengths=target_sequence_length) # (N, pad_length, d_model)
+            
+            # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
+            for i in range(activation_weights.size(1)):
+                image_data = self.visualize_attention_weights_for_layer(activation_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), target_tokens, target_sequence_length, target_tokens, target_sequence_length)
+                summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+
+            target_sequence, activation_weights = decoder_layer[2](query_sequences=target_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length) # (N, pad_length, d_model)
+
+            # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
+            for i in range(activation_weights.size(1)):
+                image_data = self.visualize_attention_weights_for_layer(activation_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, target_tokens, target_sequence_length)
+                summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+
+            target_sequence = decoder_layer[3](sequences=target_sequence) # (N, pad_length, d_model)
+
+    def visualize_attention_weights_for_layer(self, stack_name, layer_num, head_num, activation_weights, input_tokens, input_sequence_length, output_tokens, output_sequence_length):
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(activation_weights, annot=True, fmt=".2f", xticklabels=input_tokens, yticklabels=output_tokens, ax=ax)
+        plt.xlabel("Tokens")
+        plt.ylabel("Tokens")
+        # plt.title(f"{stack_name} Layer {layer_num} Head {head_num} Attn Weights")
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close(fig)
+        buf.seek(0)
+
+        return buf
 
 class DistillationTrainer(Trainer):
+    def __init__(self):
+        self.sacrebleu_epochs = []
+
     def train(self, args, model_name_prefix=''):
         run_dir = os.path.join('runs', args.run_name)
 
@@ -37,7 +155,7 @@ class DistillationTrainer(Trainer):
 
         print_model(distilled_model)
         print(f"Optimizer: {optimizer}")
-        print(f"Positional Encoding: {positional_encoding}")
+        print(f"Positional Encoding: {positional_encoding.shape if type(positional_encoding) == torch.Tensor else positional_encoding}")
 
         train_loader, val_loader, test_loader = load_data(args.tokens_in_batch, bpe_run_dir, src_bpe_model, tgt_bpe_model)
 
@@ -60,6 +178,8 @@ class DistillationTrainer(Trainer):
             step=steps,
             teacher_model=teacher_model,
             distilled_model=distilled_model,
+            src_bpe_model=src_bpe_model,
+            tgt_bpe_model=tgt_bpe_model,
             criterion=criterion,
             summary_writer=summary_writer
         )
@@ -114,7 +234,7 @@ class DistillationTrainer(Trainer):
         start_step_time = time.time()
 
         # Batches
-        for i, (source_sequences, _, source_sequence_lengths, _) in enumerate(train_loader): # trash target sequences
+        for i, (source_sequences, target_sequences, source_sequence_lengths, _) in enumerate(train_loader):
             # Move to default device
             source_sequences = source_sequences.to(args.device) # (N, max_source_sequence_pad_length_this_batch)
             target_sequences = target_sequences.to(args.device) # (N, max_target_sequence_pad_length_this_batch)
@@ -185,6 +305,11 @@ class DistillationTrainer(Trainer):
                         src='Anyone who retains the ability to recognise beauty will never become old.',
                         tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.',
                     )
+
+                if step >= args.n_steps // 2 and epoch not in self.sacrebleu_epochs:
+                    sacrebleu = sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, distilled_model, sacrebleu_in_python=True)
+                    summary_writer.add_scalar('SacreBLEU', sacrebleu.score, step)
+                    self.sacrebleu_epochs.append(epoch)
                     
                 # Log to TensorBoard
                 summary_writer.add_scalar('Training Loss', losses.avg, step)
@@ -201,56 +326,10 @@ class DistillationTrainer(Trainer):
 
         return step
 
-    def validate_epoch(self, args, step, val_loader, model, criterion, summary_writer):
-        """
-        One epoch's validation.
-
-        :param val_loader: loader for validation data
-        :param model: model
-        :param criterion: label-smoothed cross-entropy loss
-        """
-        model.eval()  # eval mode disables dropout
-
-        # Prohibit gradient computation explicitly
-        with torch.no_grad():
-            losses = AverageMeter()
-            # Batches
-            for i, (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in enumerate(tqdm(val_loader, total=val_loader.n_batches)):
-                source_sequence = source_sequence.to(args.device) # (1, source_sequence_length)
-                target_sequence = target_sequence.to(args.device) # (1, target_sequence_length)
-                source_sequence_length = source_sequence_length.to(args.device) # (1)
-                target_sequence_length = target_sequence_length.to(args.device) # (1)
-
-                # Forward prop.
-                predicted_sequence = model(source_sequence, target_sequence, source_sequence_length, target_sequence_length) # (1, target_sequence_length, vocab_size)
-
-                # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
-                # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
-                # Therefore, pads start after (length - 1) positions
-                loss = criterion(inputs=predicted_sequence, targets=target_sequence[:, 1:], lengths=target_sequence_length - 1) # scalar
-
-                # Keep track of losses
-                losses.update(loss.item(), (target_sequence_length - 1).sum().item())
-
-            # Log to TensorBoard
-            summary_writer.add_scalar('Validation Loss', losses.avg, step)
-            
-            print("\nValidation loss: %.3f\n\n" % losses.avg)
-
-    def evaluate(self, args, model, src_bpe_model, tgt_bpe_model, src, tgt):
-        best, _ = beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
-
-        debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
-        debug_validate_table.add_row([src, best, tgt])
-
-        console_size = os.get_terminal_size()
-        debug_validate_table.max_width = (console_size.columns // 3) - 15
-        debug_validate_table.min_width = (console_size.columns // 3) - 15
-
-        print(f"src: {src} | prediction: {best} | actual: {tgt}")
-        print(debug_validate_table)
-
 class ClassicTrainer(Trainer):
+    def __init__(self):
+        self.sacrebleu_epochs = []
+
     def train(self, args, model_name_prefix=''):
         run_dir = os.path.join('runs', args.run_name)
 
@@ -265,7 +344,7 @@ class ClassicTrainer(Trainer):
 
         print_model(model)
         print(f"Optimizer: {optimizer}")
-        print(f"Positional Encoding: {positional_encoding}")
+        print(f"Positional Encoding: {positional_encoding.shape if type(positional_encoding) == torch.Tensor else positional_encoding}")
 
         train_loader, val_loader, test_loader = load_data(args.tokens_in_batch, bpe_run_dir, src_bpe_model, tgt_bpe_model)
 
@@ -288,6 +367,8 @@ class ClassicTrainer(Trainer):
             val_loader=val_loader,
             step=steps,
             model=model,
+            src_bpe_model=src_bpe_model,
+            tgt_bpe_model=tgt_bpe_model,
             criterion=criterion,
             summary_writer=summary_writer
         )
@@ -323,6 +404,8 @@ class ClassicTrainer(Trainer):
                 val_loader=val_loader,
                 step=step,
                 model=model,
+                src_bpe_model=src_bpe_model,
+                tgt_bpe_model=tgt_bpe_model,
                 criterion=criterion,
                 summary_writer=summary_writer
             )
@@ -414,6 +497,11 @@ class ClassicTrainer(Trainer):
                         src='Anyone who retains the ability to recognise beauty will never become old.',
                         tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.',
                     )
+
+                if step >= args.n_steps // 2 and epoch not in self.sacrebleu_epochs:
+                    sacrebleu = sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, distilled_model, sacrebleu_in_python=True)
+                    summary_writer.add_scalar('SacreBLEU', sacrebleu.score, step)
+                    self.sacrebleu_epochs.append(epoch)
                     
                 # Log to TensorBoard
                 summary_writer.add_scalar('Training Loss', losses.avg, step)
@@ -429,55 +517,6 @@ class ClassicTrainer(Trainer):
             start_data_time = time.time()
 
         return step
-
-    def validate_epoch(self, args, step, val_loader, model, criterion, summary_writer):
-        """
-        One epoch's validation.
-
-        :param val_loader: loader for validation data
-        :param model: model
-        :param criterion: label-smoothed cross-entropy loss
-        """
-        model.eval()  # eval mode disables dropout
-
-        # Prohibit gradient computation explicitly
-        with torch.no_grad():
-            losses = AverageMeter()
-            # Batches
-            for i, (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in enumerate(tqdm(val_loader, total=val_loader.n_batches)):
-                source_sequence = source_sequence.to(args.device) # (1, source_sequence_length)
-                target_sequence = target_sequence.to(args.device) # (1, target_sequence_length)
-                source_sequence_length = source_sequence_length.to(args.device) # (1)
-                target_sequence_length = target_sequence_length.to(args.device) # (1)
-
-                # Forward prop.
-                predicted_sequence = model(source_sequence, target_sequence, source_sequence_length, target_sequence_length) # (1, target_sequence_length, vocab_size)
-
-                # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
-                # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
-                # Therefore, pads start after (length - 1) positions
-                loss = criterion(inputs=predicted_sequence, targets=target_sequence[:, 1:], lengths=target_sequence_length - 1) # scalar
-
-                # Keep track of losses
-                losses.update(loss.item(), (target_sequence_length - 1).sum().item())
-
-            # Log to TensorBoard
-            summary_writer.add_scalar('Validation Loss', losses.avg, step)
-            
-            print("\nValidation loss: %.3f\n\n" % losses.avg)
-
-    def evaluate(self, args, model, src_bpe_model, tgt_bpe_model, src, tgt):
-        best, _ = beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
-
-        debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
-        debug_validate_table.add_row([src, best, tgt])
-
-        console_size = os.get_terminal_size()
-        debug_validate_table.max_width = (console_size.columns // 3) - 15
-        debug_validate_table.min_width = (console_size.columns // 3) - 15
-
-        print(f"src: {src} | prediction: {best} | actual: {tgt}")
-        print(debug_validate_table)
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
@@ -498,10 +537,17 @@ if __name__ == '__main__':
     argparser.add_argument('--n_encoder_layers', type=int, default=6)
     argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)
-    argparser.add_argument('--maxlen', type=int, default=150)
-    argparser.add_argument('--positional_encoding_type', type=str, default='rotary', choices=['rotary', 'sinusoidal', 'none'])
-    argparser.add_argument('--rotary_positional_encoding_dim', type=int, default=64)
+
     argparser.add_argument('--qkv_config', type=str, default='qkv', choices=['qkv', 'kv+pos', 'kv'])
+
+    argparser.add_argument('--init_weights_from', type=str, default='glorot_uniform', choices=['glorot_uniform', 'glorot_normal', 'xavier_uniform', 'xavier_normal', 'kaiming_uniform', 'kaiming_normal', 'orthogonal'])
+    argparser.add_argument('--init_weights_gain', type=float, default=1.0)
+    argparser.add_argument('--use_admin', action='store_true')
+
+    argparser.add_argument('--maxlen', type=int, default=150)
+    argparser.add_argument('--positional_encoding_type', type=str, default='rotary', choices=['rotary', 'buffer', 'sinusoidal', 'none']) # buffer and sinusoidal refer to the same thing
+    argparser.add_argument('--positional_encoding_dim', type=int, default=64) # 64 makes sense for rotary, but not for kv+pos buffer/sinusoidal
+    argparser.add_argument('--learnable_positional_encoding', action='store_true', default=False)
 
     # values configured like so: "LayerType:LayerDim,LayerType:LayerDim,..."
     # eg "MultiHeadAttention:512,LightweightConv1d:256,DynamicConv1d:256"
@@ -550,6 +596,10 @@ if __name__ == '__main__':
 
     if len(unk) > 0:
         print(f"unknown arguments: {unk}")
+
+    if args.positional_encoding_type == 'rotary' and args.qkv_config != 'qkv':
+        print("rotary positional encoding only works with qkv_config=qkv")
+        exit(1)
 
     args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
     args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))

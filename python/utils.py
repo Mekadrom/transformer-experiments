@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from dataloader import SequenceLoader
+from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
 from tqdm import tqdm
 from transformer_provider import TransformerModelProvider
@@ -26,7 +27,7 @@ def get_lr(step, d_model, warmup_steps):
     """
     return 2. * math.pow(d_model, -0.5) * min(math.pow(step, -0.5), step * math.pow(warmup_steps, -1.5))
 
-def get_buffered_positional_encoding(d_model, maxlen=100):
+def get_buffered_positional_encoding(args, d_model, maxlen=100, num_dims=1):
     """
     Computes positional encoding as defined in the paper.
 
@@ -34,15 +35,20 @@ def get_buffered_positional_encoding(d_model, maxlen=100):
     :param max_length: maximum sequence length up to which positional encodings must be calculated
     :return: positional encoding, a tensor of size (1, max_length, d_model)
     """
-    positional_encoding = torch.zeros((maxlen, d_model))  # (max_length, d_model)
-    for i in range(maxlen):
-        for j in range(d_model):
-            if j % 2 == 0:
-                positional_encoding[i, j] = math.sin(i / math.pow(10000, j / d_model))
-            else:
-                positional_encoding[i, j] = math.cos(i / math.pow(10000, (j - 1) / d_model))
-
-    return positional_encoding.unsqueeze(0)  # (1, max_length, d_model)
+    if num_dims == 1:
+        positional_encoding = torch.zeros((maxlen, d_model)) # (max_length, d_model)
+        for i in range(maxlen):
+            for k in range(d_model):
+                if k % 2 == 0:
+                    positional_encoding[i, k] = math.sin(i / math.pow(10000, k / d_model))
+                else:
+                    positional_encoding[i, k] = math.cos(i / math.pow(10000, (k - 1) / d_model))
+        positional_encoding = positional_encoding.unsqueeze(0) # (1, max_length, d_model)
+    elif num_dims == 2:
+        positional_encoding_2d = PositionalEncoding2D(args.positional_encoding_dim).to(args.device)
+        positional_encoding = torch.zeros((1, maxlen, maxlen, args.positional_encoding_dim))
+        positional_encoding = positional_encoding_2d(positional_encoding.to(args.device))
+    return positional_encoding  # (1, max_length, d_model) or (1, max_length, max_length, d_model)
 
 def load_tokenizers(run_dir):
     src_tokenizer_file = os.path.join(run_dir, 'src_tokenizer.model')
@@ -65,12 +71,21 @@ def load_tokenizers(run_dir):
 
 def get_positional_encoding(args):
     if args.positional_encoding_type == 'sinusoidal' or args.positional_encoding_type == 'buffer':
-        positional_encoding = get_buffered_positional_encoding(
-            d_model=args.d_model,
-            maxlen=args.maxlen+1,
-        ).to(args.device)
+        if args.qkv_config == 'kv+pos':
+            positional_encoding = get_buffered_positional_encoding(
+                args,
+                d_model=args.d_model,
+                maxlen=args.maxlen+1,
+                num_dims=2
+            ).to(args.device)
+        else:
+            positional_encoding = get_buffered_positional_encoding(
+                args,
+                d_model=args.d_model,
+                maxlen=args.maxlen+1,
+            ).to(args.device)
     elif args.positional_encoding_type == 'rotary':
-        positional_encoding = RotaryEmbedding(dim=args.rotary_positional_encoding_dim)
+        positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
 
 def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar'):

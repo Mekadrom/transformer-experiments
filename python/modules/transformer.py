@@ -4,6 +4,7 @@ from .positionwise_fcn import PositionWiseFCNetwork
 from rotary_embedding_torch import RotaryEmbedding
 
 import math
+import torch
 import torch.nn as nn
 
 class Encoder(nn.Module):
@@ -37,21 +38,15 @@ class Encoder(nn.Module):
         self.n_layers = n_layers
         self.dropout = dropout
 
-        # An embedding layer
         self.embedding = nn.Embedding(vocab_size, d_model)
 
-        # Set the positional encoding tensor to be un-update-able, i.e. gradients aren't computed
-        if self.positional_encoding is not None and type(self.positional_encoding) != RotaryEmbedding:
-            self.positional_encoding.requires_grad = False
+        # disable gradients for buffer/sinusoidal positional encoding if gradients are not configured to be enabled
+        if type(self.positional_encoding) == torch.Tensor:
+            self.positional_encoding.requires_grad = args.learnable_positional_encoding
 
-        # Encoder layers
-        self.encoder_layers = self.make_encoder_layers(n_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers)
-
-        # Dropout layer
         self.apply_dropout = nn.Dropout(dropout)
-
-        # Layer-norm layer
         self.layer_norm = nn.LayerNorm(d_model)
+        self.encoder_layers = self.make_encoder_layers(n_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers)
 
     def make_encoder_layers(self, n_layers, param_sharing_type='none', m_independent_layers=0):
         layers = []
@@ -107,13 +102,13 @@ class Encoder(nn.Module):
         Creates a single layer in the Encoder by combining a multi-head attention sublayer and a position-wise FC sublayer.
         """
 
-        attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiCastAttention(
+        attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(
             args=self.args,
-            encoder_decoder_layer_index=idx,
-            attn_config=self.args.encoder_layer_self_attn_config,
-            d_queries=self.args.d_queries,
-            d_values=self.args.d_values,
-            dropout=self.args.dropout,
+            d_model=self.d_model,
+            n_heads=self.n_heads,
+            d_queries=self.d_queries,
+            d_values=self.d_values,
+            dropout=self.dropout,
             positional_encoding=self.positional_encoding,
             in_decoder=False
         )
@@ -124,7 +119,28 @@ class Encoder(nn.Module):
             dropout=self.dropout
         )
 
-        return [attn_layers, ffn]
+        layers = [attn_layers, ffn]
+
+        if self.args.use_admin:
+            layers.append(nn.Linear(self.d_model, self.d_model)) # add residual connection with learned parameters
+
+        return layers
+
+    def perform_embedding_transformation(self, encoder_sequences):
+        return self.embedding(encoder_sequences) * math.sqrt(self.d_model) # (N, pad_length, d_model)
+
+    def apply_positional_embedding(self, encoder_sequences):
+        pad_length = encoder_sequences.size(1)  # pad-length of this batch only, varies across batches
+
+        # 1D buffer/sinusoidal encoding is applied here. 2D buffer/sinusoidal encoding and rotary encoding are applied in the MultiHeadAttention layer(s)
+        if type(self.positional_encoding) == torch.Tensor and len(self.positional_encoding.shape) == 3:
+            encoder_sequences += self.positional_encoding[:, :pad_length, :].to(self.args.device)
+        return encoder_sequences
+    
+    def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, encoder_layer):
+        encoder_sequences, _ = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
+        encoder_sequences = encoder_layer[1](sequences=encoder_sequences) # (N, pad_length, d_model)
+        return encoder_sequences
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):
         """
@@ -134,24 +150,14 @@ class Encoder(nn.Module):
         :param encoder_sequence_lengths: true lengths of these sequences, a tensor of size (N)
         :return: encoded source language sequences, a tensor of size (N, pad_length, d_model)
         """
-        pad_length = encoder_sequences.size(1)  # pad-length of this batch only, varies across batches
-
-        # Sum vocab embeddings and position embeddings
-        encoder_sequences = self.embedding(encoder_sequences) * math.sqrt(self.d_model) # (N, pad_length, d_model)
-        if self.positional_encoding is not None and type(self.positional_encoding) != RotaryEmbedding:
-            # buffer encoding is applied here, rotary encoding is applied in the MultiHeadAttention layer
-            encoder_sequences += self.positional_encoding[:, :pad_length, :].to(self.args.device)
-
-        # Dropout
+        encoder_sequences = self.perform_embedding_transformation(encoder_sequences) # (N, pad_length, d_model)
+        encoder_sequences = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_dropout(encoder_sequences) # (N, pad_length, d_model)
 
-        # Encoder layers
         for encoder_layer in self.encoder_layers:
-            # Sublayers
-            encoder_sequences = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
-            encoder_sequences = encoder_layer[1](sequences=encoder_sequences) # (N, pad_length, d_model)
+            encoder_sequences = self.apply_encoder_layer(encoder_sequences, encoder_sequence_lengths, encoder_layer)
 
-        # Apply layer-norm
+        # post-LN
         encoder_sequences = self.layer_norm(encoder_sequences) # (N, pad_length, d_model)
 
         return encoder_sequences
@@ -187,23 +193,17 @@ class Decoder(nn.Module):
         self.n_layers = n_layers
         self.dropout = dropout
 
-        # An embedding layer
         self.embedding = nn.Embedding(vocab_size, d_model)
 
-        # Set the positional encoding tensor to be un-update-able, i.e. gradients aren't computed
-        if self.positional_encoding is not None and type(self.positional_encoding) != RotaryEmbedding:
-            self.positional_encoding.requires_grad = False
+        # disable gradients for buffer/sinusoidal positional encoding if gradients are not configured to be enabled
+        if type(self.positional_encoding) == torch.Tensor:
+            self.positional_encoding.requires_grad = args.learnable_positional_encoding
 
-        # Decoder layers
+        self.apply_dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(d_model)
         self.decoder_layers = self.make_decoder_layers(n_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers)
 
-        # Dropout layer
-        self.apply_dropout = nn.Dropout(dropout)
-
-        # Layer-norm layer
-        self.layer_norm = nn.LayerNorm(d_model)
-
-        # Output linear layer that will compute logits for the vocabulary
+        # classification layer for output language vocabulary
         self.fc = nn.Linear(d_model, vocab_size)
 
     def make_decoder_layers(self, n_layers, param_sharing_type='none', m_independent_layers=0):
@@ -260,10 +260,10 @@ class Decoder(nn.Module):
         Creates a single layer in the Decoder by combining two multi-head attention sublayers and a position-wise FC sublayer.
         """
 
-        self_attn = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiCastAttention(
+        self_attn = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(
             args=self.args,
-            encoder_decoder_layer_index=idx,
-            attn_config=self.args.decoder_layer_self_attn_config,
+            d_model=self.d_model,
+            n_heads=self.n_heads,
             d_queries=self.d_queries,
             d_values=self.d_values,
             dropout=self.dropout,
@@ -287,7 +287,27 @@ class Decoder(nn.Module):
             dropout=self.dropout
         )
 
-        return [self_attn, cross_attn, ffn]
+        layers = [self_attn, cross_attn, ffn]
+
+        if self.args.use_admin:
+            layers.append(nn.Linear(self.d_model, self.d_model)) # add residual connection with learned parameters
+
+        return layers
+    
+    def apply_embedding_transformation(self, decoder_sequences):
+        return self.embedding(decoder_sequences) * math.sqrt(self.d_model) # (N, pad_length, d_model)
+    
+    def apply_positional_embedding(self, decoder_sequences):
+        pad_length = decoder_sequences.size(1)  # pad-length of this batch only, varies across batches
+        if type(self.positional_encoding) == torch.Tensor and len(self.positional_encoding.shape) == 3:
+            decoder_sequences += self.positional_encoding[:, :pad_length, :].to(self.args.device)
+        return decoder_sequences
+    
+    def apply_decoder_layer(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer):
+        decoder_sequences, _ = decoder_layer[0](query_sequences=decoder_sequences, key_sequences=decoder_sequences, value_sequences=decoder_sequences, key_value_sequence_lengths=decoder_sequence_lengths) # (N, pad_length, d_model), trash attention_weights
+        decoder_sequences, _ = decoder_layer[1](query_sequences=decoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
+        decoder_sequences = decoder_layer[2](sequences=decoder_sequences) # (N, pad_length, d_model)
+        return decoder_sequences
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
         """
@@ -299,27 +319,14 @@ class Decoder(nn.Module):
         :param encoder_sequence_lengths: true lengths of these sequences, a tensor of size (N)
         :return: decoded target language sequences, a tensor of size (N, pad_length, vocab_size)
         """
-        pad_length = decoder_sequences.size(1)  # pad-length of this batch only, varies across batches
-
-        # Sum vocab embeddings and position embeddings
-        decoder_sequences = self.embedding(decoder_sequences) * math.sqrt(self.d_model) # (N, pad_length, d_model)
-        if self.positional_encoding is not None and type(self.positional_encoding) != RotaryEmbedding:
-            decoder_sequences += self.positional_encoding[:, :pad_length, :].to(self.args.device)
-
-        # Dropout
+        decoder_sequences = self.apply_embedding_transformation(decoder_sequences) # (N, pad_length, d_model)
+        decoder_sequences = self.apply_positional_embedding(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_dropout(decoder_sequences)
 
-        # Decoder layers
         for decoder_layer in self.decoder_layers:
-            # Sublayers
-            decoder_sequences = decoder_layer[0](query_sequences=decoder_sequences, key_sequences=decoder_sequences, value_sequences=decoder_sequences, key_value_sequence_lengths=decoder_sequence_lengths) # (N, pad_length, d_model)
-            decoder_sequences = decoder_layer[1](query_sequences=decoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
-            decoder_sequences = decoder_layer[2](sequences=decoder_sequences) # (N, pad_length, d_model)
+            decoder_sequences = self.apply_decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer)
 
-        # Apply layer-norm
         decoder_sequences = self.layer_norm(decoder_sequences)  # (N, pad_length, d_model)
-
-        # Find logits over vocabulary
         decoder_sequences = self.fc(decoder_sequences)  # (N, pad_length, vocab_size)
 
         return decoder_sequences
@@ -329,7 +336,7 @@ class Transformer(nn.Module):
     The Transformer network.
     """
 
-    def __init__(self, args, src_vocab_size, tgt_vocab_size, positional_encoding, tie_embeddings=True, d_model=512, n_heads=8, d_queries=64, d_values=64, d_inner=2048, n_encoder_layers=6, n_decoder_layers=6, dropout=0.1):
+    def __init__(self, args, src_vocab_size, tgt_vocab_size, positional_encoding, tie_embeddings=True, d_model=512, n_heads=8, d_queries=64, d_values=64, d_inner=2048, n_encoder_layers=6, n_decoder_layers=6, dropout=0.1, use_admin=False):
         """
         :param vocab_size: size of the (shared) vocabulary
         :param positional_encoding: positional encodings up to the maximum possible pad-length
@@ -357,6 +364,7 @@ class Transformer(nn.Module):
         self.n_encoder_layers = n_encoder_layers
         self.n_decoder_layers = n_decoder_layers
         self.dropout = dropout
+        self.use_admin = use_admin
 
         # Encoder
         self.encoder = Encoder(
@@ -369,7 +377,7 @@ class Transformer(nn.Module):
             d_values=d_values,
             d_inner=d_inner,
             n_layers=n_encoder_layers,
-            dropout=dropout
+            dropout=dropout,
         )
 
         # Decoder
@@ -383,7 +391,7 @@ class Transformer(nn.Module):
             d_values=d_values,
             d_inner=d_inner,
             n_layers=n_decoder_layers,
-            dropout=dropout
+            dropout=dropout,
         )
 
         # Initialize weights
@@ -393,11 +401,22 @@ class Transformer(nn.Module):
         """
         Initialize weights in the transformer model.
         """
-        # Glorot uniform initialization with a gain of 1.
+        # Glorot uniform initialization with a gain of self.args.init_weights_gain
         for p in self.parameters():
             # Glorot initialization needs at least two dimensions on the tensor
             if p.dim() > 1:
-                nn.init.xavier_uniform_(p, gain=1.)
+                if self.args.init_weights_from in ['glorot_uniform', 'xavier_uniform']:
+                    nn.init.xavier_uniform_(p, gain=self.args.init_weights_gain)
+                elif self.args.init_weights_from in ['glorot_normal', 'xavier_normal']:
+                    nn.init.xavier_normal_(p, gain=self.args.init_weights_gain)
+                elif self.args.init_weights_from == 'kaiming_uniform':
+                    nn.init.kaiming_uniform_(p)
+                elif self.args.init_weights_from == 'kaiming_normal':
+                    nn.init.kaiming_normal_(p)
+                elif self.args.init_weights_from == 'orthogonal':
+                    nn.init.orthogonal_(p)
+                else:
+                    raise Exception(f"Unknown weight initialization method: {self.args.init_weights_from}")
 
         # Share weights between the embedding layers and the logit layer
         nn.init.normal_(self.encoder.embedding.weight, mean=0., std=math.pow(self.d_model, -0.5))
@@ -405,6 +424,35 @@ class Transformer(nn.Module):
 
         if tie_embeddings:
             self.decoder.fc.weight = self.decoder.embedding.weight
+
+        if self.args.use_admin:
+            for encoder_layer in self.encoder.encoder_layers:
+                nn.init.ones_(encoder_layer[-1].weight)
+            for decoder_layer in self.decoder.decoder_layers:
+                nn.init.ones_(decoder_layer[-1].weight)
+
+            input_sequence = torch.randn(1, 1, self.d_model)
+
+            input_sequence = self.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
+            input_sequence = self.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
+            # input_sequence = self.encoder.apply_dropout(input_sequence) # (N, pad_length, d_model) # don't apply dropout here
+
+            # todo: need to fix so that each successive variance is calculated using the newly calculated variance weights, not the previous values that uses all ones
+
+            variance_so_far = 0
+            for encoder_layer in self.encoder.encoder_layers:
+                input_sequence = self.encoder.apply_encoder_layer(input_sequence, 1, encoder_layer)
+                variance_so_far += torch.var(input_sequence)
+
+                encoder_layer[-1].weight.data = torch.fill_(encoder_layer[-1].weight.data, variance_so_far.item())
+
+            input_sequence = self.encoder.layer_norm(input_sequence) # (N, pad_length, d_model)
+
+            for decoder_layer in self.decoder.decoder_layers:
+                input_sequence = self.decoder.apply_decoder_layer(torch.randn(1, 1, self.d_model), 1, input_sequence, 1, decoder_layer)
+                variance_so_far += torch.var(input_sequence)
+
+                decoder_layer[-1].weight.data = torch.fill_(decoder_layer[-1].weight.data, variance_so_far.item())
 
         print("Model initialized.")
 

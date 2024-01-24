@@ -34,10 +34,12 @@ class MultiHeadAttention(nn.Module):
 
         # A linear projection to cast (n_heads sets of) queries from the input query sequences
         self.cast_queries = nn.Linear(d_model, n_heads * d_queries)
-
         # A linear projection to cast (n_heads sets of) keys and values from the input reference sequences
         self.cast_keys = nn.Linear(d_model, n_heads * self.d_keys)
         self.cast_values = nn.Linear(d_model, n_heads * self.d_values)
+
+        if self.args.qkv_config == 'kv+pos':
+            self.map_pos = nn.Linear(self.args.positional_encoding_dim, 1, bias=True)
 
         # A linear projection to cast (n_heads sets of) computed attention-weighted vectors to output vectors (of the same size as input query vectors)
         self.cast_output = nn.Linear(n_heads * d_values, d_model)
@@ -51,7 +53,7 @@ class MultiHeadAttention(nn.Module):
         # Dropout layer
         self.apply_dropout = nn.Dropout(dropout)
 
-    def forward(self, query_sequences, key_sequences, value_sequences, key_value_sequence_lengths):
+    def forward(self, query_sequences: torch.Tensor, key_sequences: torch.Tensor, value_sequences: torch.Tensor, key_value_sequence_lengths):
         """
         Forward prop.
 
@@ -79,17 +81,10 @@ class MultiHeadAttention(nn.Module):
             key_sequences = self.layer_norm(key_sequences) # (N, key_value_sequence_pad_length, d_model)
             value_sequences = self.layer_norm(value_sequences) # (N, key_value_sequence_pad_length, d_model)
 
-        if self.args.qkv_config == 'kv+pos' and type(self.positional_encoding) != RotaryEmbedding:
-            pos = self.positional_encoding[:, :key_value_sequence_pad_length, :] # (1, key_value_sequence_pad_length, d_model)
-            print(f"sequences: {key_sequences.shape}")
-            print(f"pos: {pos.shape}")
-            key_sequences = key_sequences + pos # (N, n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
-            print(f"key_sequences: {key_sequences.shape}")
-
         # Project input sequences to queries, keys, values
-        queries = self.cast_queries(query_sequences) # (N, query_sequence_pad_length, n_heads * d_queries)
-        keys = self.cast_keys(key_sequences) # (N, key_value_sequence_pad_length, n_heads * d_keys)
-        values = self.cast_values(value_sequences) # (N, key_value_sequence_pad_length, n_heads * d_values)
+        queries: torch.Tensor = self.cast_queries(query_sequences) # (N, query_sequence_pad_length, n_heads * d_queries)
+        keys: torch.Tensor = self.cast_keys(key_sequences) # (N, key_value_sequence_pad_length, n_heads * d_keys)
+        values: torch.Tensor = self.cast_values(value_sequences) # (N, key_value_sequence_pad_length, n_heads * d_values)
 
         # Split the last dimension by the n_heads subspaces
         queries = queries.contiguous().view(batch_size, query_sequence_pad_length, self.n_heads, self.d_queries) # (N, query_sequence_pad_length, n_heads, d_queries)
@@ -101,29 +96,40 @@ class MultiHeadAttention(nn.Module):
         keys = keys.permute(0, 2, 1, 3)
         values = values.permute(0, 2, 1, 3)
 
-        # RoPE is applied to the queries and keys after the heads are split out but before the dot product for attention and subsequent softmax operations
-        if self.positional_encoding is not None and type(self.positional_encoding) == RotaryEmbedding:
-            # queries and keys are of shape (N, n_heads, seq len, d_queries/d_keys)
-            queries = self.positional_encoding.rotate_queries_or_keys(queries)
-            keys = self.positional_encoding.rotate_queries_or_keys(keys)
-
-        # And then, for convenience, convert to 3D tensors by merging the batch and n_heads dimensions
-        # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
-        queries = queries.contiguous().view(-1, query_sequence_pad_length, self.d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
-        keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.d_keys) # (N * n_heads, key_value_sequence_pad_length, d_keys)
-        values = values.contiguous().view(-1, key_value_sequence_pad_length, self.d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
-
         # Perform multi-head attention
 
         # Perform dot-products
-        if self.args.qkv_config == 'kv+pos' and type(self.positional_encoding) != RotaryEmbedding:
-            print(f"queries: {queries.shape}")
-            print(f"keys: {keys.shape}")
-            print(f"values: {values.shape}")
-            print(f"keys.permute(0, 2, 1): {keys.permute(0, 2, 1).shape}")
-            attention_weights = torch.bmm(keys if query_sequence_pad_length == key_value_sequence_pad_length else queries, keys.permute(0, 2, 1)) / math.sqrt(int(self.args.d_model / self.args.n_heads)) # (N, key_value_sequence_pad_length, key_value_sequence_pad_length)
-            print(f"attention_weights: {attention_weights.shape}")
+        if self.args.qkv_config == 'kv+pos':
+            B, H, N, _ = queries.shape
+            B, H, M, _ = keys.shape
+
+            tmp = keys if N == M else queries
+
+            attention_weights = torch.matmul(tmp, keys.transpose(-2, -1)) / math.sqrt(self.n_heads) # (N, query_sequence_pad_length, key_value_sequence_pad_length)
+
+            pos = self.positional_encoding[:, :query_sequence_pad_length, :key_value_sequence_pad_length, :] # (1, query_sequence_pad_length, key_value_sequence_pad_length, d_model)
+            attention_weights = attention_weights.unsqueeze(-1) + pos.unsqueeze(0) # (N, query_sequence_pad_length, key_value_sequence_pad_length, d_model)
+            attention_weights = self.map_pos(attention_weights).squeeze(-1)
+
+            attention_weights = attention_weights.contiguous().view(-1, query_sequence_pad_length, key_value_sequence_pad_length) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+
+            # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
+            # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
+            queries = queries.contiguous().view(-1, query_sequence_pad_length, self.d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
+            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.d_keys) # (N * n_heads, key_value_sequence_pad_length, d_keys)
+            values = values.contiguous().view(-1, key_value_sequence_pad_length, self.d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
         else:
+            # RoPE is applied to the queries and keys after the heads are split out but before the dot product for attention and subsequent softmax operations
+            if type(self.positional_encoding) == RotaryEmbedding:
+                # queries and keys are of shape (N, n_heads, seq len, d_queries/d_keys)
+                queries = self.positional_encoding.rotate_queries_or_keys(queries)
+                keys = self.positional_encoding.rotate_queries_or_keys(keys)
+                
+            # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
+            # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
+            queries = queries.contiguous().view(-1, query_sequence_pad_length, self.d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
+            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.d_keys) # (N * n_heads, key_value_sequence_pad_length, d_keys)
+            values = values.contiguous().view(-1, key_value_sequence_pad_length, self.d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
             attention_weights = torch.bmm(queries, keys.permute(0, 2, 1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # Scale dot-products
@@ -172,4 +178,4 @@ class MultiHeadAttention(nn.Module):
         # Apply dropout and residual connection
         sequences = self.apply_dropout(sequences) + input_to_add # (N, query_sequence_pad_length, d_model)
 
-        return sequences
+        return sequences, attention_weights # return attention weights for visualization

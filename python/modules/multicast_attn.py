@@ -76,4 +76,5 @@ class MultiCastAttention(nn.Module):
                 v = value_sequences[..., start:start + layer.d_model]
                 layer_outputs.append(layer(q, k, v, key_value_sequence_lengths))
                 start += layer.d_model
-            return torch.cat(layer_outputs, dim=-1)
+
+            return torch.cat([layer_output[0] if type(layer_output) in [tuple, list] else layer_output for layer_output in layer_outputs], dim=-1)
