@@ -53,7 +53,7 @@ class MultiHeadAttention(nn.Module):
         # Dropout layer
         self.apply_dropout = nn.Dropout(dropout)
 
-    def forward(self, query_sequences: torch.Tensor, key_sequences: torch.Tensor, value_sequences: torch.Tensor, key_value_sequence_lengths):
+    def forward(self, query_sequences: torch.Tensor, key_sequences: torch.Tensor, value_sequences: torch.Tensor, key_value_sequence_lengths: torch.Tensor):
         """
         Forward prop.
 
