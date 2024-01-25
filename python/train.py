@@ -89,11 +89,13 @@ class Trainer():
         # input_sequence = self.apply_dropout(input_sequence) # (N, pad_length, d_model) # don't apply dropout for visualization
 
         for e, encoder_layer in enumerate(model.encoder.encoder_layers):
-            input_sequence, activation_weights = encoder_layer[0](query_sequences=input_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length)
+            input_sequence, attention_weights = encoder_layer[0](query_sequences=input_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length)
+
+            attention_weights = attention_weights.cpu().detach()
 
             # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
-            for i in range(activation_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer(activation_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, input_tokens, input_sequence_length)
+            for i in range(attention_weights.size(1)):
+                image_data = self.visualize_attention_weights_for_layer(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, input_tokens, input_sequence_length)
                 summary_writer.add_image(f"Encoder Layer {e} Head {i} Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             input_sequence = encoder_layer[1](sequences=input_sequence) # (N, pad_length, d_model)
@@ -105,18 +107,22 @@ class Trainer():
         # target_sequence = self.apply_dropout(target_sequence) # (N, pad_length, d_model) # don't apply dropout for visualization
 
         for d, decoder_layer in enumerate(model.decoder.decoder_layers):
-            target_sequence, activation_weights = decoder_layer[0](query_sequences=target_sequence, key_sequences=target_sequence, value_sequences=target_sequence, key_value_sequence_lengths=target_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights = decoder_layer[0](query_sequences=target_sequence, key_sequences=target_sequence, value_sequences=target_sequence, key_value_sequence_lengths=target_sequence_length) # (N, pad_length, d_model)
             
+            attention_weights = attention_weights.cpu().detach()
+
+            attention_weights.reshape(-1, args.n_heads, attention_weights.size(1), attention_weights.size(2))
+
             # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
-            for i in range(activation_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer(activation_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), target_tokens, target_sequence_length, target_tokens, target_sequence_length)
+            for i in range(attention_weights.size(1)):
+                image_data = self.visualize_attention_weights_for_layer(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), target_tokens, target_sequence_length, target_tokens, target_sequence_length)
                 summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence, activation_weights = decoder_layer[2](query_sequences=target_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights = decoder_layer[2](query_sequences=target_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length) # (N, pad_length, d_model)
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
-            for i in range(activation_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer(activation_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, target_tokens, target_sequence_length)
+            for i in range(attention_weights.size(1)):
+                image_data = self.visualize_attention_weights_for_layer(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, target_tokens, target_sequence_length)
                 summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             target_sequence = decoder_layer[3](sequences=target_sequence) # (N, pad_length, d_model)

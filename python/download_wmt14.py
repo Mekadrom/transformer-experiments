@@ -3,20 +3,23 @@ from tqdm import tqdm
 
 import os
 import re
+import regex
 
 dataset = load_dataset('wmt14', 'de-en', cache_dir='data/actual')
 
-allowed_chars = set('  0123456789aàáăǎâäåãāąæbcćçčĉdďđeèéěêėëēęfgğģhiıìíǐîi̇ïījkķlļľĺłmnńňñņoòóŏôöőõōøœpqrŕřsśšŝşștťţðuùúǔûůūüųµvwŵxyýzżźžAÀÁĂǍÂÄÅÃĀĄÆBCĆÇČĈDĎĐEÈÉĚÊĖËĒĘFGĞĢHIIÌÍǏÎİÏĪJKĶLĻĽĹŁMNŃŇÑŅOÒÓŎÔÖŐÕŌØŒPQRŔŘSŚŠŜŞȘTŤŢÐUÙÚǓÛŮŪÜŲVWŴXYÝZŻŹŽß.,!?»«"\';:()[]{}<>+±≤-*°÷\\/=@#$€§£%&|~`^_\n')
-not_allowed_chars = set('舣ΑαΒβΓγΔδΕεΖζΗηΘθΙιΚκΛλΜΝνΞξΟοΠπΡρΣσςΤτΥυΦφΧχΨψΩωþ¹₂²³абвгдєжꙃꙁиіклмнопрстꙋоуфхѡцчшщъъіьѣꙗѥюѫѭѧѩѯѱѳѵҁАБВГДЄЖꙂꙀИІКЛМНОПРСТꙊОУФХѠЦЧШЩЪЪІЬѢꙖѤЮѪѬѦѨѮѰѲѴҀ©¼½¾¿¡¸·´¨')
+allowed_chars = set(' Ω0123456789aàáăǎâäåãāąǻæbcćçčĉdďđeèéěêėëēęfgğģhiıìíǐîi̇ïījkķlļľĺłmnńňñņoòóŏôöőõōøœpqrŕřsśšŝşștťţðuùúűǔûůūüųµvwŵxyýzżźžAÀÁĂǍÂÄÅÃĀĄǺÆBCĆÇČĈDĎĐEÈÉĚÊĖËĒĘFGĞĢHIIÌÍǏÎİÏĪJKĶLĻĽĹŁMNŃŇÑŅOÒÓŎÔÖŐÕŌØŒPQRŔŘSŚŠŜŞȘTŤŢÐUÙÚŰǓÛŮŪÜŲVWŴXYÝZŻŹŽß.,!?»«"\';:()[]{}<>+±≤-*°÷\\/=@#¢$¥€§£%&|~`^_\n')
+not_allowed_chars = set('̈†›▸→♪√舣�йĕΑαΒβΓγΔδΕεΖζΗηΘθΙιΚκΛλΜΝνΞξΟοΠπΡρΣσςΤτΥυΦφΧχΨψΩωþ¹₂²³абвгдэеєжꙃꙁиіклмнопрстꙋоуфхѡцчшщъъіьѣꙗѥюѫѭѧѩѯѱѳѵҁАБВГДЭЕЄЖꙂꙀИІКЛМНОПРСТꙊОУФХѠЦЧШЩЪЪІЬѢꙖѤЮѪѬѦѨѮѰѲѴҀ©®™№¼½¾¿¤¶¡¸·´¨\r')
 
 replacements: dict = {
-    '-': ['­', '–', '—', '―', '−'],
+    '-': ['­', '–', '—', '―', '−', '‑', '¬'],
     '...': ['…'],
-    '': ['· ', '• ', '•', '·', '​'],
+    '': ['· ', '• ', '● ', '·', '•', '●', '​', '＊'],
     ' ': ['\t'],
-    "'": ["’", "‘", '‚', '‛', '´', 'ʻ'],
-    '"': ['“', '”', '„', '‟'],
+    "'": ["’", "‘", '‚', '‛', '´', 'ʻ', 'ª', '′'],
+    '"': ['“', '”', '„', '‟', '˝', '″'],
     '°': ['˚', 'º'],
+    '(': ['（'],
+    ')': ['）'],
     # 'o': ['ο'],
     # 'A': ['Α'],
     # 'B': ['Β'],
@@ -49,12 +52,29 @@ def is_valid(s):
                 replacement = "\033[4m" + c + "\033[0m"
                 print(f"Invalid character: \"{c}\" in \"{s.replace(c, replacement)}\"")
             break
+
+    # not valid if sentence contains any chinese characters
+    if regex.search(r'[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]', s):
+        valid = False
+
+    # not valid if sentence contains any thai characters
+    if re.search(r'[\u0e00-\u0e7f]', s):
+        valid = False
+
+    # not valid if sentence contains any arabic characters
+    if re.search(r'[\u0600-\u06ff]', s):
+        valid = False
+
+    # not valid if sentence contains any hindi characters
+    if re.search(r'[\u0900-\u097f]', s):
+        valid = False
+
     return valid
 
 def save_to_file(data, src_filename, tgt_filename):
     with open(os.path.join('data', 'actual', src_filename), 'w', encoding='utf-8') as src_file, open(os.path.join('data', 'actual', tgt_filename), 'w', encoding='utf-8') as tgt_file:
         for example in tqdm(data):
-            en = example['translation']['en'].replace("' s ", "'s ")
+            en = example['translation']['en'].replace("' s ", "'s ").replace(' , ', ', ')
             de = example['translation']['de']
 
             for k, v in replacements.items():
