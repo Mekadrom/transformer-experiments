@@ -19,12 +19,12 @@ def main(args):
 
     if not os.path.exists(src_tokenizer_file):
         print(f"Training source tokenizer and saving to {src_tokenizer_file}")
-        data = os.path.join('..', 'data', 'train.src')
+        data = os.path.join('data', 'actual', 'train.src')
         if args.shared_vocab:
             data = os.path.join(run_dir, 'temp.srctgt')
             with open(data, 'w', encoding='utf-8') as f:
-                with open(os.path.join('..', 'data', 'train.src'), 'r', encoding='utf-8') as source:
-                    with open(os.path.join('..', 'data', 'train.tgt'), 'r', encoding='utf-8') as target:
+                with open(os.path.join('data', 'actual', 'train.src'), 'r', encoding='utf-8') as source:
+                    with open(os.path.join('data', 'actual', 'train.tgt'), 'r', encoding='utf-8') as target:
                         for line in source:
                             f.write(line.strip() + '\n')
                         f.write('\n')
@@ -38,16 +38,16 @@ def main(args):
 
     if not os.path.exists(tgt_tokenizer_file) and not args.shared_vocab:
         print(f"Training target tokenizer and saving to {tgt_tokenizer_file}")
-        youtokentome.BPE.train(data=os.path.join('..', 'data', 'train.tgt'), vocab_size=args.tgt_vocab_size, model=tgt_tokenizer_file)
+        youtokentome.BPE.train(data=os.path.join('data', 'actual', 'train.tgt'), vocab_size=args.tgt_vocab_size, model=tgt_tokenizer_file)
 
     src_bpe_model = youtokentome.BPE(model=src_tokenizer_file)
     tgt_bpe_model = youtokentome.BPE(model=tgt_tokenizer_file) if not args.shared_vocab else src_bpe_model
 
     def fix_set(file_name):
         print('\nRe-reading single files...')
-        with codecs.open(os.path.join('..', 'data', f"{file_name}.src"), 'r', encoding='utf-8') as f:
+        with codecs.open(os.path.join('data', 'actual', f"{file_name}.src"), 'r', encoding='utf-8') as f:
             source = f.read().split('\n')
-        with codecs.open(os.path.join('..', 'data', f"{file_name}.tgt"), 'r', encoding='utf-8') as f:
+        with codecs.open(os.path.join('data', 'actual', f"{file_name}.tgt"), 'r', encoding='utf-8') as f:
             target = f.read().split('\n')
 
         # Filter

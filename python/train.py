@@ -78,10 +78,12 @@ class Trainer():
 
     def visualize_attention_weights(self, args, model, src_bpe_model, tgt_bpe_model, src, tgt, step, summary_writer):
         input_sequence = torch.LongTensor(src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(args.device) # (1, input_sequence_length)
-        input_tokens = src_bpe_model.decode(input_sequence[0].tolist())
+        # input_tokens = src_bpe_model.decode(input_sequence[0].tolist())
+        input_tokens = [src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
         input_sequence_length = torch.LongTensor([input_sequence.size(1)]).unsqueeze(0).to(args.device) # (1)
         target_sequence = torch.LongTensor(tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0).to(args.device) # (1, target_sequence_length)
-        target_tokens = tgt_bpe_model.decode(target_sequence[0].tolist())
+        # target_tokens = tgt_bpe_model.decode(target_sequence[0].tolist())
+        target_tokens = [tgt_bpe_model.decode([id.item()])[0] for id in target_sequence.squeeze(0)]
         target_sequence_length = torch.LongTensor([target_sequence.size(1)]).unsqueeze(0).to(args.device) # (1)
 
         input_sequence = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
@@ -92,11 +94,12 @@ class Trainer():
             input_sequence, attention_weights = encoder_layer[0](query_sequences=input_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length)
 
             attention_weights = attention_weights.cpu().detach()
+            attention_weights = attention_weights.contiguous().view(1, args.n_heads, attention_weights.size(1), attention_weights.size(2))
 
             # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, input_tokens, input_sequence_length)
-                summary_writer.add_image(f"Encoder Layer {e} Head {i} Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+                image_data = self.visualize_attention_weights_for_layer('encoder-self', e, i, attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, input_tokens, input_sequence_length)
+                summary_writer.add_image(f"Encoder Layer {e} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             input_sequence = encoder_layer[1](sequences=input_sequence) # (N, pad_length, d_model)
 
@@ -110,28 +113,30 @@ class Trainer():
             target_sequence, attention_weights = decoder_layer[0](query_sequences=target_sequence, key_sequences=target_sequence, value_sequences=target_sequence, key_value_sequence_lengths=target_sequence_length) # (N, pad_length, d_model)
             
             attention_weights = attention_weights.cpu().detach()
-
-            attention_weights.reshape(-1, args.n_heads, attention_weights.size(1), attention_weights.size(2))
+            attention_weights = attention_weights.contiguous().view(1, args.n_heads, attention_weights.size(1), attention_weights.size(2))
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), target_tokens, target_sequence_length, target_tokens, target_sequence_length)
+                image_data = self.visualize_attention_weights_for_layer('decoder-self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), target_tokens, target_sequence_length, target_tokens, target_sequence_length)
                 summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence, attention_weights = decoder_layer[2](query_sequences=target_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights = decoder_layer[1](query_sequences=target_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length) # (N, pad_length, d_model)
+
+            attention_weights = attention_weights.cpu().detach()
+            attention_weights = attention_weights.contiguous().view(1, args.n_heads, attention_weights.size(1), attention_weights.size(2))
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
             for i in range(attention_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_sequence_length, target_tokens, target_sequence_length)
+                image_data = self.visualize_attention_weights_for_layer('decoder-cross', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, input_sequence_length, target_tokens, target_sequence_length)
                 summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence = decoder_layer[3](sequences=target_sequence) # (N, pad_length, d_model)
+            target_sequence = decoder_layer[2](sequences=target_sequence) # (N, pad_length, d_model)
 
     def visualize_attention_weights_for_layer(self, stack_name, layer_num, head_num, activation_weights, input_tokens, input_sequence_length, output_tokens, output_sequence_length):
         fig, ax = plt.subplots(figsize=(10, 8))
-        sns.heatmap(activation_weights, annot=True, fmt=".2f", xticklabels=input_tokens, yticklabels=output_tokens, ax=ax)
-        plt.xlabel("Tokens")
-        plt.ylabel("Tokens")
+        sns.heatmap(activation_weights, annot=True, annot_kws={"fontsize":8}, fmt=".4f", xticklabels=input_tokens, yticklabels=output_tokens, ax=ax)
+        # plt.xlabel("Tokens")
+        # plt.ylabel("Tokens")
         # plt.title(f"{stack_name} Layer {layer_num} Head {head_num} Attn Weights")
 
         buf = io.BytesIO()
@@ -143,6 +148,8 @@ class Trainer():
 
 class DistillationTrainer(Trainer):
     def __init__(self):
+        super().__init__()
+
         self.sacrebleu_epochs = []
 
     def train(self, args, model_name_prefix=''):
@@ -334,6 +341,8 @@ class DistillationTrainer(Trainer):
 
 class ClassicTrainer(Trainer):
     def __init__(self):
+        super().__init__()
+
         self.sacrebleu_epochs = []
 
     def train(self, args, model_name_prefix=''):
@@ -341,6 +350,8 @@ class ClassicTrainer(Trainer):
 
         if not os.path.exists(run_dir):
             os.makedirs(run_dir)
+
+        summary_writer = SummaryWriter(log_dir=run_dir)
 
         bpe_run_dir = os.path.join('runs', args.tokenizer_run_name)
 
@@ -352,14 +363,15 @@ class ClassicTrainer(Trainer):
         print(f"Optimizer: {optimizer}")
         print(f"Positional Encoding: {positional_encoding.shape if type(positional_encoding) == torch.Tensor else positional_encoding}")
 
+        model = model.to(args.device)
+
+        # get attention weight visualization before any updates are made to the model
+        self.visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", 0, summary_writer)
+
         train_loader, val_loader, test_loader = load_data(args.tokens_in_batch, bpe_run_dir, src_bpe_model, tgt_bpe_model)
 
         # todo: make this configurable
         criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(args.device)
-
-        model = model.to(args.device)
-        
-        summary_writer = SummaryWriter(log_dir=run_dir)
 
         epochs = (args.n_steps // (train_loader.n_batches // args.batches_per_step)) + 1
 
