@@ -330,7 +330,7 @@ class ClassicTrainer(Trainer):
                     )
 
                 if step >= args.n_steps // 2 and epoch not in self.sacrebleu_epochs:
-                    sacrebleu = sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, distilled_model, sacrebleu_in_python=True)
+                    sacrebleu = sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
                     summary_writer.add_scalar('SacreBLEU', sacrebleu.score, step)
                     self.sacrebleu_epochs.append(epoch)
                     
