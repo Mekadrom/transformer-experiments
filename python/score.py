@@ -16,8 +16,6 @@ if __name__ == '__main__':
 
     args, unk = argparser.parse_known_args()
 
-    # args.__setattr__('sacrebleu_interrupted', False)
-
     if len(unk) > 0:
         print(f"unknown arguments: {unk}")
 

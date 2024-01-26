@@ -9,7 +9,6 @@ argparser = argparse.ArgumentParser()
 
 argparser.add_argument("--run_name", type=str, required=True)
 argparser.add_argument("--model_checkpoint", type=str, default="averaged_transformer_checkpoint.pth.tar")
-argparser.add_argument("--sacrebleu_interrupted", action="store_true")
 argparser.add_argument("--sacrebleu_in_python", action="store_true")
 
 argparser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")

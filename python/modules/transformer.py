@@ -12,7 +12,7 @@ class Encoder(nn.Module):
     The Encoder.
     """
 
-    def __init__(self, args, vocab_size, positional_encoding, d_model, n_heads, d_queries, d_values, d_inner, n_layers, dropout):
+    def __init__(self, args, vocab_size, n_layers, positional_encoding):
         """
         :param vocab_size: size of the (shared) vocabulary
         :param positional_encoding: positional encodings up to the maximum possible pad-length
@@ -28,25 +28,17 @@ class Encoder(nn.Module):
 
         self.args = args
 
-        self.vocab_size = vocab_size
         self.positional_encoding = positional_encoding
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_queries = d_queries
-        self.d_values = d_values
-        self.d_inner = d_inner
-        self.n_layers = n_layers
-        self.dropout = dropout
 
-        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.embedding = nn.Embedding(vocab_size, self.args.d_model)
 
         # disable gradients for buffer/sinusoidal positional encoding if gradients are not configured to be enabled
         if type(self.positional_encoding) == torch.Tensor:
-            self.positional_encoding.requires_grad = args.learnable_positional_encoding
+            self.positional_encoding.requires_grad = self.args.learnable_positional_encoding
 
-        self.apply_dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(d_model)
-        self.encoder_layers = self.make_encoder_layers(n_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers)
+        self.dropout = nn.Dropout(self.args.dropout)
+        self.layer_norm = nn.LayerNorm(self.args.d_model)
+        self.encoder_layers = self.make_encoder_layers(n_layers, self.args.encoder_param_sharing_type, self.args.m_encoder_independent_layers)
 
     def make_encoder_layers(self, n_layers, param_sharing_type='none', m_independent_layers=0):
         layers = []
@@ -102,32 +94,18 @@ class Encoder(nn.Module):
         Creates a single layer in the Encoder by combining a multi-head attention sublayer and a position-wise FC sublayer.
         """
 
-        attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(
-            args=self.args,
-            d_model=self.d_model,
-            n_heads=self.n_heads,
-            d_queries=self.d_queries,
-            d_values=self.d_values,
-            dropout=self.dropout,
-            positional_encoding=self.positional_encoding,
-            in_decoder=False
-        )
-        ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else PositionWiseFCNetwork(
-            args=self.args,
-            d_model=self.d_model,
-            d_inner=self.d_inner,
-            dropout=self.dropout
-        )
+        attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(args=self.args, positional_encoding=self.positional_encoding, in_decoder=False)
+        ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else PositionWiseFCNetwork(args=self.args)
 
         layers = [attn_layers, ffn]
 
         if self.args.use_admin:
-            layers.append(nn.Linear(self.d_model, self.d_model)) # add residual connection with learned parameters
+            layers.append(nn.Linear(self.args.d_model, self.args.d_model)) # add residual connection with learned parameters
 
         return layers
 
     def perform_embedding_transformation(self, encoder_sequences):
-        return self.embedding(encoder_sequences) * math.sqrt(self.d_model) # (N, pad_length, d_model)
+        return self.embedding(encoder_sequences) * math.sqrt(self.args.d_model) # (N, pad_length, d_model)
 
     def apply_positional_embedding(self, encoder_sequences):
         pad_length = encoder_sequences.size(1)  # pad-length of this batch only, varies across batches
@@ -152,7 +130,7 @@ class Encoder(nn.Module):
         """
         encoder_sequences = self.perform_embedding_transformation(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
-        encoder_sequences = self.apply_dropout(encoder_sequences) # (N, pad_length, d_model)
+        encoder_sequences = self.dropout(encoder_sequences) # (N, pad_length, d_model)
 
         for encoder_layer in self.encoder_layers:
             encoder_sequences = self.apply_encoder_layer(encoder_sequences, encoder_sequence_lengths, encoder_layer)
@@ -167,7 +145,7 @@ class Decoder(nn.Module):
     The Decoder.
     """
 
-    def __init__(self, args, vocab_size, positional_encoding, d_model, n_heads, d_queries, d_values, d_inner, n_layers, dropout):
+    def __init__(self, args, vocab_size, n_layers, positional_encoding):
         """
         :param vocab_size: size of the (shared) vocabulary
         :param positional_encoding: positional encodings up to the maximum possible pad-length
@@ -183,28 +161,20 @@ class Decoder(nn.Module):
 
         self.args = args
 
-        self.vocab_size = vocab_size
         self.positional_encoding = positional_encoding
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_queries = d_queries
-        self.d_values = d_values
-        self.d_inner = d_inner
-        self.n_layers = n_layers
-        self.dropout = dropout
 
-        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.embedding = nn.Embedding(vocab_size, self.args.d_model)
 
         # disable gradients for buffer/sinusoidal positional encoding if gradients are not configured to be enabled
         if type(self.positional_encoding) == torch.Tensor:
-            self.positional_encoding.requires_grad = args.learnable_positional_encoding
+            self.positional_encoding.requires_grad = self.args.learnable_positional_encoding
 
-        self.apply_dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(d_model)
-        self.decoder_layers = self.make_decoder_layers(n_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers)
+        self.dropout = nn.Dropout(self.args.dropout)
+        self.layer_norm = nn.LayerNorm(self.args.d_model)
+        self.decoder_layers = self.make_decoder_layers(n_layers, self.args.decoder_param_sharing_type, self.args.m_decoder_independent_layers)
 
         # classification layer for output language vocabulary
-        self.fc = nn.Linear(d_model, vocab_size)
+        self.fc = nn.Linear(self.args.d_model, vocab_size)
 
     def make_decoder_layers(self, n_layers, param_sharing_type='none', m_independent_layers=0):
         layers = []
@@ -260,42 +230,19 @@ class Decoder(nn.Module):
         Creates a single layer in the Decoder by combining two multi-head attention sublayers and a position-wise FC sublayer.
         """
 
-        self_attn = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(
-            args=self.args,
-            d_model=self.d_model,
-            n_heads=self.n_heads,
-            d_queries=self.d_queries,
-            d_values=self.d_values,
-            dropout=self.dropout,
-            positional_encoding=self.positional_encoding,
-            in_decoder=True
-        )
-        cross_attn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else MultiHeadAttention(
-            args=self.args,
-            d_model=self.d_model,
-            n_heads=self.n_heads,
-            d_queries=self.d_queries,
-            d_values=self.d_values,
-            dropout=self.dropout,
-            positional_encoding=self.positional_encoding,
-            in_decoder=True
-        )
-        ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else PositionWiseFCNetwork(
-            args=self.args,
-            d_model=self.d_model,
-            d_inner=self.d_inner,
-            dropout=self.dropout
-        )
+        self_attn = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else MultiHeadAttention(args=self.args, positional_encoding=self.positional_encoding, in_decoder=True)
+        cross_attn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else MultiHeadAttention(args=self.args, positional_encoding=self.positional_encoding, in_decoder=True)
+        ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else PositionWiseFCNetwork(args=self.args)
 
         layers = [self_attn, cross_attn, ffn]
 
         if self.args.use_admin:
-            layers.append(nn.Linear(self.d_model, self.d_model)) # add residual connection with learned parameters
+            layers.append(nn.Linear(self.args.d_model, self.args.d_model)) # add residual connection with learned parameters
 
         return layers
     
     def apply_embedding_transformation(self, decoder_sequences):
-        return self.embedding(decoder_sequences) * math.sqrt(self.d_model) # (N, pad_length, d_model)
+        return self.embedding(decoder_sequences) * math.sqrt(self.args.d_model) # (N, pad_length, d_model)
     
     def apply_positional_embedding(self, decoder_sequences):
         pad_length = decoder_sequences.size(1)  # pad-length of this batch only, varies across batches
@@ -321,7 +268,7 @@ class Decoder(nn.Module):
         """
         decoder_sequences = self.apply_embedding_transformation(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_positional_embedding(decoder_sequences) # (N, pad_length, d_model)
-        decoder_sequences = self.apply_dropout(decoder_sequences)
+        decoder_sequences = self.dropout(decoder_sequences)
 
         for decoder_layer in self.decoder_layers:
             decoder_sequences = self.apply_decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer)
@@ -336,7 +283,7 @@ class Transformer(nn.Module):
     The Transformer network.
     """
 
-    def __init__(self, args, src_vocab_size, tgt_vocab_size, positional_encoding, tie_embeddings=True, d_model=512, n_heads=8, d_queries=64, d_values=64, d_inner=2048, n_encoder_layers=6, n_decoder_layers=6, dropout=0.1, use_admin=False):
+    def __init__(self, args, src_vocab_size, tgt_vocab_size, positional_encoding, tie_embeddings=True):
         """
         :param vocab_size: size of the (shared) vocabulary
         :param positional_encoding: positional encodings up to the maximum possible pad-length
@@ -353,48 +300,9 @@ class Transformer(nn.Module):
 
         self.args = args
 
-        self.src_vocab_size = src_vocab_size
-        self.tgt_vocab_size = tgt_vocab_size
-        self.positional_encoding = positional_encoding
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_queries = d_queries
-        self.d_values = d_values
-        self.d_inner = d_inner
-        self.n_encoder_layers = n_encoder_layers
-        self.n_decoder_layers = n_decoder_layers
-        self.dropout = dropout
-        self.use_admin = use_admin
+        self.encoder = Encoder(args=args, vocab_size=src_vocab_size, n_layers=self.args.n_encoder_layers, positional_encoding=positional_encoding)
+        self.decoder = Decoder(args=args, vocab_size=tgt_vocab_size, n_layers=self.args.n_decoder_layers, positional_encoding=positional_encoding)
 
-        # Encoder
-        self.encoder = Encoder(
-            args=args,
-            vocab_size=src_vocab_size,
-            positional_encoding=positional_encoding,
-            d_model=d_model,
-            n_heads=n_heads,
-            d_queries=d_queries,
-            d_values=d_values,
-            d_inner=d_inner,
-            n_layers=n_encoder_layers,
-            dropout=dropout,
-        )
-
-        # Decoder
-        self.decoder = Decoder(
-            args=args,
-            vocab_size=tgt_vocab_size,
-            positional_encoding=positional_encoding,
-            d_model=d_model,
-            n_heads=n_heads,
-            d_queries=d_queries,
-            d_values=d_values,
-            d_inner=d_inner,
-            n_layers=n_decoder_layers,
-            dropout=dropout,
-        )
-
-        # Initialize weights
         self.init_weights(tie_embeddings=tie_embeddings)
 
     def init_weights(self, tie_embeddings=True):
@@ -419,7 +327,7 @@ class Transformer(nn.Module):
                     raise Exception(f"Unknown weight initialization method: {self.args.init_weights_from}")
 
         # Share weights between the embedding layers and the logit layer
-        nn.init.normal_(self.encoder.embedding.weight, mean=0., std=math.pow(self.d_model, -0.5))
+        nn.init.normal_(self.encoder.embedding.weight, mean=0., std=math.pow(self.args.d_model, -0.5))
         self.decoder.embedding.weight = self.encoder.embedding.weight
 
         if tie_embeddings:
@@ -431,7 +339,7 @@ class Transformer(nn.Module):
             for decoder_layer in self.decoder.decoder_layers:
                 nn.init.ones_(decoder_layer[-1].weight)
 
-            input_sequence = torch.randn(1, 1, self.d_model)
+            input_sequence = torch.randn(1, 1, self.args.d_model)
 
             input_sequence = self.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
             input_sequence = self.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
@@ -449,7 +357,7 @@ class Transformer(nn.Module):
             input_sequence = self.encoder.layer_norm(input_sequence) # (N, pad_length, d_model)
 
             for decoder_layer in self.decoder.decoder_layers:
-                input_sequence = self.decoder.apply_decoder_layer(torch.randn(1, 1, self.d_model), 1, input_sequence, 1, decoder_layer)
+                input_sequence = self.decoder.apply_decoder_layer(torch.randn(1, 1, self.args.d_model), 1, input_sequence, 1, decoder_layer)
                 variance_so_far += torch.var(input_sequence)
 
                 decoder_layer[-1].weight.data = torch.fill_(decoder_layer[-1].weight.data, variance_so_far.item())
@@ -466,10 +374,6 @@ class Transformer(nn.Module):
         :param decoder_sequence_lengths: true lengths of target language sequences, a tensor of size (N)
         :return: decoded target language sequences, a tensor of size (N, decoder_sequence_pad_length, vocab_size)
         """
-        # Encoder
         encoder_sequences = self.encoder(encoder_sequences, encoder_sequence_lengths) # (N, encoder_sequence_pad_length, d_model)
-
-        # Decoder
         decoder_sequences = self.decoder(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths) # (N, decoder_sequence_pad_length, vocab_size)
-
         return decoder_sequences
