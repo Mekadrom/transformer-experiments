@@ -503,7 +503,7 @@ def get_args():
     argparser.add_argument('--init_weights_gain', type=float, default=1.0)
     argparser.add_argument('--use_admin', action='store_true')
 
-    argparser.add_argument('--positional_encoding_type', type=str, default='rotary', choices=['rotary', 'buffer', 'sinusoidal', 'none']) # buffer and sinusoidal refer to the same thing
+    argparser.add_argument('--positional_encoding_type', type=str, default='sinusoidal', choices=['rotary', 'buffer', 'sinusoidal', 'none']) # buffer and sinusoidal refer to the same thing
     argparser.add_argument('--positional_encoding_dim', type=int, default=64) # 64 makes sense for rotary, but not for kv+pos buffer/sinusoidal
     argparser.add_argument('--learnable_positional_encoding', action='store_true', default=False)
 
