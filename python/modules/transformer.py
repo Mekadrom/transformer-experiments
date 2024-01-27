@@ -1,7 +1,5 @@
-from .multicast_attn import MultiCastAttention
 from .multihead_attn import MultiHeadAttention
 from .positionwise_fcn import PositionWiseFCNetwork
-from rotary_embedding_torch import RotaryEmbedding
 
 import math
 import torch
@@ -300,6 +298,8 @@ class Transformer(nn.Module):
 
         self.args = args
 
+        self.positional_encoding = positional_encoding
+
         self.encoder = Encoder(args=args, vocab_size=src_vocab_size, n_layers=self.args.n_encoder_layers, positional_encoding=positional_encoding)
         self.decoder = Decoder(args=args, vocab_size=tgt_vocab_size, n_layers=self.args.n_decoder_layers, positional_encoding=positional_encoding)
 
@@ -361,10 +361,6 @@ class Transformer(nn.Module):
                 variance_so_far += torch.var(input_sequence)
 
                 decoder_layer[-1].weight.data = torch.fill_(decoder_layer[-1].weight.data, variance_so_far.item())
-
-        if self.args.head_weights_init_type == 'before_after_per_layer':
-            for encoder_layer in self.encoder.encoder_layers:
-                cast_queries = encoder_layer[0].cast_queries
 
         print("Model initialized.")
 

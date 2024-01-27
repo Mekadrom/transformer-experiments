@@ -45,6 +45,19 @@ class MultiHeadAttention(nn.Module):
         # Dropout layer
         self.dropout = nn.Dropout(self.args.dropout)
 
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        state_dict = super(MultiHeadAttention, self).state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        state_dict[prefix + 'in_decoder'] = self.in_decoder
+        return state_dict
+    
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        if prefix + 'in_decoder' in state_dict:
+            self.in_decoder = state_dict[prefix + 'in_decoder']
+        else:
+            missing_keys.append(prefix + 'in_decoder')
+            
+        return super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+
     def forward(self, query_sequences: torch.Tensor, key_sequences: torch.Tensor, value_sequences: torch.Tensor, key_value_sequence_lengths: torch.Tensor):
         """
         Forward prop.
@@ -122,7 +135,7 @@ class MultiHeadAttention(nn.Module):
             queries = queries.contiguous().view(-1, query_sequence_pad_length, self.args.d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
             keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.args.d_queries) # (N * n_heads, key_value_sequence_pad_length, d_keys)
             values = values.contiguous().view(-1, key_value_sequence_pad_length, self.args.d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
-            attention_weights = torch.bmm(queries, keys.permute(0, 2, 1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+            attention_weights = torch.bmm(queries, keys.transpose(-2, -1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # Scale dot-products
         attention_weights = (1. / math.sqrt(self.args.d_queries)) * attention_weights # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)

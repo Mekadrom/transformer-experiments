@@ -501,7 +501,6 @@ def get_args():
 
     argparser.add_argument('--init_weights_from', type=str, default='glorot_uniform', choices=['glorot_uniform', 'glorot_normal', 'xavier_uniform', 'xavier_normal', 'kaiming_uniform', 'kaiming_normal', 'orthogonal'])
     argparser.add_argument('--init_weights_gain', type=float, default=1.0)
-    argparser.add_argument('--head_weights_init_type', type=str, default='none', choices=['none', 'before_after_per_layer'])
     argparser.add_argument('--use_admin', action='store_true')
 
     argparser.add_argument('--positional_encoding_type', type=str, default='sinusoidal', choices=['rotary', 'buffer', 'sinusoidal', 'none']) # buffer and sinusoidal refer to the same thing

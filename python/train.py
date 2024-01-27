@@ -6,7 +6,6 @@ from utils import *
 
 import io
 import matplotlib.pyplot as plt
-import numpy as np
 import os
 import seaborn as sns
 import time
@@ -327,11 +326,6 @@ class ClassicTrainer(Trainer):
                         tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.',
                     )
 
-                if step >= args.n_steps // 2 and epoch not in self.sacrebleu_epochs:
-                    sacrebleu = sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
-                    summary_writer.add_scalar('SacreBLEU', sacrebleu.score, step)
-                    self.sacrebleu_epochs.append(epoch)
-                    
                 # Log to TensorBoard
                 summary_writer.add_scalar('Training Loss', losses.avg, step)
 

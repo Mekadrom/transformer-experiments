@@ -188,20 +188,16 @@ if __name__ == "__main__":
         encoder_layer[1].args = args
 
     for decoder_layer in model.decoder.decoder_layers:
-        decoder_layer[0].in_decoder = True
         decoder_layer[0].args = args
         decoder_layer[0].positional_encoding = positional_encoding
         if type(decoder_layer[0]) == MultiCastAttention:
             for self_attn_layer in decoder_layer[0].layers:
-                self_attn_layer.in_decoder = True
                 self_attn_layer.args = args
                 self_attn_layer.positional_encoding = positional_encoding
-        decoder_layer[1].in_decoder = True
         decoder_layer[1].args = args
         decoder_layer[1].positional_encoding = positional_encoding
         if type(decoder_layer[1]) == MultiCastAttention:
             for cross_attn_layer in decoder_layer[1].layers:
-                cross_attn_layer.in_decoder = True
                 cross_attn_layer.args = args
                 cross_attn_layer.positional_encoding = positional_encoding
         decoder_layer[2].args = args
