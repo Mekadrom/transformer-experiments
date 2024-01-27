@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import utils
 
@@ -6,7 +7,7 @@ class PositionWiseFCNetwork(nn.Module):
     The Position-Wise Feed Forward Network sublayer.
     """
 
-    def __init__(self, args):
+    def __init__(self, d_model, d_inner, activation_function, dropout, device):
         """
         :param d_model: size of vectors throughout the transformer model, i.e. input and output sizes for this sublayer
         :param d_inner: an intermediate size
@@ -14,13 +15,17 @@ class PositionWiseFCNetwork(nn.Module):
         """
         super(PositionWiseFCNetwork, self).__init__()
 
-        self.args = args
+        self.d_model = torch.tensor(d_model, dtype=torch.long).to(device)
+        self.d_model.requires_grad = False
 
-        self.layer_norm = nn.LayerNorm(self.args.d_model)
-        self.expand = nn.Linear(self.args.d_model, self.args.d_inner)
-        self.activation = utils.create_activation_function(args.activation_function)
-        self.condense = nn.Linear(self.args.d_inner, self.args.d_model)
-        self.dropout = nn.Dropout(self.args.dropout)
+        self.d_inner = torch.tensor(d_inner, dtype=torch.long).to(device)
+        self.d_inner.requires_grad = False
+
+        self.layer_norm = nn.LayerNorm(d_model)
+        self.expand = nn.Linear(d_model, d_inner)
+        self.activation = utils.create_activation_function(activation_function)
+        self.condense = nn.Linear(d_inner, d_model)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, sequences):
         """

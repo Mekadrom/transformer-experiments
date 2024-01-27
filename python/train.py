@@ -60,8 +60,8 @@ class Trainer():
 
             self.visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", step, summary_writer)
 
-    def evaluate(self, args, model, src_bpe_model, tgt_bpe_model, src, tgt):
-        best, _ = beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
+    def evaluate(self, model, src_bpe_model, tgt_bpe_model, src, tgt):
+        best, _ = beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
 
         debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
         debug_validate_table.add_row([src, best, tgt])
@@ -172,11 +172,15 @@ class ClassicTrainer(Trainer):
         print(f"Optimizer: {optimizer}")
         print(f"Positional Encoding: {positional_encoding.shape if type(positional_encoding) == torch.Tensor else positional_encoding}")
 
+        if args.save_initial_checkpoint:
+            save_checkpoint(-1, model, optimizer, positional_encoding=positional_encoding, prefix=f"runs/{args.run_name}/{model_name_prefix}")
+
         model = model.to(args.device)
 
-        print("Visualizing attention weights before training...")
-        # get attention weight visualization before any updates are made to the model
-        self.visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", 0, summary_writer)
+        if args.start_epoch == 0:
+            print("Visualizing attention weights before training...")
+            # get attention weight visualization before any updates are made to the model
+            self.visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", 0, summary_writer)
 
         train_loader, val_loader, test_loader = load_data(args.tokens_in_batch, bpe_run_dir, src_bpe_model, tgt_bpe_model)
 
@@ -318,7 +322,6 @@ class ClassicTrainer(Trainer):
                                                                             data_time=data_time,
                                                                             losses=losses))
                     self.evaluate(
-                        args=args,
                         model=model,
                         src_bpe_model=src_bpe_model,
                         tgt_bpe_model=tgt_bpe_model,
@@ -347,7 +350,7 @@ if __name__ == '__main__':
 
     print(f"using learning rate {args.lr}")
 
-    def do_training(trainer):
+    def do_training(trainer: Trainer):
         if args.prune_mode == 'train-prune':
             model = trainer.train(args)
             prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)

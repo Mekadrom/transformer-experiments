@@ -203,7 +203,7 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6):
+def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam_size=4, length_norm_coefficient=0.6):
     """
     Translates a source language sequence to the target language, with beam search decoding.
 
@@ -233,18 +233,18 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_s
             encoder_sequences = torch.LongTensor(encoder_sequences).unsqueeze(0) # (1, source_sequence_length)
         else:
             encoder_sequences = src
-        encoder_sequences = encoder_sequences.to(args.device) # (1, source_sequence_length)
-        encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(args.device) # (1)
+        encoder_sequences = encoder_sequences.to(device) # (1, source_sequence_length)
+        encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device) # (1)
 
         # Encode
         encoder_sequences = model.encoder(encoder_sequences=encoder_sequences, encoder_sequence_lengths=encoder_sequence_lengths) # (1, source_sequence_length, d_model)
 
         # Our hypothesis to begin with is just <BOS>
-        hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(args.device) # (1, 1)
-        hypotheses_lengths = torch.LongTensor([hypotheses.size(1)]).to(args.device) # (1)
+        hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device) # (1, 1)
+        hypotheses_lengths = torch.LongTensor([hypotheses.size(1)]).to(device) # (1)
 
         # Tensor to store hypotheses' scores; now it's just 0
-        hypotheses_scores = torch.zeros(1).to(args.device) # (1)
+        hypotheses_scores = torch.zeros(1).to(device) # (1)
 
         # Lists to store completed hypotheses and their scores
         completed_hypotheses = list()
@@ -298,7 +298,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_s
             # Else, continue with incomplete hypotheses
             hypotheses = top_k_hypotheses[~complete] # (s, step + 1)
             hypotheses_scores = top_k_hypotheses_scores[~complete] # (s)
-            hypotheses_lengths = torch.LongTensor(hypotheses.size(0) * [hypotheses.size(1)]).to(args.device) # (s)
+            hypotheses_lengths = torch.LongTensor(hypotheses.size(0) * [hypotheses.size(1)]).to(device) # (s)
 
             # Stop if things have been going on for too long
             if step > 100:
@@ -373,7 +373,7 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
         hypotheses = list()
         references = list()
         for i, (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in enumerate(tqdm(test_loader, total=test_loader.n_batches)):
-            hypotheses.append(beam_search_translate(args, src=source_sequence, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
+            hypotheses.append(beam_search_translate(src=source_sequence, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
             references.extend(tgt_bpe_model.decode(target_sequence.tolist(), ignore_ids=[0, 2, 3]))
 
         if sacrebleu_in_python:
@@ -545,6 +545,7 @@ def get_args():
     argparser.add_argument('--start_epoch', type=int, default=0)
     argparser.add_argument('--print_frequency', type=int, default=20)
     argparser.add_argument('--device', type=str, default='cuda:0')
+    argparser.add_argument('--save_initial_checkpoint', action='store_true')
 
     args, unk = argparser.parse_known_args()
 

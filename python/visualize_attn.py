@@ -2,6 +2,7 @@ from modules.multicast_attn import MultiCastAttention
 from plotly.subplots import make_subplots
 from utils import *
 
+import argparse
 import numpy as np
 import os
 import plotly.graph_objects as go
@@ -109,7 +110,7 @@ def create_figure(encoder_layer_weights, decoder_layer_self_attn_weights, decode
 
     return fig
 
-def extract_attention_weights(args, model, src_bpe_model, tgt_bpe_model, src, tgt):
+def extract_attention_weights(model, src_bpe_model, tgt_bpe_model, src, tgt):
     src_sequence = torch.LongTensor(src_bpe_model.encode(src, eos=False)).unsqueeze(0) # (1, input_sequence_length)
     src_tokens = [src_bpe_model.decode([id.item()])[0] for id in src_sequence.squeeze(0)]
     src_sequence_length = torch.LongTensor([src_sequence.size(1)]).unsqueeze(0) # (1)
@@ -145,9 +146,13 @@ def extract_attention_weights(args, model, src_bpe_model, tgt_bpe_model, src, tg
     return src_tokens, tgt_tokens, encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights
 
 if __name__ == "__main__":
-    args, unk = get_args()
+    argparser = argparse.ArgumentParser(description='Visualize attention weights')
 
-    args.device = 'cpu'
+    argparser.add_argument('--run_name', type=str, required=True)
+    argparser.add_argument('--model_name', type=str, default="averaged_transformer_checkpoint.pth.tar")
+    argparser.add_argument('--tokenizer_run_name', type=str, required=True)
+
+    args, unk = argparser.parse_known_args()
 
     run_dir = os.path.join('runs', args.run_name)
 
@@ -158,56 +163,21 @@ if __name__ == "__main__":
 
     src_bpe_model, tgt_bpe_model = load_tokenizers(bpe_run_dir)
 
-    state_dict = torch.load(os.path.join(run_dir, 'averaged_transformer_checkpoint.pth.tar'), map_location=torch.device('cpu'))
+    state_dict = torch.load(os.path.join(run_dir, args.model_name), map_location=torch.device('cpu'))
 
     model = state_dict['model']
-
-    if 'positional_encoding' in state_dict:
-        positional_encoding = state_dict['positional_encoding']
-    else:
-        positional_encoding = get_positional_encoding(args)
+    model = model.to('cpu')
 
     model.eval()
 
-    model.args = args
-    model.positional_encoding = positional_encoding
-    model.encoder.args = args
-    model.encoder.positional_encoding = positional_encoding
-    model.decoder.args = args
-    model.decoder.positional_encoding = positional_encoding
-
     print(model)
-
-    for encoder_layer in model.encoder.encoder_layers:
-        encoder_layer[0].args = args
-        encoder_layer[0].positional_encoding = positional_encoding
-        if type(encoder_layer[0]) == MultiCastAttention:
-            for self_attn_layer in encoder_layer[0].layers:
-                self_attn_layer.args = args
-                self_attn_layer.positional_encoding = positional_encoding
-        encoder_layer[1].args = args
-
-    for decoder_layer in model.decoder.decoder_layers:
-        decoder_layer[0].args = args
-        decoder_layer[0].positional_encoding = positional_encoding
-        if type(decoder_layer[0]) == MultiCastAttention:
-            for self_attn_layer in decoder_layer[0].layers:
-                self_attn_layer.args = args
-                self_attn_layer.positional_encoding = positional_encoding
-        decoder_layer[1].args = args
-        decoder_layer[1].positional_encoding = positional_encoding
-        if type(decoder_layer[1]) == MultiCastAttention:
-            for cross_attn_layer in decoder_layer[1].layers:
-                cross_attn_layer.args = args
-                cross_attn_layer.positional_encoding = positional_encoding
-        decoder_layer[2].args = args
 
     while True:
         src = input("Enter source sentence: ")
-        print(f"predicted: {beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model)}")
+        print(f"predicted: {beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device='cpu')}")
         tgt = input("Enter target sentence: ")
 
-        src_tokens, tgt_tokens, encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights = extract_attention_weights(args, model, src_bpe_model, tgt_bpe_model, src, tgt)
+        src_tokens, tgt_tokens, encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights = extract_attention_weights(model, src_bpe_model, tgt_bpe_model, src, tgt)
 
         fig = create_figure(encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights, src_tokens, tgt_tokens)
 
