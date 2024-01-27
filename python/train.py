@@ -60,8 +60,8 @@ class Trainer():
 
             self.visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", step, summary_writer)
 
-    def evaluate(self, model, src_bpe_model, tgt_bpe_model, src, tgt):
-        best, _ = beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
+    def evaluate(self, model, device, src_bpe_model, tgt_bpe_model, src, tgt):
+        best, _ = beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device=device, beam_size=4, length_norm_coefficient=0.6)
 
         debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
         debug_validate_table.add_row([src, best, tgt])
@@ -204,7 +204,7 @@ class ClassicTrainer(Trainer):
             criterion=criterion,
             summary_writer=summary_writer
         )
-        sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
+        sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=True)
         return model
 
     def train_n_epochs(self, args, epochs, model, train_loader, val_loader, test_loader, src_bpe_model, tgt_bpe_model, criterion, optimizer, positional_encoding, summary_writer, model_name_prefix=''):
@@ -323,6 +323,7 @@ class ClassicTrainer(Trainer):
                                                                             losses=losses))
                     self.evaluate(
                         model=model,
+                        device=args.device,
                         src_bpe_model=src_bpe_model,
                         tgt_bpe_model=tgt_bpe_model,
                         src='Anyone who retains the ability to recognise beauty will never become old.',
@@ -367,7 +368,7 @@ if __name__ == '__main__':
             src_bpe_model, tgt_bpe_model = load_tokenizers(os.path.join('runs', args.run_name))
             model, _, _ = load_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name='averaged_transformer_checkpoint.pth.tar')
             prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
-            sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
+            sacrebleu_evaluate(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=True)
         else:
             trainer.train(args)
 
