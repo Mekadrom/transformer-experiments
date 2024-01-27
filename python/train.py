@@ -1,11 +1,9 @@
 from criteria.labelsmooth import LabelSmoothedCE
-from dataloader import SequenceLoader
 from prettytable import PrettyTable
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from utils import *
 
-import argparse
 import io
 import matplotlib.pyplot as plt
 import numpy as np

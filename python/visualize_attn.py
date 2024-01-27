@@ -1,107 +1,148 @@
 from modules.multicast_attn import MultiCastAttention
+from plotly.subplots import make_subplots
 from utils import *
 
-import matplotlib.pyplot as plt
+import numpy as np
 import os
-import seaborn as sns
+import plotly.graph_objects as go
 import torch
 
-def gen_figure_for_page(layer_num, encoder_attention_weights, decoder_self_attn_weights, decoder_cross_attn_weights, attendee_tokens, attending_tokens):
-    fig, axes = plt.subplots(nrows=max(len(encoder_attention_weights), len(weights)), ncols=3, figsize=(10, 20))
+torch.set_printoptions(threshold=50000, linewidth=80)
 
-    def heatmap(data, attendee_tokens, attending_tokens, ax):
-        return sns.heatmap(data, square=True, annot=True, annot_kws={"fontsize":6}, fmt=".4f", xticklabels=attendee_tokens, yticklabels=attending_tokens, ax=ax)
+def heatmap(data, x_labels=None, y_labels=None):
+    trace = go.Heatmap(
+        z=data,
+        x=[(" " * i) + x_label for i, x_label in enumerate(x_labels)],
+        y=[(" " * i) + y_label for i, y_label in enumerate(y_labels)],
+        colorscale='Viridis',
+        hovertemplate='x: %{x}<br>y: %{y}<br>z: %{z:.64e}<extra></extra>'
+    )
+    return trace
 
-    for i, weights in enumerate(encoder_attention_weights):
-        s = heatmap(weights, attendee_tokens, attending_tokens, axes[i, 0])
-        s.set(xlabel="Input Sequence", ylabel="Output Sequence")
+def create_figure(encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights, input_sequence, output_sequence):
+    num_layers = len(encoder_layer_weights)
+    num_heads = max(*[len(encoder_layer_weight) for encoder_layer_weight in encoder_layer_weights] + [len(decoder_layer_self_attn_weight) for decoder_layer_self_attn_weight in decoder_layer_self_attn_weights] + [len(decoder_layer_cross_attn_weight) for decoder_layer_cross_attn_weight in decoder_layer_cross_attn_weights])
+    fig = make_subplots(rows=num_heads, cols=3, subplot_titles=("Encoder Self-Attention", "Decoder Self-Attention", "Decoder Cross-Attention"), vertical_spacing=0.002, horizontal_spacing=0.00001)
 
-    axes[0, 0].set_title(f"Encoder Layer {layer_num} Self Attention")
+    for layer_num in range(num_layers):
+        encoder_self_attn_weights = encoder_layer_weights[layer_num]
+        decoder_self_attn_weights = decoder_layer_self_attn_weights[layer_num]
+        decoder_cross_attn_weights = decoder_layer_cross_attn_weights[layer_num]
 
-    for i, weights in enumerate(decoder_self_attn_weights):
-        s = heatmap(weights, attendee_tokens, attending_tokens, axes[i, 1])
-        s.set(xlabel="Input Sequence", ylabel="Output Sequence")
+        assert len(encoder_self_attn_weights) == len(decoder_self_attn_weights) == len(decoder_cross_attn_weights), "Number of heads for each layer must be the same"
 
-    axes[0, 1].set_title(f"Decoder Layer {layer_num} Self Attention")
+        for i in range(len(encoder_self_attn_weights)):
+            fig.add_trace(
+                heatmap(encoder_self_attn_weights[i], input_sequence, input_sequence),
+                row=i + 1, col=1
+            )
 
-    for i, weights in enumerate(decoder_cross_attn_weights):
-        s = heatmap(weights, attendee_tokens, attending_tokens, axes[i, 2])
-        s.set(xlabel="Input Sequence", ylabel="Output Sequence")
+        for i in range(len(decoder_self_attn_weights)):
+            fig.add_trace(
+                heatmap(decoder_self_attn_weights[i], output_sequence, output_sequence),
+                row=i + 1, col=2
+            )
 
-    axes[0, 2].set_title(f"Decoder Layer {layer_num} Cross Attention")
+        for i in range(len(decoder_cross_attn_weights)):
+            fig.add_trace(
+                heatmap(decoder_cross_attn_weights[i], input_sequence, output_sequence),
+                row=i + 1, col=3
+            )
 
-    return fig, axes
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                type="dropdown",
+                buttons=[
+                    dict(label=f"Layer {i+1}",
+                         method="update",
+                         args=[{"visible": [(trace_num // (num_heads * 3) == i) for trace_num in range(num_layers * num_heads * 3)]}])
+                    for i in range(num_layers)
+                ],
+                x=0.5,
+                xanchor="left",
+                y=1.03,
+                yanchor="bottom"
+            ),
+        ],
+        height = 450 * num_heads,
+        plot_bgcolor='rgba(0,0,0,0)',
+    )
 
-def visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, src, tgt):
-    input_sequence = torch.LongTensor(src_bpe_model.encode(src, eos=False)).unsqueeze(0) # (1, input_sequence_length)
-    input_tokens = [src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
-    input_sequence_length = torch.LongTensor([input_sequence.size(1)]).unsqueeze(0) # (1)
-    target_sequence = torch.LongTensor(tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0) # (1, target_sequence_length)
-    target_tokens = [tgt_bpe_model.decode([id.item()])[0] for id in target_sequence.squeeze(0)]
-    target_sequence_length = torch.LongTensor([target_sequence.size(1)]).unsqueeze(0) # (1)
+    # make all heatmaps use square aspect ratio
+    for i in fig['layout']['annotations']:
+        i['font'] = dict(size=20)
+        # move titles further up
+        i['y'] = 1.1
+    for i in range(num_heads * 3):
+        if i % (num_heads * 3) in [0, 1, 2]:
+            fig['layout'][f"xaxis{i+1}"]['showticklabels'] = True
+        else:
+            fig['layout'][f"xaxis{i+1}"]['showticklabels'] = False
 
-    input_sequence = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
-    input_sequence = model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
-    # input_sequence = model.apply_dropout(input_sequence) # (N, pad_length, d_model) # don't apply dropout for visualization
+        fig['layout'][f"yaxis{i+1}"]['scaleanchor'] = f'x{i+1}'
+        fig['layout'][f"yaxis{i+1}"]['scaleratio'] = 1
+        fig['layout'][f"xaxis{i+1}"]['scaleanchor'] = f'y{i+1}'
+        fig['layout'][f"xaxis{i+1}"]['scaleratio'] = 1
+        fig['layout'][f"yaxis{i+1}"]['showgrid'] = False
+        fig['layout'][f"xaxis{i+1}"]['showgrid'] = False
+        fig['layout'][f"yaxis{i+1}"]['showline'] = False
+        fig['layout'][f"xaxis{i+1}"]['showline'] = False
+        fig['layout'][f"yaxis{i+1}"]['zeroline'] = False
+        fig['layout'][f"xaxis{i+1}"]['zeroline'] = False
+        # move x axis to top
+        fig['layout'][f"xaxis{i+1}"]['side'] = 'top'
+        # remove background
+        fig['layout'][f"yaxis{i+1}"]['gridcolor'] = 'rgba(0,0,0,0)'
+        fig['layout'][f"xaxis{i+1}"]['gridcolor'] = 'rgba(0,0,0,0)'
+        # reverse yaxis
+        fig['layout'][f"yaxis{i+1}"]['autorange'] = 'reversed'
+        # set font size to 6
+        fig['layout'][f"yaxis{i+1}"]['tickfont'] = dict(size=8)
+        fig['layout'][f"xaxis{i+1}"]['tickfont'] = dict(size=8)
+
+    fig.update_traces(visible=False)
+
+    # Show the first layer's traces by default
+    for i in range(num_heads * 3):
+        fig.data[i].visible = True
+
+    return fig
+
+def extract_attention_weights(args, model, src_bpe_model, tgt_bpe_model, src, tgt):
+    src_sequence = torch.LongTensor(src_bpe_model.encode(src, eos=False)).unsqueeze(0) # (1, input_sequence_length)
+    src_tokens = [src_bpe_model.decode([id.item()])[0] for id in src_sequence.squeeze(0)]
+    src_sequence_length = torch.LongTensor([src_sequence.size(1)]).unsqueeze(0) # (1)
+    tgt_sequence = torch.LongTensor(tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0) # (1, target_sequence_length)
+    tgt_tokens = [tgt_bpe_model.decode([id.item()])[0] for id in tgt_sequence.squeeze(0)]
+    tgt_sequence_length = torch.LongTensor([tgt_sequence.size(1)]).unsqueeze(0) # (1)
+
+    src_sequence = model.encoder.perform_embedding_transformation(src_sequence) # (N, pad_length, d_model)
+    src_sequence = model.encoder.apply_positional_embedding(src_sequence) # (N, pad_length, d_model)
 
     encoder_layer_weights = []
     decoder_layer_self_attn_weights = []
     decoder_layer_cross_attn_weights = []
 
     for e, encoder_layer in enumerate(model.encoder.encoder_layers):
-        input_sequence, attention_weights = encoder_layer[0](query_sequences=input_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length)
+        src_sequence, attention_weights = encoder_layer[0](query_sequences=src_sequence, key_sequences=src_sequence, value_sequences=src_sequence, key_value_sequence_lengths=src_sequence_length)
+        src_sequence = encoder_layer[1](sequences=src_sequence) # (N, pad_length, d_model)
 
-        attention_weights = attention_weights.cpu().detach()
-        attention_weights = attention_weights.contiguous().view(1, args.n_heads, attention_weights.size(1), attention_weights.size(2))
+        encoder_layer_weights.append(attention_weights.cpu().detach().numpy())
 
-        encoder_attn_weights = []
-
-        # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
-        for i in range(attention_weights.size(1)):
-            encoder_attn_weights.append(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy())
-        input_sequence = encoder_layer[1](sequences=input_sequence) # (N, pad_length, d_model)
-
-        encoder_layer_weights.append(encoder_attn_weights)
-
-    input_sequence = model.encoder.layer_norm(input_sequence)
-
-    target_sequence = model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
-    target_sequence = model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
-    # target_sequence = model.apply_dropout(target_sequence) # (N, pad_length, d_model) # don't apply dropout for visualization
+    src_sequence = model.encoder.layer_norm(src_sequence)
+    tgt_sequence = model.decoder.apply_embedding_transformation(tgt_sequence) # (N, pad_length, d_model)
+    tgt_sequence = model.decoder.apply_positional_embedding(tgt_sequence) # (N, pad_length, d_model)
 
     for d, decoder_layer in enumerate(model.decoder.decoder_layers):
-        target_sequence, attention_weights = decoder_layer[0](query_sequences=target_sequence, key_sequences=target_sequence, value_sequences=target_sequence, key_value_sequence_lengths=target_sequence_length) # (N, pad_length, d_model)
-        
-        attention_weights = attention_weights.cpu().detach()
-        attention_weights = attention_weights.contiguous().view(1, args.n_heads, attention_weights.size(1), attention_weights.size(2))
+        tgt_sequence, self_attn_weights = decoder_layer[0](query_sequences=tgt_sequence, key_sequences=tgt_sequence, value_sequences=tgt_sequence, key_value_sequence_lengths=tgt_sequence_length) # (N, pad_length, d_model)
+        tgt_sequence, cross_attn_weights = decoder_layer[1](query_sequences=tgt_sequence, key_sequences=src_sequence, value_sequences=src_sequence, key_value_sequence_lengths=src_sequence_length) # (N, pad_length, d_model)
+        tgt_sequence = decoder_layer[2](sequences=tgt_sequence) # (N, pad_length, d_model)
 
-        decoder_self_attn_weights = []
+        decoder_layer_self_attn_weights.append(self_attn_weights.cpu().contiguous().detach().numpy())
+        decoder_layer_cross_attn_weights.append(cross_attn_weights.cpu().detach().numpy())
 
-        # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
-        for i in range(attention_weights.size(1)):
-            decoder_self_attn_weights.append(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy())
-        target_sequence, attention_weights = decoder_layer[1](query_sequences=target_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length) # (N, pad_length, d_model)
-
-        attention_weights = attention_weights.cpu().detach()
-        attention_weights = attention_weights.contiguous().view(1, args.n_heads, attention_weights.size(1), attention_weights.size(2))
-
-        decoder_cross_attn_weights = []
-
-        # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
-        for i in range(attention_weights.size(1)):
-            decoder_cross_attn_weights.append(attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy())
-        target_sequence = decoder_layer[2](sequences=target_sequence) # (N, pad_length, d_model)
-
-        decoder_layer_self_attn_weights.append(decoder_layer_self_attn_weights)
-        decoder_layer_cross_attn_weights.append(decoder_layer_cross_attn_weights)
-
-    figures = []
-
-    for i in range(len(encoder_layer_weights)):
-        fig, axes = gen_figure_for_page(i, encoder_layer_weights[i], decoder_layer_self_attn_weights[i], decoder_layer_cross_attn_weights[i], input_tokens, target_tokens)
-        figures.append(fig)
-
-    return figures
+    return src_tokens, tgt_tokens, encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights
 
 if __name__ == "__main__":
     args, unk = get_args()
@@ -121,7 +162,6 @@ if __name__ == "__main__":
 
     model = state_dict['model']
 
-    
     if 'positional_encoding' in state_dict:
         positional_encoding = state_dict['positional_encoding']
     else:
@@ -168,45 +208,11 @@ if __name__ == "__main__":
 
     while True:
         src = input("Enter source sentence: ")
+        print(f"predicted: {beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model)}")
         tgt = input("Enter target sentence: ")
 
-        figures = visualize_attention_weights(args, model, src_bpe_model, tgt_bpe_model, src, tgt)
+        src_tokens, tgt_tokens, encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights = extract_attention_weights(args, model, src_bpe_model, tgt_bpe_model, src, tgt)
 
-        def navigate_figures(figures, start_index=0):
-            current_index = start_index
+        fig = create_figure(encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights, src_tokens, tgt_tokens)
 
-            def show_figure(index):
-                plt.close(figures[current_index])
-                figures[index].show()
-
-            def on_next(event):
-                nonlocal current_index
-                if current_index + 1 < len(figures):
-                    current_index += 1
-                    show_figure(current_index)
-
-            def on_prev(event):
-                nonlocal current_index
-                if current_index > 0:
-                    current_index -= 1
-                    show_figure(current_index)
-
-            def on_close(event):
-                plt.close(figures[current_index])
-
-            # Create navigation buttons
-            next_button = plt.axes([0.85, 0.05, 0.1, 0.075])
-            prev_button = plt.axes([0.7, 0.05, 0.1, 0.075])
-            close_button = plt.axes([0.55, 0.05, 0.1, 0.075])
-            bnext = plt.Button(next_button, 'Next')
-            bnext.on_clicked(on_next)
-            bprev = plt.Button(prev_button, 'Previous')
-            bprev.on_clicked(on_prev)
-            bclose = plt.Button(close_button, 'Close')
-            bclose.on_clicked(on_close)
-
-            # Show the first figure
-            figures[start_index].show()
-
-        # Call the function with the figures list
-        navigate_figures(figures)
+        fig.show()

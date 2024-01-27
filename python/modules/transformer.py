@@ -362,6 +362,10 @@ class Transformer(nn.Module):
 
                 decoder_layer[-1].weight.data = torch.fill_(decoder_layer[-1].weight.data, variance_so_far.item())
 
+        if self.args.head_weights_init_type == 'before_after_per_layer':
+            for encoder_layer in self.encoder.encoder_layers:
+                cast_queries = encoder_layer[0].cast_queries
+
         print("Model initialized.")
 
     def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths):

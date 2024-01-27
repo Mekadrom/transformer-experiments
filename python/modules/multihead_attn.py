@@ -25,10 +25,10 @@ class MultiHeadAttention(nn.Module):
         self.in_decoder = in_decoder
 
         # A linear projection to cast (n_heads sets of) queries from the input query sequences
-        self.cast_queries = nn.Linear(self.args.d_model, self.args.n_heads * self.args.d_queries)
+        self.cast_queries = nn.Linear(self.args.d_model, self.args.n_heads * self.args.d_queries) # (N, query_sequence_pad_length, n_heads * d_queries)
         # A linear projection to cast (n_heads sets of) keys and values from the input reference sequences
-        self.cast_keys = nn.Linear(self.args.d_model, self.args.n_heads * self.args.d_queries)
-        self.cast_values = nn.Linear(self.args.d_model, self.args.n_heads * self.args.d_values)
+        self.cast_keys = nn.Linear(self.args.d_model, self.args.n_heads * self.args.d_queries) # (N, key_value_sequence_pad_length, n_heads * d_keys)
+        self.cast_values = nn.Linear(self.args.d_model, self.args.n_heads * self.args.d_values) # (N, key_value_sequence_pad_length, n_heads * d_values)
 
         if self.args.qkv_config == 'kv+pos':
             self.map_pos = nn.Linear(self.args.positional_encoding_dim, 1, bias=True)
@@ -152,6 +152,8 @@ class MultiHeadAttention(nn.Module):
         # Compute softmax along the key dimension
         attention_weights = self.softmax(attention_weights) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
+        attention_weights_for_visualization = attention_weights.clone().detach()
+
         # Apply dropout
         attention_weights = self.dropout(attention_weights) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
@@ -170,4 +172,4 @@ class MultiHeadAttention(nn.Module):
         # Apply dropout and residual connection
         sequences = self.dropout(sequences) + input_to_add # (N, query_sequence_pad_length, d_model)
 
-        return sequences, attention_weights # return attention weights for visualization
+        return sequences, attention_weights_for_visualization
