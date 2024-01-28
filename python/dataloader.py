@@ -22,7 +22,6 @@ class SequenceLoader(object):
 
         Each batch contains just a single source-target pair, in the same order as in the files from which they were read.
     """
-
     def __init__(self, src_bpe_model, tgt_bpe_model, data_folder, source_suffix, target_suffix, split, tokens_in_batch):
         """
         :param data_folder: folder containing the source and target language data files
@@ -68,8 +67,6 @@ class SequenceLoader(object):
         """
         Prepares batches for one epoch.
         """
-
-        # If training
         if self.for_training:
             # Group or chunk based on target sequence lengths
             chunks = [list(g) for _, g in groupby(self.data, key=lambda x: x[3])]

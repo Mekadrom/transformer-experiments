@@ -349,7 +349,7 @@ def average_checkpoints(positional_encoding, source_folder, model_name_prefix='s
     # Save averaged checkpoint
     torch.save({'model': averaged_checkpoint, 'positional_encoding': positional_encoding}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python):
+def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python):
     """
     Returns None when command line sacrebleu is used
     """

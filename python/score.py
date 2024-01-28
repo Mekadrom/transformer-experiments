@@ -34,6 +34,6 @@ if __name__ == '__main__':
 
     model.to(args.device)
 
-    bleu_score = sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=True)
+    bleu_score = sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=True)
 
     print(f"BLEU 13a tokenization, cased score: {bleu_score.score}")
