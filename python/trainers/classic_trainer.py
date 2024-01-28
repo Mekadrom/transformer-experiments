@@ -94,26 +94,26 @@ class ClassicTrainer():
         start_data_time = time.time()
         start_step_time = time.time()
 
-        for i, (source_sequences, target_sequences, source_sequence_lengths, target_sequence_lengths) in enumerate(self.train_loader):
-            source_sequences = source_sequences.to(self.device) # (N, max_source_sequence_pad_length_this_batch)
-            target_sequences = target_sequences.to(self.device) # (N, max_target_sequence_pad_length_this_batch)
-            source_sequence_lengths = source_sequence_lengths.to(self.device) # (N)
-            target_sequence_lengths = target_sequence_lengths.to(self.device) # (N)
+        for i, (src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) in enumerate(self.train_loader):
+            src_seqs = src_seqs.to(self.device) # (N, max_source_sequence_pad_length_this_batch)
+            tgt_seqs = tgt_seqs.to(self.device) # (N, max_target_sequence_pad_length_this_batch)
+            src_seq_lengths = src_seq_lengths.to(self.device) # (N)
+            tgt_seq_lengths = tgt_seq_lengths.to(self.device) # (N)
 
-            target_sequences, target_sequence_lengths = self.target_sequence_transform(source_sequences, source_sequence_lengths, target_sequences, target_sequence_lengths)
+            tgt_seqs, tgt_seq_lengths = self.target_sequence_transform(src_seqs, src_seq_lengths, tgt_seqs, tgt_seq_lengths)
 
             data_time.update(time.time() - start_data_time)
 
-            predicted_sequences = self.model(source_sequences, target_sequences, source_sequence_lengths, target_sequence_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+            predicted_sequences = self.model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
             # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
             # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
             # Therefore, pads start after (length - 1) positions
-            loss = self.criterion(inputs=predicted_sequences, targets=target_sequences[:, 1:], lengths=target_sequence_lengths - 1) # scalar
+            loss = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
 
             (loss / self.batches_per_step).backward()
 
-            losses.update(loss.item(), (target_sequence_lengths - 1).sum().item())
+            losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
 
             # Update model (i.e. perform a training step) only after gradients are accumulated from batches_per_step batches
             if (i + 1) % self.batches_per_step == 0:
@@ -127,11 +127,7 @@ class ClassicTrainer():
                 step_time.update(time.time() - start_step_time)
 
                 if self.steps % self.print_frequency == 0:
-                    print('Epoch {0}/{1}-----'
-                          'Batch {2}/{3}-----'
-                          'Step {4}/{5}-----'
-                          'Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----'
-                          'Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
+                    print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
                           'Loss {losses.val:.4f} ({losses.avg:.4f})'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, losses=losses))
                     self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
 

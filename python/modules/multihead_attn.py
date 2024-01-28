@@ -131,7 +131,7 @@ class MultiHeadAttention(nn.Module):
             queries = queries.contiguous().view(-1, query_sequence_pad_length, self.d_queries.item()) # (N * n_heads, query_sequence_pad_length, d_queries)
             keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.d_queries.item()) # (N * n_heads, key_value_sequence_pad_length, d_keys)
             values = values.contiguous().view(-1, key_value_sequence_pad_length, self.d_values.item()) # (N * n_heads, key_value_sequence_pad_length, d_values)
-            attention_weights = torch.bmm(queries, keys.transpose(-2, -1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+            attention_weights = torch.bmm(queries, keys.permute(0, 2, 1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # Scale dot-products
         attention_weights = (1. / math.sqrt(self.d_queries.item())) * attention_weights # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)

@@ -28,10 +28,7 @@ if __name__ == '__main__':
 
     if args.prune_mode == 'train-prune':
         trainer.train()
-
-        model = trainer.model
-
-        prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
+        prune_model(trainer.model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
     elif args.prune_mode == 'train-prune-retrain':
         trainer.train()
 
