@@ -107,7 +107,7 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
 
         if 'positional_encoding' in checkpoint:
             positional_encoding = checkpoint['positional_encoding']
-            if (type(positional_encoding) == 'RotaryEmbedding' and args.positional_encoding_type != 'RotaryEmbedding') or (type(positional_encoding) != 'RotaryEmbedding' and args.positional_encoding_type == 'RotaryEmbedding'):
+            if hasattr(args, 'positional_encoding_type') and ((type(positional_encoding) == 'RotaryEmbedding' and args.positional_encoding_type != 'RotaryEmbedding') or (type(positional_encoding) != 'RotaryEmbedding' and args.positional_encoding_type == 'RotaryEmbedding')):
                 print("WARNING: positional encoding type mismatch between args and saved model. Using positional encoding from args instead.")
                 positional_encoding = get_positional_encoding(args)
         else:
