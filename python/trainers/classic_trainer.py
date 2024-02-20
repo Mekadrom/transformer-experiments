@@ -33,13 +33,20 @@ class ClassicTrainer():
         self.bpe_run_dir = os.path.join('runs', args.tokenizer_run_name)
 
         self.src_bpe_model, self.tgt_bpe_model = load_tokenizers(self.bpe_run_dir)
+
+        self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model)
+        self.admin_profiling_batch = next(self.train_loader, None)
+
+        if self.admin_profiling_batch is None:
+            print("No data found in the dataset. Please check the dataset path and the tokenizer run name.")
+
         self.model, self.optimizer, self.positional_encoding = self.load_model_positional_encoding_and_optimizer()
+        self.model = self.model.to(args.device)
+        self.positional_encoding.to(args.device)
 
         print_model(self.model)
         print(f"Optimizer: {self.optimizer}")
         print(f"Positional Encoding: {self.positional_encoding.shape if type(self.positional_encoding) == torch.Tensor else self.positional_encoding}")
-
-        self.model = self.model.to(args.device)
 
         if args.save_initial_checkpoint:
             save_checkpoint(-1, self.model, self.optimizer, positional_encoding=self.positional_encoding, prefix=f"runs/{args.run_name}/")
@@ -48,8 +55,6 @@ class ClassicTrainer():
             print("Visualizing attention weights before training...")
             # get attention weight visualization before any updates are made to the model
             self.visualize_attention_weights(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
-
-        self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model)
 
         # todo: make this configurable
         self.criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(self.device)
@@ -62,7 +67,7 @@ class ClassicTrainer():
         self.target_sequence_transform = lambda source_sequences, source_sequence_lengths, target_sequences, target_sequence_lengths: (target_sequences, target_sequence_lengths)
 
     def load_model_positional_encoding_and_optimizer(self):
-        return load_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model)
+        return load_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, admin_profiling_batch=self.admin_profiling_batch, tgt_bpe_model=self.tgt_bpe_model)
 
     def train(self, model_name_prefix=''):
         print(f"Training for {self.epochs} epochs...")
@@ -198,7 +203,7 @@ class ClassicTrainer():
         input_sequence = self.model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
         for e, encoder_layer in enumerate(self.model.encoder.encoder_layers):
-            input_sequence, attention_weights = encoder_layer[0](query_sequences=input_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length)
+            input_sequence, attention_weights, _ = encoder_layer[0](query_sequences=input_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length)
 
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))
@@ -216,7 +221,7 @@ class ClassicTrainer():
         target_sequence = self.model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
 
         for d, decoder_layer in enumerate(self.model.decoder.decoder_layers):
-            target_sequence, attention_weights = decoder_layer[0](query_sequences=target_sequence, key_sequences=target_sequence, value_sequences=target_sequence, key_value_sequence_lengths=target_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights, _ = decoder_layer[0](query_sequences=target_sequence, key_sequences=target_sequence, value_sequences=target_sequence, key_value_sequence_lengths=target_sequence_length) # (N, pad_length, d_model)
             
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))
@@ -226,7 +231,7 @@ class ClassicTrainer():
                 image_data = self.visualize_attention_weights_for_layer('Decoder-Self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence, attention_weights = decoder_layer[1](query_sequences=target_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights, _ = decoder_layer[1](query_sequences=target_sequence, key_sequences=input_sequence, value_sequences=input_sequence, key_value_sequence_lengths=input_sequence_length) # (N, pad_length, d_model)
 
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))

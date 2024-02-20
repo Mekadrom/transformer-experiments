@@ -11,7 +11,7 @@ class DistillationTrainer(ClassicTrainer):
 
     def load_model_positional_encoding_and_optimizer(self):
         # load teacher model as well
-        self.teacher_model, _, _ = load_checkpoint_or_generate_new(self.args, os.path.join('runs', self.args.distillation_teacher_run_name), src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model, checkpoint_model_name='averaged_transformer_checkpoint.pth.tar')
+        self.teacher_model, _, _ = load_checkpoint_or_generate_new(self.args, os.path.join('runs', self.args.distillation_teacher_run_name), src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model, admin_profiling_batch=self.admin_profiling_batch, checkpoint_model_name='averaged_transformer_checkpoint.pth.tar')
         self.teacher_model = self.teacher_model.to(self.args.device)
         self.teacher_model.eval()
         return super().load_model_positional_encoding_and_optimizer()

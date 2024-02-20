@@ -89,7 +89,7 @@ def get_positional_encoding(args):
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
 
-def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar'):
+def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, admin_profiling_batch=None, checkpoint_model_name='transformer_checkpoint.pth.tar'):
     print('Initializing model...')
 
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
@@ -115,7 +115,7 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
     else:
         print("Starting from scratch...")
         positional_encoding = get_positional_encoding(args)
-        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding,  tie_embeddings=tgt_bpe_model==src_bpe_model)
+        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding, admin_profiling_batch=admin_profiling_batch, tie_embeddings=tgt_bpe_model==src_bpe_model)
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
     return model, optimizer, positional_encoding
@@ -478,6 +478,43 @@ def create_activation_function(activation_function_name):
     else:
         raise Exception(f"Unknown activation function {activation_function_name}")
 
+def calculate_admin_variances(model, admin_profiling_batch):
+    model.eval()
+    # pass first batch through in eval mode and record variance of admin layers
+    with torch.no_grad():
+        encoder_variances = []
+        decoder_self_variances = []
+        decoder_cross_variances = []
+
+        src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths = admin_profiling_batch
+
+        src_seqs = src_seqs.to(model.encoder.device)
+        tgt_seqs = tgt_seqs.to(model.decoder.device)
+        src_seq_lengths = src_seq_lengths.to(model.encoder.device)
+        tgt_seq_lengths = tgt_seq_lengths.to(model.decoder.device)
+
+        src_seqs = model.encoder.perform_embedding_transformation(src_seqs) # (N, pad_length, d_model)
+        src_seqs = model.encoder.apply_positional_embedding(src_seqs) # (N, pad_length, d_model)
+
+        for encoder_layer in model.encoder.encoder_layers:
+            src_seqs, _, admin_residual = encoder_layer[0](query_sequences=src_seqs, key_sequences=src_seqs, value_sequences=src_seqs, key_value_sequence_lengths=src_seq_lengths) # (N, pad_length, d_model)
+            src_seqs = encoder_layer[1](sequences=src_seqs) # (N, pad_length, d_model)
+            print(admin_residual)
+            encoder_variances.append(admin_residual.var(dim=0).mean().item())
+        src_seqs = model.encoder.layer_norm(src_seqs) # (N, pad_length, d_model)
+
+        tgt_seqs = model.decoder.apply_embedding_transformation(tgt_seqs) # (N, pad_length, d_model)
+        tgt_seqs = model.decoder.apply_positional_embedding(tgt_seqs) # (N, pad_length, d_model)
+
+        for decoder_layer in model.decoder.decoder_layers:
+            tgt_seqs, _, admin_residual_self = decoder_layer[0](query_sequences=tgt_seqs, key_sequences=tgt_seqs, value_sequences=tgt_seqs, key_value_sequence_lengths=tgt_seq_lengths)
+            tgt_seqs, _, admin_residual_cross = decoder_layer[1](query_sequences=tgt_seqs, key_sequences=src_seqs, value_sequences=src_seqs, key_value_sequence_lengths=src_seq_lengths)
+            tgt_seqs = decoder_layer[2](sequences=tgt_seqs)
+            decoder_self_variances.append(admin_residual_self.var(dim=0).mean().item())
+            decoder_cross_variances.append(admin_residual_cross.var(dim=0).mean().item())
+
+        return encoder_variances, decoder_self_variances, decoder_cross_variances
+
 def get_args():
     argparser = argparse.ArgumentParser()
 
@@ -558,9 +595,6 @@ def get_args():
 
     args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
     args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))
-
-    if args.encoder_layer_self_attn_config is None:
-        args.__setattr__('encoder_layer_self_attn_config', f"MultiHeadAttention:{args.d_model}:{args.n_heads}")
 
     if args.decoder_layer_self_attn_config is None:
         args.__setattr__('decoder_layer_self_attn_config', "shared")

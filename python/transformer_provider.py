@@ -4,8 +4,9 @@ class TransformerModelProvider:
     def __init__(self):
         super().__init__()
 
-    def provide(self, args, src_vocab_size, tgt_vocab_size, positional_encoding, tie_embeddings):
-        return Transformer(
+    def provide(self, args, src_vocab_size, tgt_vocab_size, positional_encoding, admin_profiling_batch, tie_embeddings):
+        model = Transformer(
+            args=args,
             src_vocab_size=src_vocab_size,
             tgt_vocab_size=tgt_vocab_size,
             d_model=args.d_model,
@@ -27,7 +28,13 @@ class TransformerModelProvider:
             init_weights_from=args.init_weights_from,
             init_weights_gain=args.init_weights_gain,
             use_admin=args.use_admin,
+            admin_profiling_batch=admin_profiling_batch,
             device=args.device,
             learnable_positional_encoding=args.learnable_positional_encoding,
             tie_embeddings=tie_embeddings,
         )
+
+        model = model.to(args.device)
+        model.init_weights(admin_profiling_batch=admin_profiling_batch, tie_embeddings=tie_embeddings)
+
+        return model

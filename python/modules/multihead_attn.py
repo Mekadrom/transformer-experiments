@@ -1,5 +1,6 @@
 from rotary_embedding_torch import RotaryEmbedding
 
+import admin_torch
 import math
 import torch
 import torch.nn as nn
@@ -8,7 +9,7 @@ class MultiHeadAttention(nn.Module):
     """
     The Multi-Head Attention sublayer.
     """
-    def __init__(self, d_model, n_heads, d_queries, d_values, qkv_config, dropout, device, positional_encoding_dim, positional_encoding=None, in_decoder=False):
+    def __init__(self, n_layers, d_model, n_heads, d_queries, d_values, qkv_config, dropout, use_admin, device, positional_encoding_dim, d_output=None, positional_encoding=None, in_decoder=False):
         """
         :param d_model: size of vectors throughout the transformer model, i.e. input and output sizes for this sublayer
         :param n_heads: number of heads in the multi-head attention
@@ -33,6 +34,9 @@ class MultiHeadAttention(nn.Module):
         self.in_decoder = torch.tensor(in_decoder, dtype=torch.bool).to(device)
         self.in_decoder.requires_grad = False
 
+        if d_output is None:
+            d_output = d_model # default to d_model if not specified
+
         # A linear projection to cast (n_heads sets of) queries from the input query sequences
         self.cast_queries = nn.Linear(d_model, n_heads * d_queries) # (N, query_sequence_pad_length, n_heads * d_queries)
         # A linear projection to cast (n_heads sets of) keys and values from the input reference sequences
@@ -43,7 +47,13 @@ class MultiHeadAttention(nn.Module):
             self.map_pos = nn.Linear(positional_encoding_dim, 1, bias=True)
 
         # A linear projection to cast (n_heads sets of) computed attention-weighted vectors to output vectors (of the same size as input query vectors)
-        self.cast_output = nn.Linear(n_heads * d_values, d_model)
+        self.cast_output = nn.Linear(n_heads * d_values, d_output)
+
+        if use_admin and not in_decoder:
+            self.residual = admin_torch.as_module(n_layers)
+
+        if d_model != d_output:
+            self.cast_output = nn.Linear(d_model, d_output)
 
         # Softmax layer
         self.softmax = nn.Softmax(dim=-1)
@@ -93,7 +103,7 @@ class MultiHeadAttention(nn.Module):
         values = values.contiguous().view(batch_size, key_value_sequence_pad_length, self.n_heads.item(), self.d_values.item()) # (N, key_value_sequence_pad_length, n_heads, d_values)
 
         # Re-arrange axes such that the last two dimensions are the sequence lengths and the queries/keys/values
-        queries = queries.permute(0, 2, 1, 3)
+        queries = queries.permute(0, 2, 1, 3) # (N, n_heads, query_sequence_pad_length, d_queries)
         keys = keys.permute(0, 2, 1, 3)
         values = values.permute(0, 2, 1, 3)
 
@@ -178,7 +188,15 @@ class MultiHeadAttention(nn.Module):
         # Transform the concatenated subspace-sequences into a single output of size d_model
         sequences = self.cast_output(sequences) # (N, query_sequence_pad_length, d_model)
 
-        # Apply dropout and residual connection
-        sequences = self.dropout(sequences) + input_to_add # (N, query_sequence_pad_length, d_model)
+        sequences = self.dropout(sequences)
 
-        return sequences, attention_weights_for_visualization
+        # Apply dropout and residual connection
+        sequences = sequences + input_to_add # (N, query_sequence_pad_length, d_model)
+
+        if hasattr(self, 'residual'):
+            sequences = self.residual(sequences, input_to_add)
+
+        if hasattr(self, 'cast_output'):
+            sequences = self.cast_output(sequences)
+
+        return sequences, attention_weights_for_visualization, input_to_add
