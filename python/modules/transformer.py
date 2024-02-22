@@ -168,8 +168,9 @@ class Encoder(nn.Module):
         return encoder_sequences
     
     def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, encoder_layer):
+        residual = encoder_sequences.clone() # (N, pad_length, d_model)
         encoder_sequences, _, _ = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
-        encoder_sequences = encoder_layer[1](sequences=encoder_sequences) # (N, pad_length, d_model)
+        encoder_sequences = encoder_layer[1](sequences=encoder_sequences, residual=residual) # (N, pad_length, d_model)
         return encoder_sequences
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):

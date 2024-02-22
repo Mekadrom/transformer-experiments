@@ -189,12 +189,10 @@ class MultiHeadAttention(nn.Module):
         sequences = self.cast_output(sequences) # (N, query_sequence_pad_length, d_model)
 
         sequences = self.dropout(sequences)
-
-        # Apply dropout and residual connection
-        sequences = sequences + input_to_add # (N, query_sequence_pad_length, d_model)
-
         if hasattr(self, 'residual'):
             sequences = self.residual(sequences, input_to_add)
+        else:
+            sequences = sequences + input_to_add
 
         if hasattr(self, 'cast_output'):
             sequences = self.cast_output(sequences)
