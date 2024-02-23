@@ -147,10 +147,12 @@ class Encoder(nn.Module):
 
         attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else multi_head_or_cast_attn()
         ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else PositionWiseFCNetwork(
+            n_layers=args.n_encoder_layers,
             d_model=self.d_model.item(),
             d_inner=self.d_inner,
             activation_function=self.activation_function, 
-            dropout=self.dropout, 
+            dropout=self.dropout,
+            use_admin=self.use_admin,
             device=self.device
         )
 
@@ -170,7 +172,7 @@ class Encoder(nn.Module):
     def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, encoder_layer):
         residual = encoder_sequences.clone() # (N, pad_length, d_model)
         encoder_sequences, _, _ = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
-        encoder_sequences = encoder_layer[1](sequences=encoder_sequences, residual=residual) # (N, pad_length, d_model)
+        encoder_sequences = encoder_layer[1](sequences=encoder_sequences) # (N, pad_length, d_model)
         return encoder_sequences
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):
@@ -348,11 +350,14 @@ class Decoder(nn.Module):
             in_decoder=True
         )
         ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else PositionWiseFCNetwork(
+            n_layers=args.n_decoder_layers,
             d_model=self.d_model.item(),
             d_inner=self.d_inner,
             activation_function=self.activation_function, 
-            dropout=self.dropout, 
-            device=self.device
+            dropout=self.dropout,
+            use_admin=self.use_admin,
+            device=self.device,
+            in_decoder=True
         )
 
         return [self_attn, cross_attn, ffn]
