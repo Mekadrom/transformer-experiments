@@ -48,7 +48,7 @@ class PositionWiseFCNetwork(nn.Module):
 
         sequences = self.dropout(sequences) # (N, pad_length, d_model)
         if hasattr(self, 'residual'):
-            sequences = self.residual(sequences, input_to_add) 
+            sequences = self.residual(input_to_add, sequences) 
         else:
             sequences = sequences + input_to_add
 

@@ -1,6 +1,7 @@
 from .multicast_attn import MultiCastAttention
 from .multihead_attn import MultiHeadAttention
 from .positionwise_fcn import PositionWiseFCNetwork
+from .positionwise_smoen import PositionWiseMixtureOfExpertsNetwork
 
 import math
 import torch
@@ -12,8 +13,8 @@ class Encoder(nn.Module):
     The Encoder.
     """
 
-    def __init__(self, args, vocab_size, d_model, n_heads, d_queries, d_values, 
-                 qkv_config, d_inner, n_layers, dropout, encoder_param_sharing_type, m_encoder_independent_layers, 
+    def __init__(self, args, vocab_size, d_model, n_heads, d_queries, d_values, qkv_config, 
+                 d_inner, use_moe, n_layers, dropout, encoder_param_sharing_type, m_encoder_independent_layers, 
                  positional_encoding_dim, positional_encoding, activation_function, use_admin, device, 
                  learnable_positional_encoding=False):
         """
@@ -37,6 +38,7 @@ class Encoder(nn.Module):
         self.d_values = d_values
         self.qkv_config = qkv_config
         self.d_inner = d_inner
+        self.use_moe = use_moe
         self.n_layers = n_layers
         self.dropout = dropout
         self.positional_encoding_dim = positional_encoding_dim
@@ -128,6 +130,7 @@ class Encoder(nn.Module):
                 use_admin=self.use_admin,
                 device=self.device,
                 positional_encoding_dim=self.positional_encoding_dim,
+                d_output=self.d_model.item(),
                 positional_encoding=self.positional_encoding,
                 in_decoder=False
             ) if args.encoder_layer_self_attn_config is None else MultiCastAttention(
@@ -144,17 +147,29 @@ class Encoder(nn.Module):
                 in_decoder=False,
                 sequential=False
             )
+        
+        def fcn_or_moe_ffn():
+            return PositionWiseMixtureOfExpertsNetwork(
+                n_experts=args.n_experts,
+                n_layers=args.n_encoder_layers,
+                d_model=self.d_model.item(),
+                d_inner=self.d_inner,
+                activation_function=self.activation_function,
+                dropout=self.dropout,
+                use_admin=self.use_admin,
+                device=self.device
+            ) if self.use_moe else PositionWiseFCNetwork(
+                n_layers=args.n_encoder_layers,
+                d_model=self.d_model.item(),
+                d_inner=self.d_inner,
+                activation_function=self.activation_function, 
+                dropout=self.dropout,
+                use_admin=self.use_admin,
+                device=self.device
+            )
 
         attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else multi_head_or_cast_attn()
-        ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else PositionWiseFCNetwork(
-            n_layers=args.n_encoder_layers,
-            d_model=self.d_model.item(),
-            d_inner=self.d_inner,
-            activation_function=self.activation_function, 
-            dropout=self.dropout,
-            use_admin=self.use_admin,
-            device=self.device
-        )
+        ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else fcn_or_moe_ffn()
 
         return [attn_layers, ffn]
 
@@ -200,8 +215,8 @@ class Decoder(nn.Module):
     The Decoder.
     """
 
-    def __init__(self, args, vocab_size, d_model, n_heads, d_queries, d_values, 
-                 qkv_config, d_inner, n_layers, dropout, decoder_param_sharing_type, m_decoder_independent_layers, 
+    def __init__(self, args, vocab_size, d_model, n_heads, d_queries, d_values, qkv_config, 
+                 d_inner, use_moe, n_layers, dropout, decoder_param_sharing_type, m_decoder_independent_layers, 
                  positional_encoding_dim, positional_encoding, activation_function, use_admin, device, 
                  learnable_positional_encoding=False):
         """
@@ -225,6 +240,7 @@ class Decoder(nn.Module):
         self.d_values = d_values
         self.qkv_config = qkv_config
         self.d_inner = d_inner
+        self.use_moe = use_moe
         self.n_layers = n_layers
         self.dropout = dropout
         self.positional_encoding_dim = positional_encoding_dim
@@ -317,6 +333,7 @@ class Decoder(nn.Module):
                 use_admin=self.use_admin,
                 device=self.device,
                 positional_encoding_dim=self.positional_encoding_dim,
+                d_output=self.d_model.item(),
                 positional_encoding=self.positional_encoding,
                 in_decoder=True
             ) if args.decoder_layer_self_attn_config is None else MultiCastAttention(
@@ -333,6 +350,27 @@ class Decoder(nn.Module):
                 in_decoder=True,
                 sequential=False
             )
+        
+        def fcn_or_moe_ffn():
+            return PositionWiseMixtureOfExpertsNetwork(
+                n_experts=args.n_experts,
+                n_layers=args.n_decoder_layers,
+                d_model=self.d_model.item(),
+                d_inner=self.d_inner,
+                activation_function=self.activation_function,
+                dropout=self.dropout,
+                use_admin=self.use_admin,
+                device=self.device
+            ) if self.use_moe else PositionWiseFCNetwork(
+                n_layers=args.n_decoder_layers,
+                d_model=self.d_model.item(),
+                d_inner=self.d_inner,
+                activation_function=self.activation_function, 
+                dropout=self.dropout,
+                use_admin=self.use_admin,
+                device=self.device,
+                in_decoder=True
+            )
 
         self_attn = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else multi_head_or_cast_attn()
         cross_attn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else MultiHeadAttention(
@@ -346,19 +384,11 @@ class Decoder(nn.Module):
             use_admin=self.use_admin,
             device=self.device,
             positional_encoding_dim=self.positional_encoding_dim,
+            d_output=self.d_model.item(),
             positional_encoding=self.positional_encoding,
             in_decoder=True
         )
-        ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else PositionWiseFCNetwork(
-            n_layers=args.n_decoder_layers,
-            d_model=self.d_model.item(),
-            d_inner=self.d_inner,
-            activation_function=self.activation_function, 
-            dropout=self.dropout,
-            use_admin=self.use_admin,
-            device=self.device,
-            in_decoder=True
-        )
+        ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else fcn_or_moe_ffn()
 
         return [self_attn, cross_attn, ffn]
     
@@ -405,11 +435,10 @@ class Transformer(nn.Module):
     """
 
     def __init__(self, args, src_vocab_size, tgt_vocab_size, d_model, n_heads, d_queries, d_values, 
-                 qkv_config, d_inner, n_encoder_layers, n_decoder_layers, dropout, encoder_param_sharing_type,
-                 decoder_param_sharing_type, m_encoder_independent_layers, m_decoder_independent_layers,
-                 positional_encoding_dim, positional_encoding, activation_function, init_weights_from, 
-                 init_weights_gain, use_admin, admin_profiling_batch, device, learnable_positional_encoding, 
-                 tie_embeddings=True):
+                 qkv_config, d_inner, use_moe, n_encoder_layers, n_decoder_layers, dropout, 
+                 encoder_param_sharing_type, decoder_param_sharing_type, m_encoder_independent_layers, 
+                 m_decoder_independent_layers, positional_encoding_dim, positional_encoding, activation_function, 
+                 init_weights_from,  init_weights_gain, use_admin, device,  learnable_positional_encoding):
         """
         :param vocab_size: size of the (shared) vocabulary
         :param positional_encoding: positional encodings up to the maximum possible pad-length
@@ -438,6 +467,7 @@ class Transformer(nn.Module):
             d_values=d_values,
             qkv_config=qkv_config,
             d_inner=d_inner,
+            use_moe=use_moe,
             n_layers=n_encoder_layers,
             dropout=dropout,
             encoder_param_sharing_type=encoder_param_sharing_type,
@@ -458,6 +488,7 @@ class Transformer(nn.Module):
             d_values=d_values,
             qkv_config=qkv_config,
             d_inner=d_inner,
+            use_moe=use_moe,
             n_layers=n_decoder_layers,
             dropout=dropout,
             decoder_param_sharing_type=decoder_param_sharing_type,
@@ -470,7 +501,7 @@ class Transformer(nn.Module):
             learnable_positional_encoding=learnable_positional_encoding
         )
 
-    def init_weights(self, admin_profiling_batch=None, tie_embeddings=True):
+    def init_weights(self, tie_embeddings=True):
         """
         Initialize weights in the transformer model.
         """

@@ -1,4 +1,5 @@
 from rotary_embedding_torch import RotaryEmbedding
+from .sum import Sum
 
 import admin_torch
 import math
@@ -51,6 +52,8 @@ class MultiHeadAttention(nn.Module):
 
         if use_admin and not in_decoder:
             self.residual = admin_torch.as_module(n_layers)
+        else:
+            self.residual = Sum()
 
         if d_model != d_output:
             self.cast_output = nn.Linear(d_model, d_output)
@@ -185,14 +188,8 @@ class MultiHeadAttention(nn.Module):
         # Concatenate the n_heads subspaces (each with an output of size d_values)
         sequences = sequences.contiguous().view(batch_size, query_sequence_pad_length, -1) # (N, query_sequence_pad_length, n_heads * d_values)
 
-        # Transform the concatenated subspace-sequences into a single output of size d_model
-        sequences = self.cast_output(sequences) # (N, query_sequence_pad_length, d_model)
-
         sequences = self.dropout(sequences)
-        if hasattr(self, 'residual'):
-            sequences = self.residual(sequences, input_to_add)
-        else:
-            sequences = sequences + input_to_add
+        sequences = self.residual(input_to_add, sequences)
 
         if hasattr(self, 'cast_output'):
             sequences = self.cast_output(sequences)

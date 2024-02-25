@@ -89,7 +89,7 @@ def get_positional_encoding(args):
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
 
-def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, admin_profiling_batch=None, checkpoint_model_name='transformer_checkpoint.pth.tar'):
+def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar'):
     print('Initializing model...')
 
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
@@ -115,15 +115,15 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
     else:
         print("Starting from scratch...")
         positional_encoding = get_positional_encoding(args)
-        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding, admin_profiling_batch=admin_profiling_batch, tie_embeddings=tgt_bpe_model==src_bpe_model)
+        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding, tie_embeddings=tgt_bpe_model==src_bpe_model)
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
     return model, optimizer, positional_encoding
 
 def print_model(model):
+    print(f"Model structure: \n {model}")
     print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters')
     print(f'The model has {sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad):,} non-zero trainable parameters')
-    print(f"Model structure: \n {model}")
 
 def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model):
     print('Loading training data SequenceLoader...')
@@ -530,6 +530,8 @@ def get_args():
     argparser.add_argument('--d_values', type=int, default=64)
     argparser.add_argument('--qkv_config', type=str, default='qkv', choices=['qkv', 'kv+pos', 'kv'])
     argparser.add_argument('--d_inner', type=int, default=2048)
+    argparser.add_argument('--use_moe', action='store_true')
+    argparser.add_argument('--n_experts', type=int, default=0)
     argparser.add_argument('--n_encoder_layers', type=int, default=6)
     argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)

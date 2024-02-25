@@ -43,7 +43,7 @@ if __name__ == '__main__':
             model = trainer.model
     elif args.prune_mode == 'only-prune':
         src_bpe_model, tgt_bpe_model = load_tokenizers(os.path.join('runs', args.run_name))
-        model, _, _ = load_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, admin_profiling_batch=trainer.admin_profiling_batch, checkpoint_model_name='averaged_transformer_checkpoint.pth.tar')
+        model, _, _ = load_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name='averaged_transformer_checkpoint.pth.tar')
         prune_model(model, args.prune_heads_amount, args.prune_heads_norm, args.prune_ffn_amount, args.prune_ffn_norm, args.prune_structured, args.prune_type)
         sacrebleu_evaluate(os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=True)
     else:

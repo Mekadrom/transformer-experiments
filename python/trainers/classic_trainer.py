@@ -34,12 +34,6 @@ class ClassicTrainer():
 
         self.src_bpe_model, self.tgt_bpe_model = load_tokenizers(self.bpe_run_dir)
 
-        self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model)
-        self.admin_profiling_batch = next(self.train_loader, None)
-
-        if self.admin_profiling_batch is None:
-            print("No data found in the dataset. Please check the dataset path and the tokenizer run name.")
-
         self.model, self.optimizer, self.positional_encoding = self.load_model_positional_encoding_and_optimizer()
         self.model = self.model.to(args.device)
         self.positional_encoding.to(args.device)
@@ -56,6 +50,8 @@ class ClassicTrainer():
             # get attention weight visualization before any updates are made to the model
             self.visualize_attention_weights(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
+        self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model)
+
         # todo: make this configurable
         self.criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(self.device)
 
@@ -67,7 +63,7 @@ class ClassicTrainer():
         self.target_sequence_transform = lambda source_sequences, source_sequence_lengths, target_sequences, target_sequence_lengths: (target_sequences, target_sequence_lengths)
 
     def load_model_positional_encoding_and_optimizer(self):
-        return load_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, admin_profiling_batch=self.admin_profiling_batch, tgt_bpe_model=self.tgt_bpe_model)
+        return load_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model)
 
     def train(self, model_name_prefix=''):
         print(f"Training for {self.epochs} epochs...")

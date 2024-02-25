@@ -28,7 +28,7 @@ if __name__ == '__main__':
 
     src_bpe_model, tgt_bpe_model = load_tokenizers(os.path.join('runs', args.tokenizer_run_name))
 
-    model, _, _ = load_checkpoint_or_generate_new(args, run_dir, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, admin_profiling_batch=None, checkpoint_model_name=args.sacrebleu_score_model_name)
+    model, _, _ = load_checkpoint_or_generate_new(args, run_dir, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, checkpoint_model_name=args.sacrebleu_score_model_name)
 
     print_model(model)
 
