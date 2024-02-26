@@ -1,7 +1,6 @@
 from .multicast_attn import MultiCastAttention
 from .multihead_attn import MultiHeadAttention
 from .positionwise_fcn import PositionWiseFCNetwork
-from .positionwise_smoen import PositionWiseMixtureOfExpertsNetwork
 
 import math
 import torch
@@ -30,9 +29,7 @@ class Encoder(nn.Module):
         """
         super(Encoder, self).__init__()
 
-        self.d_model = torch.tensor(d_model, dtype=torch.long).to(device)
-        self.d_model.requires_grad = False
-
+        self.d_model = d_model
         self.n_heads = n_heads
         self.d_queries = d_queries
         self.d_values = d_values
@@ -121,7 +118,7 @@ class Encoder(nn.Module):
         def multi_head_or_cast_attn():
             return MultiHeadAttention(
                 n_layers=args.n_encoder_layers,
-                d_model=self.d_model.item(),
+                d_model=self.d_model,
                 n_heads=self.n_heads,
                 d_queries=self.d_queries,
                 d_values=self.d_values,
@@ -130,11 +127,11 @@ class Encoder(nn.Module):
                 use_admin=self.use_admin,
                 device=self.device,
                 positional_encoding_dim=self.positional_encoding_dim,
-                d_output=self.d_model.item(),
+                d_output=self.d_model,
                 positional_encoding=self.positional_encoding,
                 in_decoder=False
             ) if args.encoder_layer_self_attn_config is None else MultiCastAttention(
-                d_model=self.d_model.item(),
+                d_model=self.d_model,
                 d_queries=self.d_queries,
                 d_values=self.d_values,
                 qkv_config=self.qkv_config,
@@ -148,33 +145,26 @@ class Encoder(nn.Module):
                 sequential=False
             )
         
-        def fcn_or_moe_ffn():
-            return PositionWiseMixtureOfExpertsNetwork(
-                n_experts=args.n_experts,
-                n_layers=args.n_encoder_layers,
-                d_model=self.d_model.item(),
-                d_inner=self.d_inner,
-                activation_function=self.activation_function,
-                dropout=self.dropout,
-                use_admin=self.use_admin,
-                device=self.device
-            ) if self.use_moe else PositionWiseFCNetwork(
-                n_layers=args.n_encoder_layers,
-                d_model=self.d_model.item(),
-                d_inner=self.d_inner,
-                activation_function=self.activation_function, 
-                dropout=self.dropout,
-                use_admin=self.use_admin,
-                device=self.device
-            )
-
         attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else multi_head_or_cast_attn()
-        ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else fcn_or_moe_ffn()
+        ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else PositionWiseFCNetwork(
+            use_moe=self.use_moe,
+            n_experts=args.n_experts,
+            top_k=args.moe_top_k,
+            n_layers=args.n_encoder_layers,
+            d_model=self.d_model,
+            d_inner=self.d_inner,
+            activation_function=self.activation_function, 
+            dropout=self.dropout,
+            use_admin=self.use_admin,
+            device=self.device,
+            in_decoder=True
+        )
 
         return [attn_layers, ffn]
 
     def perform_embedding_transformation(self, encoder_sequences):
-        return self.embedding(encoder_sequences) * math.sqrt(self.d_model.item()) # (N, pad_length, d_model)
+        d_model = self.embedding.weight.size(1)
+        return self.embedding(encoder_sequences) * math.sqrt(d_model) # (N, pad_length, d_model)
 
     def apply_positional_embedding(self, encoder_sequences):
         pad_length = encoder_sequences.size(1)  # pad-length of this batch only, varies across batches
@@ -185,7 +175,6 @@ class Encoder(nn.Module):
         return encoder_sequences
     
     def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, encoder_layer):
-        residual = encoder_sequences.clone() # (N, pad_length, d_model)
         encoder_sequences, _, _ = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
         encoder_sequences = encoder_layer[1](sequences=encoder_sequences) # (N, pad_length, d_model)
         return encoder_sequences
@@ -232,9 +221,7 @@ class Decoder(nn.Module):
         """
         super(Decoder, self).__init__()
 
-        self.d_model = torch.tensor(d_model, dtype=torch.long).to(device)
-        self.d_model.requires_grad = False
-
+        self.d_model = d_model
         self.n_heads = n_heads
         self.d_queries = d_queries
         self.d_values = d_values
@@ -324,7 +311,7 @@ class Decoder(nn.Module):
         def multi_head_or_cast_attn():
             return MultiHeadAttention(
                 n_layers=args.n_decoder_layers,
-                d_model=self.d_model.item(),
+                d_model=self.d_model,
                 n_heads=self.n_heads,
                 d_queries=self.d_queries,
                 d_values=self.d_values,
@@ -333,11 +320,11 @@ class Decoder(nn.Module):
                 use_admin=self.use_admin,
                 device=self.device,
                 positional_encoding_dim=self.positional_encoding_dim,
-                d_output=self.d_model.item(),
+                d_output=self.d_model,
                 positional_encoding=self.positional_encoding,
                 in_decoder=True
             ) if args.decoder_layer_self_attn_config is None else MultiCastAttention(
-                d_model=self.d_model.item(),
+                d_model=self.d_model,
                 d_queries=self.d_queries,
                 d_values=self.d_values,
                 qkv_config=self.qkv_config,
@@ -351,31 +338,10 @@ class Decoder(nn.Module):
                 sequential=False
             )
         
-        def fcn_or_moe_ffn():
-            return PositionWiseMixtureOfExpertsNetwork(
-                n_experts=args.n_experts,
-                n_layers=args.n_decoder_layers,
-                d_model=self.d_model.item(),
-                d_inner=self.d_inner,
-                activation_function=self.activation_function,
-                dropout=self.dropout,
-                use_admin=self.use_admin,
-                device=self.device
-            ) if self.use_moe else PositionWiseFCNetwork(
-                n_layers=args.n_decoder_layers,
-                d_model=self.d_model.item(),
-                d_inner=self.d_inner,
-                activation_function=self.activation_function, 
-                dropout=self.dropout,
-                use_admin=self.use_admin,
-                device=self.device,
-                in_decoder=True
-            )
-
         self_attn = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else multi_head_or_cast_attn()
         cross_attn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else MultiHeadAttention(
             n_layers=args.n_decoder_layers,
-            d_model=self.d_model.item(),
+            d_model=self.d_model,
             n_heads=self.n_heads,
             d_queries=self.d_queries,
             d_values=self.d_values,
@@ -384,16 +350,29 @@ class Decoder(nn.Module):
             use_admin=self.use_admin,
             device=self.device,
             positional_encoding_dim=self.positional_encoding_dim,
-            d_output=self.d_model.item(),
+            d_output=self.d_model,
             positional_encoding=self.positional_encoding,
             in_decoder=True
         )
-        ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else fcn_or_moe_ffn()
+        ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else PositionWiseFCNetwork(
+            use_moe=self.use_moe,
+            n_experts=args.n_experts,
+            top_k=args.moe_top_k,
+            n_layers=args.n_decoder_layers,
+            d_model=self.d_model,
+            d_inner=self.d_inner,
+            activation_function=self.activation_function, 
+            dropout=self.dropout,
+            use_admin=self.use_admin,
+            device=self.device,
+            in_decoder=True
+        )
 
         return [self_attn, cross_attn, ffn]
     
     def apply_embedding_transformation(self, decoder_sequences):
-        return self.embedding(decoder_sequences) * math.sqrt(self.d_model.item()) # (N, pad_length, d_model)
+        d_model = self.embedding.weight.size(1)
+        return self.embedding(decoder_sequences) * math.sqrt(d_model) # (N, pad_length, d_model)
     
     def apply_positional_embedding(self, decoder_sequences):
         pad_length = decoder_sequences.size(1)  # pad-length of this batch only, varies across batches

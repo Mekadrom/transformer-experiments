@@ -52,8 +52,7 @@ class MultiCastAttention(nn.Module):
                     n_heads=layer_n_heads,
                     kernel_size=layer_n_heads,
                     device=device,
-                    positional_encoding=positional_encoding,
-                    in_decoder=in_decoder
+                    positional_encoding=positional_encoding
                 ))
                 embed_dim_list.append(layer_output_dim)
             else:

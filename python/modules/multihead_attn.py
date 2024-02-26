@@ -26,12 +26,6 @@ class MultiHeadAttention(nn.Module):
         self.n_heads = torch.tensor(n_heads, dtype=torch.long).to(device)
         self.n_heads.requires_grad = False
 
-        self.d_queries = torch.tensor(d_queries, dtype=torch.long).to(device)
-        self.d_queries.requires_grad = False
-
-        self.d_values = torch.tensor(d_values, dtype=torch.long).to(device)
-        self.d_values.requires_grad = False
-
         self.in_decoder = torch.tensor(in_decoder, dtype=torch.bool).to(device)
         self.in_decoder.requires_grad = False
 
@@ -81,6 +75,9 @@ class MultiHeadAttention(nn.Module):
         query_sequence_pad_length = query_sequences.size(1)
         key_value_sequence_pad_length = key_sequences.size(1)
 
+        d_queries = self.cast_queries.out_features // self.n_heads.item()
+        d_values = self.cast_values.out_features // self.n_heads.item()
+
         # Is this self-attention?
         self_attention = torch.equal(key_sequences, query_sequences)
 
@@ -101,9 +98,9 @@ class MultiHeadAttention(nn.Module):
         values: torch.Tensor = self.cast_values(value_sequences) # (N, key_value_sequence_pad_length, n_heads * d_values)
 
         # Split the last dimension by the n_heads subspaces
-        queries = queries.contiguous().view(batch_size, query_sequence_pad_length, self.n_heads.item(), self.d_queries.item()) # (N, query_sequence_pad_length, n_heads, d_queries)
-        keys = keys.contiguous().view(batch_size, key_value_sequence_pad_length, self.n_heads.item(), self.d_queries.item()) # (N, key_value_sequence_pad_length, n_heads, d_keys)
-        values = values.contiguous().view(batch_size, key_value_sequence_pad_length, self.n_heads.item(), self.d_values.item()) # (N, key_value_sequence_pad_length, n_heads, d_values)
+        queries = queries.contiguous().view(batch_size, query_sequence_pad_length, self.n_heads.item(), d_queries) # (N, query_sequence_pad_length, n_heads, d_queries)
+        keys = keys.contiguous().view(batch_size, key_value_sequence_pad_length, self.n_heads.item(), d_queries) # (N, key_value_sequence_pad_length, n_heads, d_keys)
+        values = values.contiguous().view(batch_size, key_value_sequence_pad_length, self.n_heads.item(), d_values) # (N, key_value_sequence_pad_length, n_heads, d_values)
 
         # Re-arrange axes such that the last two dimensions are the sequence lengths and the queries/keys/values
         queries = queries.permute(0, 2, 1, 3) # (N, n_heads, query_sequence_pad_length, d_queries)
@@ -129,9 +126,9 @@ class MultiHeadAttention(nn.Module):
 
             # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
             # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
-            queries = queries.contiguous().view(-1, query_sequence_pad_length, self.d_queries.item()) # (N * n_heads, query_sequence_pad_length, d_queries)
-            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.d_queries.item()) # (N * n_heads, key_value_sequence_pad_length, d_keys)
-            values = values.contiguous().view(-1, key_value_sequence_pad_length, self.d_values.item()) # (N * n_heads, key_value_sequence_pad_length, d_values)
+            queries = queries.contiguous().view(-1, query_sequence_pad_length, d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
+            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, d_queries) # (N * n_heads, key_value_sequence_pad_length, d_keys)
+            values = values.contiguous().view(-1, key_value_sequence_pad_length, d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
         else:
             # RoPE is applied to the queries and keys after the heads are split out but before the dot product for attention and subsequent softmax operations
             if type(self.positional_encoding) == RotaryEmbedding:
@@ -141,13 +138,13 @@ class MultiHeadAttention(nn.Module):
                 
             # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
             # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
-            queries = queries.contiguous().view(-1, query_sequence_pad_length, self.d_queries.item()) # (N * n_heads, query_sequence_pad_length, d_queries)
-            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.d_queries.item()) # (N * n_heads, key_value_sequence_pad_length, d_keys)
-            values = values.contiguous().view(-1, key_value_sequence_pad_length, self.d_values.item()) # (N * n_heads, key_value_sequence_pad_length, d_values)
+            queries = queries.contiguous().view(-1, query_sequence_pad_length, d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
+            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, d_queries) # (N * n_heads, key_value_sequence_pad_length, d_keys)
+            values = values.contiguous().view(-1, key_value_sequence_pad_length, d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
             attention_weights = torch.bmm(queries, keys.permute(0, 2, 1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # Scale dot-products
-        attention_weights = (1. / math.sqrt(self.d_queries.item())) * attention_weights # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+        attention_weights = (1. / math.sqrt(d_queries)) * attention_weights # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # Before computing softmax weights, prevent queries from attending to certain keys
 
@@ -183,7 +180,7 @@ class MultiHeadAttention(nn.Module):
         sequences = torch.bmm(attention_weights, values) # (N * n_heads, query_sequence_pad_length, d_values)
 
         # Unmerge batch and n_heads dimensions and restore original order of axes
-        sequences = sequences.contiguous().view(batch_size, self.n_heads.item(), query_sequence_pad_length, self.d_values.item()).permute(0, 2, 1, 3) # (N, query_sequence_pad_length, n_heads, d_values)
+        sequences = sequences.contiguous().view(batch_size, self.n_heads.item(), query_sequence_pad_length, d_values).permute(0, 2, 1, 3) # (N, query_sequence_pad_length, n_heads, d_values)
 
         # Concatenate the n_heads subspaces (each with an output of size d_values)
         sequences = sequences.contiguous().view(batch_size, query_sequence_pad_length, -1) # (N, query_sequence_pad_length, n_heads * d_values)
