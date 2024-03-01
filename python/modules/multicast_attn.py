@@ -14,11 +14,8 @@ class MultiCastAttention(nn.Module):
         self.layers, self.embed_dim_list = self.build_layers_from_attn_config(d_model, d_queries, d_values, qkv_config, dropout, use_admin, attn_config, positional_encoding_dim, positional_encoding, in_decoder, sequential, device)
         self.layers = nn.ModuleList(self.layers)
         
-        self.embed_dim_list = torch.LongTensor(self.embed_dim_list).to(device)
-        self.embed_dim_list.requires_grad = False
-
-        self.sequential = torch.BoolTensor([sequential]).to(device)
-        self.sequential.requires_grad = False
+        self.embed_dim_list = self.embed_dim_list
+        self.sequential = sequential
 
     def build_layers_from_attn_config(self, d_model, d_queries, d_values, qkv_config, dropout, use_admin, attn_config, positional_encoding_dim, positional_encoding, in_decoder, sequential, device):
         layer_configs = attn_config.split(',')
@@ -60,7 +57,7 @@ class MultiCastAttention(nn.Module):
         return layers, embed_dim_list
     
     def forward(self, query_sequences, key_sequences, value_sequences, key_value_sequence_lengths):
-        if self.sequential.item():
+        if self.sequential:
             for layer in self.layers:
                 query_sequences = layer(query_sequences, key_sequences, value_sequences, key_value_sequence_lengths)
             return query_sequences

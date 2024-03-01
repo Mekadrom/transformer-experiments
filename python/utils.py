@@ -115,15 +115,31 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
     else:
         print("Starting from scratch...")
         positional_encoding = get_positional_encoding(args)
-        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding, tie_embeddings=tgt_bpe_model==src_bpe_model)
+        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding, use_shared_qkv=args.use_shared_qkv, tie_embeddings=tgt_bpe_model==src_bpe_model)
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
     return model, optimizer, positional_encoding
 
 def print_model(model):
     print(f"Model structure: \n {model}")
-    print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters')
-    print(f'The model has {sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad):,} non-zero trainable parameters')
+    print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} total parameters')
+    print(f'The model has {sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad):,} non-zero total parameters')
+
+    def tensor_in(tensor, tensor_list):
+        for t in tensor_list:
+            if tensor is t:
+                return True
+        return False
+
+    already_counted = []
+    total_params = 0
+    for name, param in model.named_parameters():
+        if param.requires_grad and not tensor_in(param, already_counted):
+            print(f"Layer {name} has {param.numel():,} parameters and {torch.count_nonzero(param).item():,} non-zero parameters")
+            total_params += param.numel()
+            already_counted.append(param)
+
+    print(f'The model has {total_params:,} trainable parameters')
 
 def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model):
     print('Loading training data SequenceLoader...')
@@ -478,43 +494,6 @@ def create_activation_function(activation_function_name):
     else:
         raise Exception(f"Unknown activation function {activation_function_name}")
 
-def calculate_admin_variances(model, admin_profiling_batch):
-    model.eval()
-    # pass first batch through in eval mode and record variance of admin layers
-    with torch.no_grad():
-        encoder_variances = []
-        decoder_self_variances = []
-        decoder_cross_variances = []
-
-        src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths = admin_profiling_batch
-
-        src_seqs = src_seqs.to(model.encoder.device)
-        tgt_seqs = tgt_seqs.to(model.decoder.device)
-        src_seq_lengths = src_seq_lengths.to(model.encoder.device)
-        tgt_seq_lengths = tgt_seq_lengths.to(model.decoder.device)
-
-        src_seqs = model.encoder.perform_embedding_transformation(src_seqs) # (N, pad_length, d_model)
-        src_seqs = model.encoder.apply_positional_embedding(src_seqs) # (N, pad_length, d_model)
-
-        for encoder_layer in model.encoder.encoder_layers:
-            src_seqs, _, admin_residual = encoder_layer[0](query_sequences=src_seqs, key_sequences=src_seqs, value_sequences=src_seqs, key_value_sequence_lengths=src_seq_lengths) # (N, pad_length, d_model)
-            src_seqs = encoder_layer[1](sequences=src_seqs) # (N, pad_length, d_model)
-            print(admin_residual)
-            encoder_variances.append(admin_residual.var(dim=0).mean().item())
-        src_seqs = model.encoder.layer_norm(src_seqs) # (N, pad_length, d_model)
-
-        tgt_seqs = model.decoder.apply_embedding_transformation(tgt_seqs) # (N, pad_length, d_model)
-        tgt_seqs = model.decoder.apply_positional_embedding(tgt_seqs) # (N, pad_length, d_model)
-
-        for decoder_layer in model.decoder.decoder_layers:
-            tgt_seqs, _, admin_residual_self = decoder_layer[0](query_sequences=tgt_seqs, key_sequences=tgt_seqs, value_sequences=tgt_seqs, key_value_sequence_lengths=tgt_seq_lengths)
-            tgt_seqs, _, admin_residual_cross = decoder_layer[1](query_sequences=tgt_seqs, key_sequences=src_seqs, value_sequences=src_seqs, key_value_sequence_lengths=src_seq_lengths)
-            tgt_seqs = decoder_layer[2](sequences=tgt_seqs)
-            decoder_self_variances.append(admin_residual_self.var(dim=0).mean().item())
-            decoder_cross_variances.append(admin_residual_cross.var(dim=0).mean().item())
-
-        return encoder_variances, decoder_self_variances, decoder_cross_variances
-
 def get_args():
     argparser = argparse.ArgumentParser()
 
@@ -529,6 +508,7 @@ def get_args():
     argparser.add_argument('--d_queries', type=int, default=64)
     argparser.add_argument('--d_values', type=int, default=64)
     argparser.add_argument('--qkv_config', type=str, default='qkv', choices=['qkv', 'kv+pos', 'kv'])
+    argparser.add_argument('--use_shared_qkv', action='store_true')
     argparser.add_argument('--d_inner', type=int, default=2048)
     argparser.add_argument('--use_moe', action='store_true')
     argparser.add_argument('--n_experts', type=int, default=0)

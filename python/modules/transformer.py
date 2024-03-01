@@ -1,11 +1,13 @@
 from .multicast_attn import MultiCastAttention
 from .multihead_attn import MultiHeadAttention
+from .positional_encoding import PositionalEncoding
 from .positionwise_fcn import PositionWiseFCNetwork
+from .sum import Sum
+from .tuple_identity import TupleIdentity
 
 import math
 import torch
 import torch.nn as nn
-import utils
 
 class Encoder(nn.Module):
     """
@@ -53,6 +55,11 @@ class Encoder(nn.Module):
         self.apply_dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(d_model)
         self.encoder_layers = self.make_encoder_layers(args, n_layers, encoder_param_sharing_type, m_encoder_independent_layers)
+
+        if type(self.positional_encoding) == torch.Tensor and len(self.positional_encoding.shape) == 3:
+            self.positional_encoding_apply = PositionalEncoding(self.positional_encoding)
+        else:
+            self.positional_encoding_apply = TupleIdentity()
 
     def to(self, device):
         """
@@ -167,15 +174,11 @@ class Encoder(nn.Module):
         return self.embedding(encoder_sequences) * math.sqrt(d_model) # (N, pad_length, d_model)
 
     def apply_positional_embedding(self, encoder_sequences):
-        pad_length = encoder_sequences.size(1)  # pad-length of this batch only, varies across batches
-
         # 1D buffer/sinusoidal encoding is applied here. 2D buffer/sinusoidal encoding and rotary encoding are applied in the MultiHeadAttention layer(s)
-        if type(self.positional_encoding) == torch.Tensor and len(self.positional_encoding.shape) == 3:
-            encoder_sequences += self.positional_encoding[:, :pad_length, :]
-        return encoder_sequences
+        return self.positional_encoding_apply(encoder_sequences)
     
     def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, encoder_layer):
-        encoder_sequences, _, _ = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
+        encoder_sequences, _ = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
         encoder_sequences = encoder_layer[1](sequences=encoder_sequences) # (N, pad_length, d_model)
         return encoder_sequences
 
@@ -246,6 +249,11 @@ class Decoder(nn.Module):
         self.layer_norm = nn.LayerNorm(d_model)
         self.decoder_layers = self.make_decoder_layers(args, n_layers, decoder_param_sharing_type, m_decoder_independent_layers)
         self.classifier = nn.Linear(d_model, vocab_size)
+
+        if type(self.positional_encoding) == torch.Tensor and len(self.positional_encoding.shape) == 3:
+            self.positional_encoding_apply = PositionalEncoding(self.positional_encoding)
+        else:
+            self.positional_encoding_apply = TupleIdentity()
 
     def to(self, device):
         """
@@ -375,14 +383,12 @@ class Decoder(nn.Module):
         return self.embedding(decoder_sequences) * math.sqrt(d_model) # (N, pad_length, d_model)
     
     def apply_positional_embedding(self, decoder_sequences):
-        pad_length = decoder_sequences.size(1)  # pad-length of this batch only, varies across batches
-        if type(self.positional_encoding) == torch.Tensor and len(self.positional_encoding.shape) == 3:
-            decoder_sequences += self.positional_encoding[:, :pad_length, :]
-        return decoder_sequences
+        # 1D buffer/sinusoidal encoding is applied here. 2D buffer/sinusoidal encoding and rotary encoding are applied in the MultiHeadAttention layer(s)
+        return self.positional_encoding_apply(decoder_sequences)
     
     def apply_decoder_layer(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer):
-        decoder_sequences, _, _ = decoder_layer[0](query_sequences=decoder_sequences, key_sequences=decoder_sequences, value_sequences=decoder_sequences, key_value_sequence_lengths=decoder_sequence_lengths) # (N, pad_length, d_model), trash attention_weights
-        decoder_sequences, _, _ = decoder_layer[1](query_sequences=decoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
+        decoder_sequences, _ = decoder_layer[0](query_sequences=decoder_sequences, key_sequences=decoder_sequences, value_sequences=decoder_sequences, key_value_sequence_lengths=decoder_sequence_lengths) # (N, pad_length, d_model), trash attention_weights
+        decoder_sequences, _ = decoder_layer[1](query_sequences=decoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
         decoder_sequences = decoder_layer[2](sequences=decoder_sequences) # (N, pad_length, d_model)
         return decoder_sequences
 
@@ -480,7 +486,7 @@ class Transformer(nn.Module):
             learnable_positional_encoding=learnable_positional_encoding
         )
 
-    def init_weights(self, tie_embeddings=True):
+    def init_weights(self, use_shared_qkv=False, tie_embeddings=True):
         """
         Initialize weights in the transformer model.
         """
@@ -507,6 +513,49 @@ class Transformer(nn.Module):
 
         if tie_embeddings:
             self.decoder.classifier.weight = self.decoder.embedding.weight
+
+        if use_shared_qkv:
+            # makes every transformer layer use the same qkv "database" (generally use this with much larger query, key, and value embedding sizes)
+            encoder_query_cast_weights = self.encoder.encoder_layers[0][0].cast_queries.weight
+            encoder_query_cast_biases = self.encoder.encoder_layers[0][0].cast_queries.bias
+            encoder_key_cast_weights = self.encoder.encoder_layers[0][0].cast_keys.weight
+            encoder_key_cast_biases = self.encoder.encoder_layers[0][0].cast_keys.bias
+            encoder_value_cast_weights = self.encoder.encoder_layers[0][0].cast_values.weight
+            encoder_value_cast_biases = self.encoder.encoder_layers[0][0].cast_values.bias
+            encoder_output_cast_weights = self.encoder.encoder_layers[0][0].cast_output.weight
+            encoder_output_cast_biases = self.encoder.encoder_layers[0][0].cast_output.bias
+
+            for encoder_layer in self.encoder.encoder_layers:
+                encoder_layer[0].cast_queries.weight = encoder_query_cast_weights
+                encoder_layer[0].cast_queries.bias = encoder_query_cast_biases
+                encoder_layer[0].cast_keys.weight = encoder_key_cast_weights
+                encoder_layer[0].cast_keys.bias = encoder_key_cast_biases
+                encoder_layer[0].cast_values.weight = encoder_value_cast_weights
+                encoder_layer[0].cast_values.bias = encoder_value_cast_biases
+                encoder_layer[0].cast_output.weight = encoder_output_cast_weights
+                encoder_layer[0].cast_output.bias = encoder_output_cast_biases
+
+            for i in [0, 1]:
+                decoder_query_cast_weights = self.decoder.decoder_layers[0][i].cast_queries.weight
+                decoder_query_cast_biases = self.decoder.decoder_layers[0][i].cast_queries.bias
+                decoder_key_cast_weights = self.decoder.decoder_layers[0][i].cast_keys.weight
+                decoder_key_cast_biases = self.decoder.decoder_layers[0][i].cast_keys.bias
+                decoder_value_cast_weights = self.decoder.decoder_layers[0][i].cast_values.weight
+                decoder_value_cast_biases = self.decoder.decoder_layers[0][i].cast_values.bias
+                decoder_output_cast_weights = self.decoder.decoder_layers[0][i].cast_output.weight
+                decoder_output_cast_biases = self.decoder.decoder_layers[0][i].cast_output.bias
+
+                for decoder_layer in self.decoder.decoder_layers:
+                    decoder_layer[i].cast_queries.weight = decoder_query_cast_weights
+                    decoder_layer[i].cast_queries.bias = decoder_query_cast_biases
+                    decoder_layer[i].cast_keys.weight = decoder_key_cast_weights
+                    decoder_layer[i].cast_keys.bias = decoder_key_cast_biases
+                    decoder_layer[i].cast_values.weight = decoder_value_cast_weights
+                    decoder_layer[i].cast_values.bias = decoder_value_cast_biases
+                    decoder_layer[i].cast_output.weight = decoder_output_cast_weights
+                    decoder_layer[i].cast_output.bias = decoder_output_cast_biases
+
+
         print("Model initialized.")
 
     def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths):

@@ -1,3 +1,5 @@
+from .sum import Sum
+
 import admin_torch
 import torch
 import torch.nn as nn
@@ -8,8 +10,7 @@ class UnifiedExpertMoE(nn.Module):
     def __init__(self, n_experts, top_k, d_model, d_inner, device):
         super(UnifiedExpertMoE, self).__init__()
 
-        self.top_k = torch.tensor(top_k, dtype=torch.long).to(device)
-        self.top_k.requires_grad = False
+        self.top_k = top_k
 
         self.expert_weights = nn.Parameter(torch.Tensor(n_experts, d_model, d_inner))
         self.expert_biases = nn.Parameter(torch.Tensor(n_experts, d_inner))
@@ -31,11 +32,11 @@ class UnifiedExpertMoE(nn.Module):
         sequences = sequences.view(-1, sequences.size(-1)) # (N * pad_length, d_model)
 
         gating_scores = self.softmax(self.gating(sequences))
-        top_k_values, top_k_indices = gating_scores.topk(self.top_k.item(), dim=-1)
+        top_k_values, top_k_indices = gating_scores.topk(self.top_k, dim=-1)
 
         output = torch.zeros(N*P, d_inner, device=sequences.device)
 
-        for i in range(self.top_k.item()):
+        for i in range(self.top_k):
             # select the i-th expert weights and biases based on top_k_indices
             selected_weights = self.expert_weights[top_k_indices[:, i]]
             selected_biases = self.expert_biases[top_k_indices[:, i]]
@@ -43,7 +44,7 @@ class UnifiedExpertMoE(nn.Module):
             output += expert_output * top_k_values[:, i].unsqueeze(-1)
         
         # normalize
-        output /= self.top_k.item()
+        output /= self.top_k
 
         return output.view(N, P, -1)
 
@@ -66,9 +67,11 @@ class PositionWiseFCNetwork(nn.Module):
         
         if use_admin and not in_decoder:
             self.residual = admin_torch.as_module(n_layers)
+        else:
+            self.residual = Sum()
 
         if use_moe:
-            self.moe = UnifiedExpertMoE(n_experts, top_k, d_model, d_inner, device=device)
+            self.expand = UnifiedExpertMoE(n_experts, top_k, d_model, d_inner, device=device)
         else:
             self.expand = nn.Linear(d_model, d_inner)
 
@@ -86,10 +89,7 @@ class PositionWiseFCNetwork(nn.Module):
 
         sequences = self.layer_norm(sequences)  # (N, pad_length, d_model)
 
-        if hasattr(self, 'moe'):
-            sequences = self.moe(sequences) # (N, pad_length, d_model)
-        else:
-            sequences = self.expand(sequences) # (N, pad_length, d_inner)
+        sequences = self.expand(sequences) # (N, pad_length, d_inner)
 
         sequences = self.activation(sequences)
         sequences = self.dropout(sequences)  # (N, pad_length, d_inner)
@@ -97,9 +97,7 @@ class PositionWiseFCNetwork(nn.Module):
         sequences = self.condense(sequences)  # (N, pad_length, d_model)
 
         sequences = self.dropout(sequences) # (N, pad_length, d_model)
-        if hasattr(self, 'residual'):
-            sequences = self.residual(input_to_add, sequences) 
-        else:
-            sequences = sequences + input_to_add
+
+        sequences = self.residual(input_to_add, sequences) 
 
         return sequences
