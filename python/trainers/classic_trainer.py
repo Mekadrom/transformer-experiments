@@ -48,7 +48,9 @@ class ClassicTrainer():
         if args.start_epoch == 0:
             print("Visualizing attention weights before training...")
             # get attention weight visualization before any updates are made to the model
-            self.visualize_attention_weights(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+            with torch.no_grad():
+                self.model.eval()
+                self.visualize_attention_weights(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
         self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model)
 
