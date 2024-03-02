@@ -14,7 +14,7 @@ class EncoderLayer(nn.Module):
     def __init__(self, args, positional_encoding):
         super(EncoderLayer, self).__init__()
 
-        self.mha = MultiHeadAttention(args, args.mha_d_output, positional_encoding, False)
+        self.mha = MultiHeadAttention(args, args.mha_d_output, positional_encoding, True, False)
         if args.mca_d_output > 0:
             self.mca = MultiConvAttention(args, False)
         else:
@@ -153,13 +153,13 @@ class DecoderLayer(nn.Module):
 
         self.args = args
 
-        self.self_mha = MultiHeadAttention(args, args.mha_d_output, positional_encoding, True)
+        self.self_mha = MultiHeadAttention(args, args.mha_d_output, positional_encoding, True, True)
         if args.mca_d_output > 0:
             self.self_mca = MultiConvAttention(args, True)
         else:
             self.self_mca = None
 
-        self.cross_mha = MultiHeadAttention(args, args.d_model, positional_encoding, True)
+        self.cross_mha = MultiHeadAttention(args, args.d_model, positional_encoding, False, True)
 
         self.attn_residual = Sum()
 

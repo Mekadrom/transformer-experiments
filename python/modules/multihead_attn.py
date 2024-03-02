@@ -18,7 +18,7 @@ class SelfAttnDecoderMask(nn.Module):
         return attention_weights.masked_fill(~not_future_mask, -float('inf')) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, args, d_output, positional_encoding, in_decoder=False):
+    def __init__(self, args, d_output, positional_encoding, self_attn, in_decoder=False):
         super(MultiHeadAttention, self).__init__()
 
         self.args = args
@@ -37,7 +37,7 @@ class MultiHeadAttention(nn.Module):
         else:
             self.attention_mapping = QKVAttentionMapping(args, positional_encoding=positional_encoding)
 
-        if in_decoder:
+        if self_attn and in_decoder:
             self.self_attn_decoder_mask = SelfAttnDecoderMask()
         else:
             self.self_attn_decoder_mask = nn.Identity()
