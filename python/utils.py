@@ -135,7 +135,7 @@ def print_model(model):
     total_params = 0
     for name, param in model.named_parameters():
         if param.requires_grad and not tensor_in(param, already_counted):
-            print(f"Layer {name} has {param.numel():,} parameters and {torch.count_nonzero(param).item():,} non-zero parameters")
+            # print(f"Layer {name} has {param.numel():,} parameters and {torch.count_nonzero(param).item():,} non-zero parameters")
             total_params += param.numel()
             already_counted.append(param)
 
@@ -505,6 +505,9 @@ def get_args():
 
     argparser.add_argument('--d_model', type=int, default=default_d_model)
     argparser.add_argument('--n_heads', type=int, default=8)
+    argparser.add_argument('--mha_d_output', type=int, default=512)
+    argparser.add_argument('--mca_d_output', type=int, default=0)
+    argparser.add_argument('--kernel_size', type=int, default=3)
     argparser.add_argument('--d_queries', type=int, default=64)
     argparser.add_argument('--d_values', type=int, default=64)
     argparser.add_argument('--qkv_config', type=str, default='qkv', choices=['qkv', 'kv+pos', 'kv'])
@@ -574,6 +577,21 @@ def get_args():
 
     if args.positional_encoding_type == 'rotary' and args.qkv_config != 'qkv':
         print("rotary positional encoding only works with qkv_config=qkv")
+        exit(1)
+
+    if args.mca_d_output > 0 and args.qkv_config != 'qkv':
+        print("convolutions only work with qkv_config=qkv")
+        exit(1)
+
+    if args.mha_d_output + args.mca_d_output != args.d_model:
+        print("mha_d_output + mca_d_output must equal d_model")
+        exit(1)
+
+    if args.n_heads == 0:
+        print("it is not recommended to not have any multi-head attention layers")
+
+    if args.n_heads == 0 and args.mha_d_output != 0:
+        print("n_heads must be non-zero if mha_d_output is non-zero")
         exit(1)
 
     args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)

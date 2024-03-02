@@ -1,173 +1,127 @@
-from .multicast_attn import MultiCastAttention
+from .multiconv_attn import MultiConvAttention
 from .multihead_attn import MultiHeadAttention
 from .positional_encoding import PositionalEncoding
 from .positionwise_fcn import PositionWiseFCNetwork
 from .sum import Sum
 from .tuple_identity import TupleIdentity
 
+import admin_torch
 import math
 import torch
 import torch.nn as nn
 
-class Encoder(nn.Module):
-    """
-    The Encoder.
-    """
+class EncoderLayer(nn.Module):
+    def __init__(self, args, positional_encoding):
+        super(EncoderLayer, self).__init__()
 
-    def __init__(self, args, vocab_size, d_model, n_heads, d_queries, d_values, qkv_config, 
-                 d_inner, use_moe, n_layers, dropout, encoder_param_sharing_type, m_encoder_independent_layers, 
-                 positional_encoding_dim, positional_encoding, activation_function, use_admin, device, 
-                 learnable_positional_encoding=False):
-        """
-        :param vocab_size: size of the (shared) vocabulary
-        :param positional_encoding: positional encodings up to the maximum possible pad-length
-        :param d_model: size of vectors throughout the transformer model, i.e. input and output sizes for the Encoder
-        :param n_heads: number of heads in the multi-head attention
-        :param d_queries: size of query vectors (and also the size of the key vectors) in the multi-head attention
-        :param d_values: size of value vectors in the multi-head attention
-        :param d_inner: an intermediate size in the position-wise FC
-        :param n_layers: number of [multi-head attention + position-wise FC] layers in the Encoder
-        :param dropout: dropout probability
-        """
+        self.mha = MultiHeadAttention(args, args.mha_d_output, positional_encoding, False)
+        if args.mca_d_output > 0:
+            self.mca = MultiConvAttention(args, False)
+        else:
+            self.mca = None
+
+        if args.use_admin:
+            self.attn_residual = admin_torch.as_module(args.n_layers)
+        else:
+            self.attn_residual = Sum()
+
+        self.fcn = PositionWiseFCNetwork(args, in_decoder=False)
+
+    def forward(self, encoder_sequences, encoder_sequence_lengths):
+        # Store input for adding later
+        input_to_add = encoder_sequences.clone()
+
+        multihead_attn, _ = self.mha(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)
+        if self.mca is not None:
+            conv_attn = self.mca(encoder_sequences, encoder_sequences)
+            encoder_sequences = torch.cat([multihead_attn, conv_attn], dim=-1) # (N, pad_length, d_model)
+        else:
+            encoder_sequences = multihead_attn
+
+        encoder_sequences = self.attn_residual(input_to_add, encoder_sequences)
+
+        return self.fcn(sequences=encoder_sequences)
+
+class Encoder(nn.Module):
+    def __init__(self, args, vocab_size, positional_encoding):
         super(Encoder, self).__init__()
 
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_queries = d_queries
-        self.d_values = d_values
-        self.qkv_config = qkv_config
-        self.d_inner = d_inner
-        self.use_moe = use_moe
-        self.n_layers = n_layers
-        self.dropout = dropout
-        self.positional_encoding_dim = positional_encoding_dim
-        self.positional_encoding = positional_encoding
-        self.activation_function = activation_function
-        self.use_admin = use_admin
-        self.device = device
+        self.args = args
 
         # disable gradients for buffer/sinusoidal positional encoding if gradients are not configured to be enabled
-        if type(self.positional_encoding) == torch.Tensor:
-            self.positional_encoding.requires_grad = learnable_positional_encoding
-            self.positional_encoding = self.positional_encoding.to(device)
+        if type(positional_encoding) == torch.Tensor:
+            positional_encoding.requires_grad = args.learnable_positional_encoding
+            positional_encoding = positional_encoding.to(args.device)
 
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.apply_dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(d_model)
-        self.encoder_layers = self.make_encoder_layers(args, n_layers, encoder_param_sharing_type, m_encoder_independent_layers)
+        self.embedding = nn.Embedding(vocab_size, args.d_model)
+        self.apply_dropout = nn.Dropout(args.dropout)
+        self.layer_norm = nn.LayerNorm(args.d_model)
+        self.encoder_layers = self.make_encoder_layers(positional_encoding, args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers)
 
-        if type(self.positional_encoding) == torch.Tensor and len(self.positional_encoding.shape) == 3:
-            self.positional_encoding_apply = PositionalEncoding(self.positional_encoding)
+        if type(positional_encoding) == torch.Tensor and len(positional_encoding.shape) == 3:
+            self.positional_encoding_apply = PositionalEncoding(positional_encoding)
         else:
             self.positional_encoding_apply = TupleIdentity()
 
-    def to(self, device):
-        """
-        Override the default to() method to make sure that the device attribute is also moved to the new device.
-        """
-        self.device = device
-        return super(Encoder, self).to(device)
+    def make_encoder_layers(self, positional_encoding, n_layers, param_sharing_type, m_independent_layers):
+        def new_encoder_layer():
+            return EncoderLayer(self.args, positional_encoding)
 
-    def make_encoder_layers(self, args, n_layers, param_sharing_type='none', m_independent_layers=0):
         layers = []
         for i in range(n_layers):
             if i == 0:
-                layers.append(self.make_encoder_layer(args, i))
+                layers.append(new_encoder_layer())
             elif param_sharing_type == 'sequence':
                 if (i - 1) % math.floor(n_layers / m_independent_layers) == 0:
-                    layers.append(self.make_encoder_layer(args, i))
+                    layers.append(new_encoder_layer())
                 else:
-                    layers.append(self.make_encoder_layer(args, i, share_params_with=layers[i - 1]))
+                    layers.append(layers[i - 1])
             elif param_sharing_type == 'cycle':
                 if i <= m_independent_layers:
-                    layers.append(self.make_encoder_layer(args, i))
+                    layers.append(new_encoder_layer())
                 else:
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_encoder_layer(args, i, share_params_with=layers[res_idx]))
+                    layers.append(layers[res_idx])
             elif param_sharing_type == 'cycle-rev':
                 if i <= m_independent_layers:
-                    layers.append(self.make_encoder_layer(args, i))
+                    layers.append(new_encoder_layer())
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_encoder_layer(args, i, share_params_with=layers[res_idx]))
+                    layers.append(layers[res_idx])
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
-                    layers.append(self.make_encoder_layer(args, i, share_params_with=layers[res_idx]))
+                    layers.append(layers[res_idx])
             elif param_sharing_type == 'ffn-cycle-rev':
                 if i <= m_independent_layers:
-                    layers.append(self.make_encoder_layer(args, ))
+                    layers.append(new_encoder_layer())
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_encoder_layer(args, i, share_params_with=[None, layers[res_idx][1]]))
+                    new_layer = new_encoder_layer()
+                    new_layer.fcn = layers[res_idx].fcn
+                    layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
-                    layers.append(self.make_encoder_layer(args, i, share_params_with=[None, layers[res_idx][1]]))
+                    new_layer = new_encoder_layer()
+                    new_layer.fcn = layers[res_idx].fcn
+                    layers.append(new_layer)
             elif param_sharing_type == 'heads-cycle-rev':
                 if i <= m_independent_layers:
-                    layers.append(self.make_encoder_layer(args, ))
+                    layers.append(new_encoder_layer())
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_encoder_layer(args, i, share_params_with=[layers[res_idx][0], None]))
+                    new_layer = new_encoder_layer()
+                    new_layer.mha = layers[res_idx].mha
+                    layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
-                    layers.append(self.make_encoder_layer(args, i, share_params_with=[layers[res_idx][0], None]))
+                    new_layer = new_encoder_layer()
+                    new_layer.mha = layers[res_idx].mha
+                    layers.append(new_layer)
             elif param_sharing_type == 'all':
-                layers.append(self.make_encoder_layer(args, i, share_params_with=layers[0]))
+                layers.append(layers[0])
             else:
-                layers.append(self.make_encoder_layer(args, i))
-        return nn.ModuleList([nn.ModuleList(enc) for enc in layers])
-
-    def make_encoder_layer(self, args, idx, share_params_with=None):
-        """
-        Creates a single layer in the Encoder by combining a multi-head attention sublayer and a position-wise FC sublayer.
-        """
-
-        def multi_head_or_cast_attn():
-            return MultiHeadAttention(
-                n_layers=args.n_encoder_layers,
-                d_model=self.d_model,
-                n_heads=self.n_heads,
-                d_queries=self.d_queries,
-                d_values=self.d_values,
-                qkv_config=self.qkv_config,
-                dropout=self.dropout,
-                use_admin=self.use_admin,
-                device=self.device,
-                positional_encoding_dim=self.positional_encoding_dim,
-                d_output=self.d_model,
-                positional_encoding=self.positional_encoding,
-                in_decoder=False
-            ) if args.encoder_layer_self_attn_config is None else MultiCastAttention(
-                d_model=self.d_model,
-                d_queries=self.d_queries,
-                d_values=self.d_values,
-                qkv_config=self.qkv_config,
-                dropout=self.dropout,
-                use_admin=self.use_admin,
-                attn_config=args.encoder_layer_self_attn_config,
-                device=self.device,
-                positional_encoding_dim=self.positional_encoding_dim,
-                positional_encoding=self.positional_encoding,
-                in_decoder=False,
-                sequential=False
-            )
-        
-        attn_layers = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else multi_head_or_cast_attn()
-        ffn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else PositionWiseFCNetwork(
-            use_moe=self.use_moe,
-            n_experts=args.n_experts,
-            top_k=args.moe_top_k,
-            n_layers=args.n_encoder_layers,
-            d_model=self.d_model,
-            d_inner=self.d_inner,
-            activation_function=self.activation_function, 
-            dropout=self.dropout,
-            use_admin=self.use_admin,
-            device=self.device,
-            in_decoder=True
-        )
-
-        return [attn_layers, ffn]
+                layers.append(new_encoder_layer())
+        return nn.ModuleList(layers)
 
     def perform_embedding_transformation(self, encoder_sequences):
         d_model = self.embedding.weight.size(1)
@@ -178,18 +132,9 @@ class Encoder(nn.Module):
         return self.positional_encoding_apply(encoder_sequences)
     
     def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, encoder_layer):
-        encoder_sequences, _ = encoder_layer[0](query_sequences=encoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
-        encoder_sequences = encoder_layer[1](sequences=encoder_sequences) # (N, pad_length, d_model)
-        return encoder_sequences
+        return encoder_layer(encoder_sequences, encoder_sequence_lengths)
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):
-        """
-        Forward prop.
-
-        :param encoder_sequences: the source language sequences, a tensor of size (N, pad_length)
-        :param encoder_sequence_lengths: true lengths of these sequences, a tensor of size (N)
-        :return: encoded source language sequences, a tensor of size (N, pad_length, d_model)
-        """
         encoder_sequences = self.perform_embedding_transformation(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_dropout(encoder_sequences) # (N, pad_length, d_model)
@@ -202,182 +147,124 @@ class Encoder(nn.Module):
 
         return encoder_sequences
 
-class Decoder(nn.Module):
-    """
-    The Decoder.
-    """
+class DecoderLayer(nn.Module):
+    def __init__(self, args, positional_encoding):
+        super(DecoderLayer, self).__init__()
 
-    def __init__(self, args, vocab_size, d_model, n_heads, d_queries, d_values, qkv_config, 
-                 d_inner, use_moe, n_layers, dropout, decoder_param_sharing_type, m_decoder_independent_layers, 
-                 positional_encoding_dim, positional_encoding, activation_function, use_admin, device, 
-                 learnable_positional_encoding=False):
-        """
-        :param vocab_size: size of the (shared) vocabulary
-        :param positional_encoding: positional encodings up to the maximum possible pad-length
-        :param d_model: size of vectors throughout the transformer model, i.e. input and output sizes for the Encoder
-        :param n_heads: number of heads in the multi-head attention
-        :param d_queries: size of query vectors (and also the size of the key vectors) in the multi-head attention
-        :param d_values: size of value vectors in the multi-head attention
-        :param d_inner: an intermediate size in the position-wise FC
-        :param n_layers: number of [multi-head attention + position-wise FC] layers in the Decoder
-        :param dropout: dropout probability
-        """
+        self.args = args
+
+        self.self_mha = MultiHeadAttention(args, args.mha_d_output, positional_encoding, True)
+        if args.mca_d_output > 0:
+            self.self_mca = MultiConvAttention(args, True)
+        else:
+            self.self_mca = None
+
+        self.cross_mha = MultiHeadAttention(args, args.d_model, positional_encoding, True)
+
+        self.attn_residual = Sum()
+
+        self.fcn = PositionWiseFCNetwork(args, in_decoder=True)
+
+    def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
+        mha_self_attn, _ = self.self_mha(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths) # (N, pad_length, d_model), trash attention_weights
+        if self.self_mca is not None:
+            conv_self_att = self.cross_mca(decoder_sequences, decoder_sequences) # (N, pad_length, d_model)
+        
+            decoder_sequences = torch.cat([mha_self_attn, conv_self_att], dim=-1) # (N, pad_length, d_model)
+        else:
+            decoder_sequences = mha_self_attn
+
+        decoder_sequences, _ = self.cross_mha(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths) # (N, pad_length, d_model)
+        decoder_sequences = self.attn_residual(decoder_sequences, decoder_sequences) # (N, pad_length, d_model)
+
+        return self.fcn(sequences=decoder_sequences) # (N, pad_length, d_model)
+
+class Decoder(nn.Module):
+    def __init__(self, args, vocab_size, positional_encoding):
         super(Decoder, self).__init__()
 
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_queries = d_queries
-        self.d_values = d_values
-        self.qkv_config = qkv_config
-        self.d_inner = d_inner
-        self.use_moe = use_moe
-        self.n_layers = n_layers
-        self.dropout = dropout
-        self.positional_encoding_dim = positional_encoding_dim
-        self.positional_encoding = positional_encoding
-        self.activation_function = activation_function
-        self.use_admin = use_admin
-        self.device = device
+        self.args = args
 
         # disable gradients for buffer/sinusoidal positional encoding if gradients are not configured to be enabled
-        if type(self.positional_encoding) == torch.Tensor:
-            self.positional_encoding.requires_grad = learnable_positional_encoding
-            self.positional_encoding = self.positional_encoding.to(device)
+        if type(positional_encoding) == torch.Tensor:
+            positional_encoding.requires_grad = args.learnable_positional_encoding
+            positional_encoding = positional_encoding.to(args.device)
 
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.apply_dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(d_model)
-        self.decoder_layers = self.make_decoder_layers(args, n_layers, decoder_param_sharing_type, m_decoder_independent_layers)
-        self.classifier = nn.Linear(d_model, vocab_size)
+        self.embedding = nn.Embedding(vocab_size, args.d_model)
+        self.apply_dropout = nn.Dropout(args.dropout)
+        self.layer_norm = nn.LayerNorm(args.d_model)
+        self.decoder_layers = self.make_decoder_layers(positional_encoding, args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers)
+        self.classifier = nn.Linear(args.d_model, vocab_size)
 
-        if type(self.positional_encoding) == torch.Tensor and len(self.positional_encoding.shape) == 3:
-            self.positional_encoding_apply = PositionalEncoding(self.positional_encoding)
+        if type(positional_encoding) == torch.Tensor and len(positional_encoding.shape) == 3:
+            self.positional_encoding_apply = PositionalEncoding(positional_encoding)
         else:
             self.positional_encoding_apply = TupleIdentity()
 
-    def to(self, device):
-        """
-        Override the default to() method to make sure that the device attribute is also moved to the new device.
-        """
-        self.device = device
-        return super(Encoder, self).to(device)
-
-    def make_decoder_layers(self, args, n_layers, param_sharing_type='none', m_independent_layers=0):
+    def make_decoder_layers(self, positional_encoding, n_layers, param_sharing_type, m_independent_layers):
+        def new_decoder_layer():
+            return DecoderLayer(self.args, positional_encoding)
+        
         layers = []
         for i in range(n_layers):
             if i == 0:
-                layers.append(self.make_decoder_layer(args, i))
+                layers.append(new_decoder_layer())
             elif param_sharing_type == 'sequence':
                 if (i - 1) % math.floor(n_layers / m_independent_layers) == 0:
-                    layers.append(self.make_decoder_layer(args, i))
+                    layers.append(new_decoder_layer())
                 else:
-                    layers.append(self.make_decoder_layer(args, i, share_params_with=layers[i - 1]))
+                    layers.append(layers[i - 1])
             elif param_sharing_type == 'cycle':
                 if i <= m_independent_layers:
-                    layers.append(self.make_decoder_layer(args, i))
+                    layers.append(new_decoder_layer())
                 else:
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_decoder_layer(args, i, share_params_with=layers[res_idx]))
+                    layers.append(layers[res_idx])
             elif param_sharing_type == 'cycle-rev':
                 if i <= m_independent_layers:
-                    layers.append(self.make_decoder_layer(args, i))
+                    layers.append(new_decoder_layer())
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_decoder_layer(args, i, share_params_with=layers[res_idx]))
+                    layers.append(layers[res_idx])
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
-                    layers.append(self.make_decoder_layer(args, i, share_params_with=layers[res_idx]))
+                    layers.append(layers[res_idx])
             elif param_sharing_type == 'ffn-cycle-rev':
                 if i <= m_independent_layers:
-                    layers.append(self.make_decoder_layer(args, i))
+                    layers.append(new_decoder_layer())
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_decoder_layer(args, i, share_params_with=[layers[res_idx][0], layers[res_idx][1], None]))
+                    new_layer = new_decoder_layer()
+                    new_layer.fcn = layers[res_idx].fcn
+                    layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
-                    layers.append(self.make_decoder_layer(args, i, share_params_with=[layers[res_idx][0], layers[res_idx][1], None]))
+                    new_layer = new_decoder_layer()
+                    new_layer.fcn = layers[res_idx].fcn
+                    layers.append(new_layer)
             elif param_sharing_type == 'heads-cycle-rev':
                 if i <= m_independent_layers:
-                    layers.append(self.make_decoder_layer(args, i))
+                    layers.append(new_decoder_layer())
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
-                    layers.append(self.make_decoder_layer(args, i, share_params_with=[layers[res_idx][0], layers[res_idx][1], None]))
+                    new_layer = new_decoder_layer()
+                    new_layer.self_mha = layers[res_idx].self_mha
+                    new_layer.cross_mha = layers[res_idx].cross_mha
+                    new_layer.cross_mca = layers[res_idx].cross_mca
+                    layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
-                    layers.append(self.make_decoder_layer(args, i, share_params_with=[layers[res_idx][0], layers[res_idx][1], None]))
+                    new_layer = new_decoder_layer()
+                    new_layer.self_mha = layers[res_idx].self_mha
+                    new_layer.cross_mha = layers[res_idx].cross_mha
+                    new_layer.cross_mca = layers[res_idx].cross_mca
+                    layers.append(new_layer)
             elif param_sharing_type == 'all':
-                layers.append(self.make_decoder_layer(args, i, share_params_with=layers[0]))
+                layers.append(layers[0])
             else:
-                layers.append(self.make_decoder_layer(args, i))
-        return nn.ModuleList([nn.ModuleList(dec) for dec in layers])
+                layers.append(new_decoder_layer())
+        return nn.ModuleList(layers)
 
-    def make_decoder_layer(self, args, idx, share_params_with=None):
-        """
-        Creates a single layer in the Decoder by combining two multi-head attention sublayers and a position-wise FC sublayer.
-        """
-
-        def multi_head_or_cast_attn():
-            return MultiHeadAttention(
-                n_layers=args.n_decoder_layers,
-                d_model=self.d_model,
-                n_heads=self.n_heads,
-                d_queries=self.d_queries,
-                d_values=self.d_values,
-                qkv_config=self.qkv_config,
-                dropout=self.dropout,
-                use_admin=self.use_admin,
-                device=self.device,
-                positional_encoding_dim=self.positional_encoding_dim,
-                d_output=self.d_model,
-                positional_encoding=self.positional_encoding,
-                in_decoder=True
-            ) if args.decoder_layer_self_attn_config is None else MultiCastAttention(
-                d_model=self.d_model,
-                d_queries=self.d_queries,
-                d_values=self.d_values,
-                qkv_config=self.qkv_config,
-                dropout=self.dropout,
-                use_admin=self.use_admin,
-                attn_config=args.decoder_layer_self_attn_config,
-                device=self.device,
-                positional_encoding_dim=self.positional_encoding_dim,
-                positional_encoding=self.positional_encoding,
-                in_decoder=True,
-                sequential=False
-            )
-        
-        self_attn = share_params_with[0] if share_params_with is not None and share_params_with[0] is not None else multi_head_or_cast_attn()
-        cross_attn = share_params_with[1] if share_params_with is not None and share_params_with[1] is not None else MultiHeadAttention(
-            n_layers=args.n_decoder_layers,
-            d_model=self.d_model,
-            n_heads=self.n_heads,
-            d_queries=self.d_queries,
-            d_values=self.d_values,
-            qkv_config=self.qkv_config,
-            dropout=self.dropout,
-            use_admin=self.use_admin,
-            device=self.device,
-            positional_encoding_dim=self.positional_encoding_dim,
-            d_output=self.d_model,
-            positional_encoding=self.positional_encoding,
-            in_decoder=True
-        )
-        ffn = share_params_with[2] if share_params_with is not None and share_params_with[2] is not None else PositionWiseFCNetwork(
-            use_moe=self.use_moe,
-            n_experts=args.n_experts,
-            top_k=args.moe_top_k,
-            n_layers=args.n_decoder_layers,
-            d_model=self.d_model,
-            d_inner=self.d_inner,
-            activation_function=self.activation_function, 
-            dropout=self.dropout,
-            use_admin=self.use_admin,
-            device=self.device,
-            in_decoder=True
-        )
-
-        return [self_attn, cross_attn, ffn]
-    
     def apply_embedding_transformation(self, decoder_sequences):
         d_model = self.embedding.weight.size(1)
         return self.embedding(decoder_sequences) * math.sqrt(d_model) # (N, pad_length, d_model)
@@ -387,21 +274,9 @@ class Decoder(nn.Module):
         return self.positional_encoding_apply(decoder_sequences)
     
     def apply_decoder_layer(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer):
-        decoder_sequences, _ = decoder_layer[0](query_sequences=decoder_sequences, key_sequences=decoder_sequences, value_sequences=decoder_sequences, key_value_sequence_lengths=decoder_sequence_lengths) # (N, pad_length, d_model), trash attention_weights
-        decoder_sequences, _ = decoder_layer[1](query_sequences=decoder_sequences, key_sequences=encoder_sequences, value_sequences=encoder_sequences, key_value_sequence_lengths=encoder_sequence_lengths) # (N, pad_length, d_model)
-        decoder_sequences = decoder_layer[2](sequences=decoder_sequences) # (N, pad_length, d_model)
-        return decoder_sequences
+        return decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths)
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
-        """
-        Forward prop.
-
-        :param decoder_sequences: the source language sequences, a tensor of size (N, pad_length)
-        :param decoder_sequence_lengths: true lengths of these sequences, a tensor of size (N)
-        :param encoder_sequences: encoded source language sequences, a tensor of size (N, encoder_pad_length, d_model)
-        :param encoder_sequence_lengths: true lengths of these sequences, a tensor of size (N)
-        :return: decoded target language sequences, a tensor of size (N, pad_length, vocab_size)
-        """
         decoder_sequences = self.apply_embedding_transformation(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_positional_embedding(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_dropout(decoder_sequences)
@@ -415,159 +290,101 @@ class Decoder(nn.Module):
         return decoder_sequences
 
 class Transformer(nn.Module):
-    """
-    The Transformer network.
-    """
-
-    def __init__(self, args, src_vocab_size, tgt_vocab_size, d_model, n_heads, d_queries, d_values, 
-                 qkv_config, d_inner, use_moe, n_encoder_layers, n_decoder_layers, dropout, 
-                 encoder_param_sharing_type, decoder_param_sharing_type, m_encoder_independent_layers, 
-                 m_decoder_independent_layers, positional_encoding_dim, positional_encoding, activation_function, 
-                 init_weights_from,  init_weights_gain, use_admin, device,  learnable_positional_encoding):
-        """
-        :param vocab_size: size of the (shared) vocabulary
-        :param positional_encoding: positional encodings up to the maximum possible pad-length
-        :param d_model: size of vectors throughout the transformer model
-        :param n_heads: number of heads in the multi-head attention
-        :param d_queries: size of query vectors (and also the size of the key vectors) in the multi-head attention
-        :param d_values: size of value vectors in the multi-head attention
-        :param d_inner: an intermediate size in the position-wise FC
-        :param n_encoder_layers: number of layers in the Encoder
-        :param n_decoder_layers: number of layers in the Decoder
-        :param dropout: dropout probability
-        """
+    def __init__(self, args, src_vocab_size, tgt_vocab_size, positional_encoding):
         super(Transformer, self).__init__()
 
-        self.d_model = d_model
-        self.init_weights_from = init_weights_from
-        self.init_weights_gain = init_weights_gain
-        self.use_admin = use_admin
+        self.args = args
 
-        self.encoder = Encoder(
-            args=args,
-            vocab_size=src_vocab_size,
-            d_model=d_model,
-            n_heads=n_heads,
-            d_queries=d_queries,
-            d_values=d_values,
-            qkv_config=qkv_config,
-            d_inner=d_inner,
-            use_moe=use_moe,
-            n_layers=n_encoder_layers,
-            dropout=dropout,
-            encoder_param_sharing_type=encoder_param_sharing_type,
-            m_encoder_independent_layers=m_encoder_independent_layers,
-            positional_encoding_dim=positional_encoding_dim,
-            positional_encoding=positional_encoding,
-            activation_function=activation_function,
-            use_admin=use_admin,
-            device=device,
-            learnable_positional_encoding=learnable_positional_encoding
-        )
-        self.decoder = Decoder(
-            args=args,
-            vocab_size=tgt_vocab_size,
-            d_model=d_model,
-            n_heads=n_heads,
-            d_queries=d_queries,
-            d_values=d_values,
-            qkv_config=qkv_config,
-            d_inner=d_inner,
-            use_moe=use_moe,
-            n_layers=n_decoder_layers,
-            dropout=dropout,
-            decoder_param_sharing_type=decoder_param_sharing_type,
-            m_decoder_independent_layers=m_decoder_independent_layers,
-            positional_encoding_dim=positional_encoding_dim,
-            positional_encoding=positional_encoding,
-            activation_function=activation_function,
-            use_admin=use_admin,
-            device=device,
-            learnable_positional_encoding=learnable_positional_encoding
-        )
+        self.encoder = Encoder(args, src_vocab_size, positional_encoding)
+        self.decoder = Decoder(args, tgt_vocab_size, positional_encoding)
 
     def init_weights(self, use_shared_qkv=False, tie_embeddings=True):
-        """
-        Initialize weights in the transformer model.
-        """
         # Glorot uniform initialization with a gain of self.init_weights_gain
         for p in self.parameters():
             # Glorot initialization needs at least two dimensions on the tensor
             if p.dim() > 1:
-                if self.init_weights_from in ['glorot_uniform', 'xavier_uniform']:
-                    nn.init.xavier_uniform_(p, gain=self.init_weights_gain)
-                elif self.init_weights_from in ['glorot_normal', 'xavier_normal']:
-                    nn.init.xavier_normal_(p, gain=self.init_weights_gain)
-                elif self.init_weights_from == 'kaiming_uniform':
+                if self.args.init_weights_from in ['glorot_uniform', 'xavier_uniform']:
+                    nn.init.xavier_uniform_(p, gain=self.args.init_weights_gain)
+                elif self.args.init_weights_from in ['glorot_normal', 'xavier_normal']:
+                    nn.init.xavier_normal_(p, gain=self.args.init_weights_gain)
+                elif self.args.init_weights_from == 'kaiming_uniform':
                     nn.init.kaiming_uniform_(p)
-                elif self.init_weights_from == 'kaiming_normal':
+                elif self.args.init_weights_from == 'kaiming_normal':
                     nn.init.kaiming_normal_(p)
-                elif self.init_weights_from == 'orthogonal':
+                elif self.args.init_weights_from == 'orthogonal':
                     nn.init.orthogonal_(p)
                 else:
-                    raise Exception(f"Unknown weight initialization method: {self.init_weights_from}")
+                    raise Exception(f"Unknown weight initialization method: {self.args.init_weights_from}")
 
         # Share weights between the embedding layers and the logit layer
-        nn.init.normal_(self.encoder.embedding.weight, mean=0., std=math.pow(self.d_model, -0.5))
+        nn.init.normal_(self.encoder.embedding.weight, mean=0., std=math.pow(self.args.d_model, -0.5))
         self.decoder.embedding.weight = self.encoder.embedding.weight
 
         if tie_embeddings:
             self.decoder.classifier.weight = self.decoder.embedding.weight
 
         if use_shared_qkv:
-            # makes every transformer layer use the same qkv "database" (generally use this with much larger query, key, and value embedding sizes)
-            encoder_query_cast_weights = self.encoder.encoder_layers[0][0].cast_queries.weight
-            encoder_query_cast_biases = self.encoder.encoder_layers[0][0].cast_queries.bias
-            encoder_key_cast_weights = self.encoder.encoder_layers[0][0].cast_keys.weight
-            encoder_key_cast_biases = self.encoder.encoder_layers[0][0].cast_keys.bias
-            encoder_value_cast_weights = self.encoder.encoder_layers[0][0].cast_values.weight
-            encoder_value_cast_biases = self.encoder.encoder_layers[0][0].cast_values.bias
-            encoder_output_cast_weights = self.encoder.encoder_layers[0][0].cast_output.weight
-            encoder_output_cast_biases = self.encoder.encoder_layers[0][0].cast_output.bias
+            # makes every transformer layer use the same qkv "database" (generally use this with much larger query and value embedding sizes)
+            encoder_query_cast_weights = self.encoder.encoder_layers[0].mha.cast_queries.weight
+            encoder_query_cast_biases = self.encoder.encoder_layers[0].mha.cast_queries.bias
+            encoder_key_cast_weights = self.encoder.encoder_layers[0].mha.cast_keys.weight
+            encoder_key_cast_biases = self.encoder.encoder_layers[0].mha.cast_keys.bias
+            encoder_value_cast_weights = self.encoder.encoder_layers[0].mha.cast_values.weight
+            encoder_value_cast_biases = self.encoder.encoder_layers[0].mha.cast_values.bias
+            encoder_output_cast_weights = self.encoder.encoder_layers[0].mha.cast_output.weight
+            encoder_output_cast_biases = self.encoder.encoder_layers[0].mha.cast_output.bias
 
             for encoder_layer in self.encoder.encoder_layers:
-                encoder_layer[0].cast_queries.weight = encoder_query_cast_weights
-                encoder_layer[0].cast_queries.bias = encoder_query_cast_biases
-                encoder_layer[0].cast_keys.weight = encoder_key_cast_weights
-                encoder_layer[0].cast_keys.bias = encoder_key_cast_biases
-                encoder_layer[0].cast_values.weight = encoder_value_cast_weights
-                encoder_layer[0].cast_values.bias = encoder_value_cast_biases
-                encoder_layer[0].cast_output.weight = encoder_output_cast_weights
-                encoder_layer[0].cast_output.bias = encoder_output_cast_biases
+                encoder_layer.mha.cast_queries.weight = encoder_query_cast_weights
+                encoder_layer.mha.cast_queries.bias = encoder_query_cast_biases
+                encoder_layer.mha.cast_keys.weight = encoder_key_cast_weights
+                encoder_layer.mha.cast_keys.bias = encoder_key_cast_biases
+                encoder_layer.mha.cast_values.weight = encoder_value_cast_weights
+                encoder_layer.mha.cast_values.bias = encoder_value_cast_biases
+                encoder_layer.mha.cast_output.weight = encoder_output_cast_weights
+                encoder_layer.mha.cast_output.bias = encoder_output_cast_biases
 
-            for i in [0, 1]:
-                decoder_query_cast_weights = self.decoder.decoder_layers[0][i].cast_queries.weight
-                decoder_query_cast_biases = self.decoder.decoder_layers[0][i].cast_queries.bias
-                decoder_key_cast_weights = self.decoder.decoder_layers[0][i].cast_keys.weight
-                decoder_key_cast_biases = self.decoder.decoder_layers[0][i].cast_keys.bias
-                decoder_value_cast_weights = self.decoder.decoder_layers[0][i].cast_values.weight
-                decoder_value_cast_biases = self.decoder.decoder_layers[0][i].cast_values.bias
-                decoder_output_cast_weights = self.decoder.decoder_layers[0][i].cast_output.weight
-                decoder_output_cast_biases = self.decoder.decoder_layers[0][i].cast_output.bias
+            decoder_query_cast_weights = self.decoder.decoder_layers[0].self_mha.cast_queries.weight
+            decoder_query_cast_biases = self.decoder.decoder_layers[0].self_mha.cast_queries.bias
+            decoder_key_cast_weights = self.decoder.decoder_layers[0].self_mha.cast_keys.weight
+            decoder_key_cast_biases = self.decoder.decoder_layers[0].self_mha.cast_keys.bias
+            decoder_value_cast_weights = self.decoder.decoder_layers[0].self_mha.cast_values.weight
+            decoder_value_cast_biases = self.decoder.decoder_layers[0].self_mha.cast_values.bias
+            decoder_output_cast_weights = self.decoder.decoder_layers[0].self_mha.cast_output.weight
+            decoder_output_cast_biases = self.decoder.decoder_layers[0].self_mha.cast_output.bias
 
-                for decoder_layer in self.decoder.decoder_layers:
-                    decoder_layer[i].cast_queries.weight = decoder_query_cast_weights
-                    decoder_layer[i].cast_queries.bias = decoder_query_cast_biases
-                    decoder_layer[i].cast_keys.weight = decoder_key_cast_weights
-                    decoder_layer[i].cast_keys.bias = decoder_key_cast_biases
-                    decoder_layer[i].cast_values.weight = decoder_value_cast_weights
-                    decoder_layer[i].cast_values.bias = decoder_value_cast_biases
-                    decoder_layer[i].cast_output.weight = decoder_output_cast_weights
-                    decoder_layer[i].cast_output.bias = decoder_output_cast_biases
+            for decoder_layer in self.decoder.decoder_layers:
+                decoder_layer.self_mha.cast_queries.weight = decoder_query_cast_weights
+                decoder_layer.self_mha.cast_queries.bias = decoder_query_cast_biases
+                decoder_layer.self_mha.cast_keys.weight = decoder_key_cast_weights
+                decoder_layer.self_mha.cast_keys.bias = decoder_key_cast_biases
+                decoder_layer.self_mha.cast_values.weight = decoder_value_cast_weights
+                decoder_layer.self_mha.cast_values.bias = decoder_value_cast_biases
+                decoder_layer.self_mha.cast_output.weight = decoder_output_cast_weights
+                decoder_layer.self_mha.cast_output.bias = decoder_output_cast_biases
 
+            decoder_query_cast_weights = self.decoder.decoder_layers[0].cross_mha.cast_queries.weight
+            decoder_query_cast_biases = self.decoder.decoder_layers[0].cross_mha.cast_queries.bias
+            decoder_key_cast_weights = self.decoder.decoder_layers[0].cross_mha.cast_keys.weight
+            decoder_key_cast_biases = self.decoder.decoder_layers[0].cross_mha.cast_keys.bias
+            decoder_value_cast_weights = self.decoder.decoder_layers[0].cross_mha.cast_values.weight
+            decoder_value_cast_biases = self.decoder.decoder_layers[0].cross_mha.cast_values.bias
+            decoder_output_cast_weights = self.decoder.decoder_layers[0].cross_mha.cast_output.weight
+            decoder_output_cast_biases = self.decoder.decoder_layers[0].cross_mha.cast_output.bias
+
+            for decoder_layer in self.decoder.decoder_layers:
+                decoder_layer.cross_mha.cast_queries.weight = decoder_query_cast_weights
+                decoder_layer.cross_mha.cast_queries.bias = decoder_query_cast_biases
+                decoder_layer.cross_mha.cast_keys.weight = decoder_key_cast_weights
+                decoder_layer.cross_mha.cast_keys.bias = decoder_key_cast_biases
+                decoder_layer.cross_mha.cast_values.weight = decoder_value_cast_weights
+                decoder_layer.cross_mha.cast_values.bias = decoder_value_cast_biases
+                decoder_layer.cross_mha.cast_output.weight = decoder_output_cast_weights
+                decoder_layer.cross_mha.cast_output.bias = decoder_output_cast_biases
 
         print("Model initialized.")
 
     def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths):
-        """
-        Forward propagation.
-
-        :param encoder_sequences: source language sequences, a tensor of size (N, encoder_sequence_pad_length)
-        :param decoder_sequences: target language sequences, a tensor of size (N, decoder_sequence_pad_length)
-        :param encoder_sequence_lengths: true lengths of source language sequences, a tensor of size (N)
-        :param decoder_sequence_lengths: true lengths of target language sequences, a tensor of size (N)
-        :return: decoded target language sequences, a tensor of size (N, decoder_sequence_pad_length, vocab_size)
-        """
         encoder_sequences = self.encoder(encoder_sequences, encoder_sequence_lengths) # (N, encoder_sequence_pad_length, d_model)
         decoder_sequences = self.decoder(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths) # (N, decoder_sequence_pad_length, vocab_size)
         return decoder_sequences
