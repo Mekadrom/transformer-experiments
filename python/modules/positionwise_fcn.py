@@ -32,11 +32,11 @@ class UnifiedExpertMoE(nn.Module):
         sequences = sequences.view(-1, sequences.size(-1)) # (N * pad_length, d_model)
 
         gating_scores = self.softmax(self.gating(sequences))
-        top_k_values, top_k_indices = gating_scores.topk(self.args.top_k, dim=-1)
+        top_k_values, top_k_indices = gating_scores.topk(self.args.moe_top_k, dim=-1)
 
         output = torch.zeros(N*P, d_inner, device=sequences.device)
 
-        for i in range(self.args.top_k):
+        for i in range(self.args.moe_top_k):
             # select the i-th expert weights and biases based on top_k_indices
             selected_weights = self.expert_weights[top_k_indices[:, i]]
             selected_biases = self.expert_biases[top_k_indices[:, i]]
@@ -44,7 +44,7 @@ class UnifiedExpertMoE(nn.Module):
             output += expert_output * top_k_values[:, i].unsqueeze(-1)
         
         # normalize
-        output /= self.args.top_k
+        output /= self.args.moe_top_k
 
         return output.view(N, P, -1)
 

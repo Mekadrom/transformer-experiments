@@ -8,3 +8,5 @@
 **/*.src
 **/*.tgt
 **/environment*.ts
+
+rust/target/

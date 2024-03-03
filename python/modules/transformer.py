@@ -166,6 +166,7 @@ class DecoderLayer(nn.Module):
         self.fcn = PositionWiseFCNetwork(args, in_decoder=True)
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
+        residual = decoder_sequences.clone() # (N, pad_length, d_model)
         mha_self_attn, _ = self.self_mha(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths) # (N, pad_length, d_model), trash attention_weights
         if self.self_mca is not None:
             conv_self_att = self.cross_mca(decoder_sequences, decoder_sequences) # (N, pad_length, d_model)
@@ -174,8 +175,11 @@ class DecoderLayer(nn.Module):
         else:
             decoder_sequences = mha_self_attn
 
+        decoder_sequences = self.attn_residual(residual, decoder_sequences) # (N, pad_length, d_model)
+
+        residual = decoder_sequences.clone() # (N, pad_length, d_model)
         decoder_sequences, _ = self.cross_mha(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths) # (N, pad_length, d_model)
-        decoder_sequences = self.attn_residual(decoder_sequences, decoder_sequences) # (N, pad_length, d_model)
+        decoder_sequences = self.attn_residual(decoder_sequences, residual) # (N, pad_length, d_model)
 
         return self.fcn(sequences=decoder_sequences) # (N, pad_length, d_model)
 

@@ -1,6 +1,7 @@
 from itertools import groupby
 from random import shuffle
 from torch.nn.utils.rnn import pad_sequence
+from tqdm import tqdm
 
 import codecs
 import os
@@ -52,8 +53,8 @@ class SequenceLoader(object):
 
         assert len(source_data) == len(target_data), "There are a different number of source or target sequences!"
 
-        source_lengths = [len(s) for s in self.src_bpe_model.encode(source_data, bos=False, eos=False)]
-        target_lengths = [len(t) for t in self.tgt_bpe_model.encode(target_data, bos=True, eos=True)] # target language sequences have <BOS> and <EOS> tokens
+        source_lengths = [len(s) for s in tqdm(self.src_bpe_model.encode(source_data, bos=False, eos=False), desc='Encoding src sequences')]
+        target_lengths = [len(t) for t in tqdm(self.tgt_bpe_model.encode(target_data, bos=True, eos=True), desc='Encoding tgt sequences')] # target language sequences have <BOS> and <EOS> tokens
         self.data = list(zip(source_data, target_data, source_lengths, target_lengths))
 
         # If for training, pre-sort by target lengths - required for itertools.groupby() later

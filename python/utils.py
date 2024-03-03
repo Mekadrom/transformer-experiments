@@ -115,7 +115,10 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
     else:
         print("Starting from scratch...")
         positional_encoding = get_positional_encoding(args)
-        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding, use_shared_qkv=args.use_shared_qkv, tie_embeddings=tgt_bpe_model==src_bpe_model)
+        if args.debug_simple:
+            model = TransformerModelProvider().provide_simple(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+        else:
+            model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding, use_shared_qkv=args.use_shared_qkv, tie_embeddings=tgt_bpe_model==src_bpe_model)
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
     return model, optimizer, positional_encoding
@@ -253,7 +256,7 @@ def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam
         encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device) # (1)
 
         # Encode
-        encoder_sequences = model.encoder(encoder_sequences=encoder_sequences, encoder_sequence_lengths=encoder_sequence_lengths) # (1, source_sequence_length, d_model)
+        encoder_sequences = model.encoder(encoder_sequences, encoder_sequence_lengths) # (1, source_sequence_length, d_model)
 
         # Our hypothesis to begin with is just <BOS>
         hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device) # (1, 1)
@@ -274,10 +277,10 @@ def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam
         while True:
             s = hypotheses.size(0)
             decoder_sequences = model.decoder(
-                decoder_sequences=hypotheses,
-                decoder_sequence_lengths=hypotheses_lengths,
-                encoder_sequences=encoder_sequences.repeat(s, 1, 1),
-                encoder_sequence_lengths=encoder_sequence_lengths.repeat(s) # (s, step, tgt_vocab_size)
+                hypotheses,
+                hypotheses_lengths,
+                encoder_sequences.repeat(s, 1, 1),
+                encoder_sequence_lengths.repeat(s) # (s, step, tgt_vocab_size)
             )
 
             # Scores at this step
@@ -569,6 +572,7 @@ def get_args():
     argparser.add_argument('--print_frequency', type=int, default=20)
     argparser.add_argument('--device', type=str, default='cuda:0')
     argparser.add_argument('--save_initial_checkpoint', action='store_true')
+    argparser.add_argument('--debug_simple', action='store_true')
 
     args, unk = argparser.parse_known_args()
 

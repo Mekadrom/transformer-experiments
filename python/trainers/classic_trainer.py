@@ -45,7 +45,7 @@ class ClassicTrainer():
         if args.save_initial_checkpoint:
             save_checkpoint(-1, self.model, self.optimizer, self.positional_encoding, f"runs/{args.run_name}/")
 
-        if args.start_epoch == 0:
+        if args.start_epoch == 0 and not self.args.debug_simple:
             print("Visualizing attention weights before training...")
             # get attention weight visualization before any updates are made to the model
             with torch.no_grad():
@@ -174,7 +174,9 @@ class ClassicTrainer():
 
             self.summary_writer.add_scalar('Validation Loss', losses.avg, self.steps)
             print("\nValidation loss: %.3f\n\n" % losses.avg)
-            self.visualize_attention_weights(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+
+            if not self.args.debug_simple:
+                self.visualize_attention_weights(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
     def evaluate(self, src, tgt):
         best, _ = beam_search_translate(src, self.model, self.src_bpe_model, self.tgt_bpe_model, device=self.device, beam_size=4, length_norm_coefficient=0.6)
