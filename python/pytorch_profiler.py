@@ -4,6 +4,7 @@ if __name__ == '__main__':
     import argparse
     import os
     import torch
+    import trainers.classic_trainer
     import utils
     
     argparser = argparse.ArgumentParser()
@@ -12,6 +13,7 @@ if __name__ == '__main__':
     argparser.add_argument("--tokenizer_run_name", type=str, required=True)
     argparser.add_argument("--model_checkpoint", type=str, default="averaged_transformer_checkpoint.pth.tar")
     argparser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    argparser.add_argument("--profile_training", action="store_true")
 
     args = argparser.parse_args()
 
@@ -29,6 +31,7 @@ if __name__ == '__main__':
     ]
 
     # Use torch.profiler to profile the execution
+
     with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],  # Track both CPU and CUDA (GPU) activities
             schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),  # Define profiler schedule
@@ -37,11 +40,14 @@ if __name__ == '__main__':
             profile_memory=True,  # Profile memory usage
             with_stack=True  # Record stack info
         ) as prof:
-        for s in TRANSLATE_STRINGS:
-            with record_function("model_inference"):
-                best, all = utils.beam_search_translate(s, model, src_bpe_model, tgt_bpe_model, device=args.device)
-                print(f'"{s}" -> "{best}"')
-            prof.step()  # Next step in profiling
+        if args.profile_training:
+            pass
+        else:
+            for s in TRANSLATE_STRINGS:
+                with record_function("model_inference"):
+                    best, all = utils.beam_search_translate(s, model, src_bpe_model, tgt_bpe_model, device=args.device)
+                    print(f'"{s}" -> "{best}"')
+                prof.step()  # Next step in profiling
 
     # Optionally print the results to the console
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))

@@ -48,6 +48,46 @@ class UnifiedExpertMoE(nn.Module):
 
         return output.view(N, P, -1)
 
+class SparseMoE(nn.Module):
+    def __init__(self, args):
+        super(SparseMoE, self).__init__()
+
+        self.args = args
+
+        self.expert_weights = nn.ModuleList([nn.Linear(args.d_model, args.d_inner) for _ in range(args.n_experts)])
+        self.gating = nn.Linear(args.d_model, args.n_experts)
+        self.softmax = nn.Softmax(dim=-1)
+        
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for expert in self.expert_weights:
+            nn.init.xavier_uniform_(expert.weight)
+            nn.init.zeros_(expert.bias)
+
+    def forward(self, sequences):
+        N, P, D = sequences.shape
+
+        # merge batch and sequence dimensions
+        flat_sequences = sequences.view(-1, D) # (N * pad_length, d_model)
+        gating_scores = self.softmax(self.gating(flat_sequences))
+
+        top_k_indices = torch.topk(gating_scores, self.args.moe_top_k, dim=1).indices
+
+        output = torch.zeros(N*P, self.expert_weights[0].out_features, device=sequences.device)
+
+        for i in range(len(self.expert_weights)):
+            expert_mask = top_k_indices == i
+            expert_input = flat_sequences[expert_mask.any(dim=1)]
+            expert_output = self.expert_weights[i](expert_input)
+
+            output[expert_mask.any(dim=1)] += expert_output
+
+        # normalize
+        output /= self.args.moe_top_k
+
+        return output.view(N, P, -1)
+
 class PositionWiseFCNetwork(nn.Module):
     """
     The Position-Wise Feed Forward Network sublayer.
@@ -73,7 +113,7 @@ class PositionWiseFCNetwork(nn.Module):
             self.residual = Sum()
 
         if args.use_moe:
-            self.expand = UnifiedExpertMoE(args)
+            self.expand = SparseMoE(args)
         else:
             self.expand = nn.Linear(args.d_model, args.d_inner)
 
