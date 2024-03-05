@@ -519,6 +519,8 @@ def get_args():
     argparser.add_argument('--use_moe', action='store_true')
     argparser.add_argument('--n_experts', type=int, default=0)
     argparser.add_argument('--moe_top_k', type=int, default=0)
+    argparser.add_argument('--moe_diversity_loss_coefficient', type=float, default=0.0)
+    argparser.add_argument('--moe_diversity_inclusion_epoch', type=int, default=11)
     argparser.add_argument('--n_encoder_layers', type=int, default=6)
     argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)

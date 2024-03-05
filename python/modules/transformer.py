@@ -40,7 +40,9 @@ class EncoderLayer(nn.Module):
 
         encoder_sequences = self.attn_residual(input_to_add, encoder_sequences)
 
-        return self.fcn(sequences=encoder_sequences)
+        encoder_sequences, gating_variances = self.fcn(sequences=encoder_sequences)
+
+        return encoder_sequences, gating_variances
 
 class Encoder(nn.Module):
     def __init__(self, args, vocab_size, positional_encoding):
@@ -139,13 +141,16 @@ class Encoder(nn.Module):
         encoder_sequences = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_dropout(encoder_sequences) # (N, pad_length, d_model)
 
+        gating_variances = []
         for encoder_layer in self.encoder_layers:
-            encoder_sequences = self.apply_encoder_layer(encoder_sequences, encoder_sequence_lengths, encoder_layer)
+            encoder_sequences, gating_variance = self.apply_encoder_layer(encoder_sequences, encoder_sequence_lengths, encoder_layer)
+            if gating_variance is not None:
+                gating_variances.append(gating_variance)
 
         # post-LN
         encoder_sequences = self.layer_norm(encoder_sequences) # (N, pad_length, d_model)
 
-        return encoder_sequences
+        return encoder_sequences, gating_variances
 
 class DecoderLayer(nn.Module):
     def __init__(self, args, positional_encoding):
@@ -181,7 +186,9 @@ class DecoderLayer(nn.Module):
         decoder_sequences, _ = self.cross_mha(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths) # (N, pad_length, d_model)
         decoder_sequences = self.attn_residual(decoder_sequences, residual) # (N, pad_length, d_model)
 
-        return self.fcn(sequences=decoder_sequences) # (N, pad_length, d_model)
+        decoder_sequences, gating_variances = self.fcn(sequences=decoder_sequences) # (N, pad_length, d_model)
+
+        return decoder_sequences, gating_variances
 
 class Decoder(nn.Module):
     def __init__(self, args, vocab_size, positional_encoding):
@@ -285,13 +292,16 @@ class Decoder(nn.Module):
         decoder_sequences = self.apply_positional_embedding(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_dropout(decoder_sequences)
 
+        gating_variances = []
         for decoder_layer in self.decoder_layers:
-            decoder_sequences = self.apply_decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer)
+            decoder_sequences, gating_variance = self.apply_decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer)
+            if gating_variance is not None:
+                gating_variances.append(gating_variance)
 
         decoder_sequences = self.layer_norm(decoder_sequences)  # (N, pad_length, d_model)
         decoder_sequences = self.classifier(decoder_sequences)  # (N, pad_length, vocab_size)
 
-        return decoder_sequences
+        return decoder_sequences, gating_variances
 
 class Transformer(nn.Module):
     def __init__(self, args, src_vocab_size, tgt_vocab_size, positional_encoding):
@@ -389,6 +399,6 @@ class Transformer(nn.Module):
         print("Model initialized.")
 
     def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths):
-        encoder_sequences = self.encoder(encoder_sequences, encoder_sequence_lengths) # (N, encoder_sequence_pad_length, d_model)
-        decoder_sequences = self.decoder(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths) # (N, decoder_sequence_pad_length, vocab_size)
-        return decoder_sequences
+        encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, encoder_sequence_lengths) # (N, encoder_sequence_pad_length, d_model)
+        decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths) # (N, decoder_sequence_pad_length, vocab_size)
+        return decoder_sequences, encoder_gating_variances, decoder_gating_variances

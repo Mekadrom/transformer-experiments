@@ -92,7 +92,10 @@ class ClassicTrainer():
 
         data_time = AverageMeter()
         step_time = AverageMeter()
-        losses = AverageMeter()
+        total_losses = AverageMeter()
+        translation_losses = AverageMeter()
+        encoder_moe_gating_variance_losses = AverageMeter()
+        decoder_moe_gating_variance_losses = AverageMeter()
 
         start_data_time = time.time()
         start_step_time = time.time()
@@ -107,16 +110,30 @@ class ClassicTrainer():
 
             data_time.update(time.time() - start_data_time)
 
-            predicted_sequences = self.model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+            predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = self.model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+
+            if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
+                encoder_moe_gating_variances = encoder_moe_gating_variances.std(dim=0).mean()
+                decoder_moe_gating_variances = decoder_moe_gating_variances.std(dim=0).mean()
+                moe_diversity_loss = (encoder_moe_gating_variances + decoder_moe_gating_variances) / 2
+                encoder_moe_gating_variance_losses.update(encoder_moe_gating_variances.item(), 1)
+                decoder_moe_gating_variance_losses.update(decoder_moe_gating_variances.item(), 1)
+            else:
+                moe_diversity_loss = 0
 
             # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
             # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
             # Therefore, pads start after (length - 1) positions
-            loss = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
+                
+            translation_loss = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
+
+            translation_losses.update(translation_loss.item(), (tgt_seq_lengths - 1).sum().item())
+
+            loss = translation_loss + moe_diversity_loss * self.args.moe_diversity_loss_coefficient
 
             (loss / self.batches_per_step).backward()
 
-            losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
+            total_losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
 
             # Update model (i.e. perform a training step) only after gradients are accumulated from batches_per_step batches
             if (i + 1) % self.batches_per_step == 0:
@@ -131,10 +148,14 @@ class ClassicTrainer():
 
                 if self.steps % self.print_frequency == 0:
                     print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
-                          'Loss {losses.val:.4f} ({losses.avg:.4f})'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, losses=losses))
+                          'Loss {losses.val:.4f} ({losses.avg:.4f})'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, losses=total_losses))
                     self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
 
-                self.summary_writer.add_scalar('Training Loss', losses.avg, self.steps)
+                self.summary_writer.add_scalar('Translation Training Loss', translation_losses.avg, self.steps)
+                self.summary_writer.add_scalar('Total Training Loss', total_losses.avg, self.steps)
+                if moe_diversity_loss > 0:
+                    self.summary_writer.add_scalar('Encoder MoE Gating Variances', encoder_moe_gating_variance_losses.avg, self.steps)
+                    self.summary_writer.add_scalar('Decoder MoE Gating Variances', decoder_moe_gating_variance_losses.avg, self.steps)
 
                 start_step_time = time.time()
 
