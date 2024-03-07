@@ -113,8 +113,8 @@ class ClassicTrainer():
             predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = self.model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
             if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
-                encoder_moe_gating_variances = encoder_moe_gating_variances.std(dim=0).mean()
-                decoder_moe_gating_variances = decoder_moe_gating_variances.std(dim=0).mean()
+                encoder_moe_gating_variances = torch.stack(encoder_moe_gating_variances).std(dim=0).mean()
+                decoder_moe_gating_variances = torch.stack(decoder_moe_gating_variances).std(dim=0).mean()
                 moe_diversity_loss = (encoder_moe_gating_variances + decoder_moe_gating_variances) / 2
                 encoder_moe_gating_variance_losses.update(encoder_moe_gating_variances.item(), 1)
                 decoder_moe_gating_variance_losses.update(decoder_moe_gating_variances.item(), 1)
@@ -148,11 +148,11 @@ class ClassicTrainer():
 
                 if self.steps % self.print_frequency == 0:
                     print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
-                          'Loss {losses.val:.4f} ({losses.avg:.4f})'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, losses=total_losses))
+                          'Loss {total_losses.val:.4f} ({total_losses.avg:.4f})'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, total_losses=total_losses))
                     self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
 
                 self.summary_writer.add_scalar('Translation Training Loss', translation_losses.avg, self.steps)
-                self.summary_writer.add_scalar('Total Training Loss', total_losses.avg, self.steps)
+                self.summary_writer.add_scalar('Training Loss', total_losses.avg, self.steps)
                 if moe_diversity_loss > 0:
                     self.summary_writer.add_scalar('Encoder MoE Gating Variances', encoder_moe_gating_variance_losses.avg, self.steps)
                     self.summary_writer.add_scalar('Decoder MoE Gating Variances', decoder_moe_gating_variance_losses.avg, self.steps)
@@ -184,7 +184,7 @@ class ClassicTrainer():
                 source_sequence_length = source_sequence_length.to(self.device) # (1)
                 target_sequence_length = target_sequence_length.to(self.device) # (1)
 
-                predicted_sequence = self.model(source_sequence, target_sequence, source_sequence_length, target_sequence_length) # (1, target_sequence_length, vocab_size)
+                predicted_sequence, _, _ = self.model(source_sequence, target_sequence, source_sequence_length, target_sequence_length) # (1, target_sequence_length, vocab_size)
 
                 # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
                 # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
@@ -239,7 +239,7 @@ class ClassicTrainer():
 
                 input_sequence = torch.cat([self_mha, mca_attn], dim=-1)
 
-            input_sequence = encoder_layer.fcn(sequences=input_sequence) # (N, pad_length, d_model)
+            input_sequence, _ = encoder_layer.fcn(sequences=input_sequence) # (N, pad_length, d_model)
 
         input_sequence = self.model.encoder.layer_norm(input_sequence)
 
@@ -272,7 +272,7 @@ class ClassicTrainer():
                 image_data = self.visualize_attention_weights_for_layer('Decoder-Cross', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
+            target_sequence, _ = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
 
     def visualize_attention_weights_for_layer(self, stack_name, layer_num, head_num, activation_weights, attendee_tokens, attending_tokens):
         fig, ax = plt.subplots(figsize=(10, 10))

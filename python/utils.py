@@ -256,7 +256,7 @@ def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam
         encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device) # (1)
 
         # Encode
-        encoder_sequences = model.encoder(encoder_sequences, encoder_sequence_lengths) # (1, source_sequence_length, d_model)
+        encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths) # (1, source_sequence_length, d_model)
 
         # Our hypothesis to begin with is just <BOS>
         hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device) # (1, 1)
@@ -276,7 +276,7 @@ def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam
         # At this point, s is 1, because we only have 1 hypothesis to work with, i.e. "<BOS>"
         while True:
             s = hypotheses.size(0)
-            decoder_sequences = model.decoder(
+            decoder_sequences, _ = model.decoder(
                 hypotheses,
                 hypotheses_lengths,
                 encoder_sequences.repeat(s, 1, 1),
@@ -520,7 +520,7 @@ def get_args():
     argparser.add_argument('--n_experts', type=int, default=0)
     argparser.add_argument('--moe_top_k', type=int, default=0)
     argparser.add_argument('--moe_diversity_loss_coefficient', type=float, default=0.0)
-    argparser.add_argument('--moe_diversity_inclusion_epoch', type=int, default=11)
+    argparser.add_argument('--moe_diversity_inclusion_epoch', type=int, default=0)
     argparser.add_argument('--n_encoder_layers', type=int, default=6)
     argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)

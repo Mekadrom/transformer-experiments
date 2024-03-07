@@ -42,7 +42,10 @@ class SparseMoE(nn.Module):
             output[expert_mask.any(dim=1)] += expert_output
 
         # record export choices to self.gating_variances for loss calculation to encourage diversity
-        gating_variances = torch.var(gating_scores, dim=0)
+        if self.training:
+            gating_variances = torch.var(gating_scores, dim=0)
+        else:
+            gating_variances = None
 
         # normalize
         output /= self.args.moe_top_k
