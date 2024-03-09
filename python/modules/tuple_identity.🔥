@@ -1,0 +1,8 @@
+import torch.nn as nn
+
+struct TupleIdentity(nn.Module):
+    fn __init__(inout self):
+        super(TupleIdentity, self).__init__()
+
+    fn forward(inout self, x):
+        return x

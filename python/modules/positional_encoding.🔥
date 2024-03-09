@@ -1,0 +1,10 @@
+import torch.nn as nn
+
+struct PositionalEncoding(nn.Module):
+    fn __init__(inout self, positional_encoding):
+        super(PositionalEncoding, self).__init__()
+
+        self.positional_encoding = positional_encoding
+
+    fn forward(inout self, x):
+        return x + self.positional_encoding[:, :x.size(1), :]

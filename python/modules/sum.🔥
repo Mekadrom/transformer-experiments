@@ -1,0 +1,8 @@
+import torch.nn as nn
+
+struct Sum(nn.Module):
+    fn __init__(inout self):
+        super(Sum, self).__init__()
+
+    fn forward(inout self, x, y):
+        return x + y
