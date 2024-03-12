@@ -1,49 +1,38 @@
-from .concat_attn import ConcatenateAttention
-from .linearconv_attn import LinearConvAttention
 from .multihead_attn import MultiHeadAttention
 from .positionwise_fcn import PositionWiseFCNetwork
 from .sum import Sum
-from .sum_attn import SumAttention
 
 import admin_torch
 import math
 import torch.nn as nn
 import utils
 
-def get_attn_layer(args, self_attn, in_decoder):
-    mha = MultiHeadAttention(args, args.d_model, in_decoder=in_decoder)
-
-    apply_nonlinearty = 'nonlinear' in args.conv_incl_type
-
-    if args.conv_incl_type == 'none' or args.convs_per_attn == 0:
-        return mha
-    elif args.conv_incl_type == 'sum':
-        return SumAttention(args, mha, LinearConvAttention(args, in_decoder), apply_nonlinearity=apply_nonlinearty)
-    elif args.conv_incl_type == 'concat':
-        return ConcatenateAttention(args, mha, LinearConvAttention(args, in_decoder), apply_nonlinearity=apply_nonlinearty)
-    else:
-        raise Exception(f"Unknown convolutional inclusion type: {args.conv_incl_type}")
-
 class EncoderLayer(nn.Module):
     def __init__(self, args):
         super(EncoderLayer, self).__init__()
 
-        self.self_attn = get_attn_layer(args, True, False)
+        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=False)
 
         if args.use_admin:
             self.self_attn_residual = admin_torch.as_module(args.n_layers)
             self.fcn_residual = admin_torch.as_module(args.n_layers)
-        else:
-            self.self_attn_residual = Sum()
-            self.fcn_residual = Sum()
 
         self.fcn = PositionWiseFCNetwork(args)
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):
-        encoder_sequences = self.self_attn_residual(encoder_sequences, self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0])
+        if hasattr(self, 'self_attn_residual'):
+            encoder_sequences = self.self_attn_residual(encoder_sequences, self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0])
+        else:
+            encoder_sequences = encoder_sequences + self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0]
+
         residual = encoder_sequences
-        encoder_sequences, gating_variances = self.fcn(sequences=encoder_sequences)
-        encoder_sequences = self.fcn_residual(residual, encoder_sequences)
+        encoder_sequences, gating_variances = self.fcn(encoder_sequences)
+
+        if hasattr(self, 'fcn_residual'):
+            encoder_sequences = self.fcn_residual(residual, encoder_sequences)
+        else:
+            encoder_sequences = residual + encoder_sequences
+            
         return encoder_sequences, gating_variances
 
 class Encoder(nn.Module):
@@ -155,26 +144,35 @@ class DecoderLayer(nn.Module):
 
         self.args = args
 
-        self.self_attn = get_attn_layer(args, True, True)
-        self.cross_attn = MultiHeadAttention(args, args.d_model, in_decoder=True)
+        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True)
+        self.cross_attn = MultiHeadAttention(args, self_attn=False, in_decoder=True)
 
         if args.use_admin:
             self.self_attn_residual = admin_torch.as_module(args.n_layers)
             self.cross_attn_residual = admin_torch.as_module(args.n_layers)
             self.fcn_residual = admin_torch.as_module(args.n_layers)
-        else:
-            self.self_attn_residual = Sum()
-            self.cross_attn_residual = Sum()
-            self.fcn_residual = Sum()
 
         self.fcn = PositionWiseFCNetwork(args)
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
-        decoder_sequences = self.self_attn_residual(decoder_sequences, self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths)[0]) # (N, pad_length, d_model), trash attention_weights
-        decoder_sequences = self.cross_attn_residual(decoder_sequences, self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0]) # (N, pad_length, d_model)
+        if hasattr(self, 'self_attn_residual'):
+            decoder_sequences = self.self_attn_residual(decoder_sequences, self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths)[0])
+        else:
+            decoder_sequences = decoder_sequences + self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths)[0]
+
+        if hasattr(self, 'cross_attn_residual'):
+            decoder_sequences = self.cross_attn_residual(decoder_sequences, self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0])
+        else:
+            decoder_sequences = decoder_sequences + self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0]
+
         residual = decoder_sequences
-        decoder_sequences, gating_variances = self.fcn(sequences=decoder_sequences)
-        decoder_sequences = self.fcn_residual(residual, decoder_sequences) # (N, pad_length, d_model)
+        decoder_sequences, gating_variances = self.fcn(decoder_sequences)
+        
+        if hasattr(self, 'fcn_residual'):
+            decoder_sequences = self.fcn_residual(residual, decoder_sequences)
+        else:
+            decoder_sequences = residual + decoder_sequences
+
         return decoder_sequences, gating_variances
 
 class Decoder(nn.Module):
