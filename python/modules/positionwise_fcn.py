@@ -1,9 +1,5 @@
-from .sum import Sum
-
-import admin_torch
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import utils
 
 class SparseMoE(nn.Module):
@@ -53,16 +49,7 @@ class SparseMoE(nn.Module):
         return output.view(N, P, -1), gating_variances
     
 class PositionWiseFCNetwork(nn.Module):
-    """
-    The Position-Wise Feed Forward Network sublayer.
-    """
-
-    def __init__(self, args, in_decoder=False):
-        """
-        :param d_model: size of vectors throughout the transformer model, i.e. input and output sizes for this sublayer
-        :param d_inner: an intermediate size
-        :param dropout: dropout probability
-        """
+    def __init__(self, args):
         super(PositionWiseFCNetwork, self).__init__()
 
         self.args = args
@@ -71,11 +58,6 @@ class PositionWiseFCNetwork(nn.Module):
         self.activation = utils.create_activation_function(args.activation_function)
         self.dropout = nn.Dropout(args.dropout)
         
-        if args.use_admin and not in_decoder:
-            self.residual = admin_torch.as_module(args.n_layers)
-        else:
-            self.residual = Sum()
-
         if args.use_moe:
             self.expand = SparseMoE(args)
         else:
@@ -84,15 +66,6 @@ class PositionWiseFCNetwork(nn.Module):
         self.condense = nn.Linear(args.d_inner, args.d_model)
 
     def forward(self, sequences):
-        """
-        Forward prop.
-
-        :param sequences: input sequences, a tensor of size (N, pad_length, d_model)
-        :return: transformed output sequences, a tensor of size (N, pad_length, d_model)
-        """
-        # residual connection
-        input_to_add = sequences.clone()  # (N, pad_length, d_model)
-
         sequences = self.layer_norm(sequences)  # (N, pad_length, d_model)
 
         if type(self.expand) == nn.Linear:
@@ -107,7 +80,5 @@ class PositionWiseFCNetwork(nn.Module):
         sequences = self.condense(sequences)  # (N, pad_length, d_model)
 
         sequences = self.dropout(sequences) # (N, pad_length, d_model)
-
-        sequences = self.residual(input_to_add, sequences) 
 
         return sequences, gating_variances

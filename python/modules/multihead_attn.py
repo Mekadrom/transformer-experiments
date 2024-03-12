@@ -1,27 +1,14 @@
-from .qkv_attn_mapping import QKVAttentionMapping
-from .kv_pos_attn_mapping import KVPosAttentionMapping
-
 import math
 import torch
 import torch.nn as nn
-
-class SelfAttnDecoderMask(nn.Module):
-    def __init__(self):
-        super(SelfAttnDecoderMask, self).__init__()
-
-    def forward(self, attention_weights):
-        # Therefore, a position [n, i, j] is valid only if j <= i
-        # torch.tril(), i.e. lower triangle in a 2D matrix, sets j > i to 0
-        not_future_mask = torch.ones_like(attention_weights).tril().bool().to(attention_weights.device) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
-
-        # Mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
-        return attention_weights.masked_fill(~not_future_mask, -float('inf')) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+import utils
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, args, d_output, positional_encoding, self_attn, in_decoder=False):
+    def __init__(self, args, d_output, in_decoder=False):
         super(MultiHeadAttention, self).__init__()
 
         self.args = args
+        self.in_decoder = in_decoder
 
         if d_output is None:
             d_output = args.d_model
@@ -33,14 +20,10 @@ class MultiHeadAttention(nn.Module):
         self.cast_values = nn.Linear(args.d_model, args.n_heads * args.d_values) # (N, key_value_sequence_pad_length, n_heads * d_values)
 
         if args.qkv_config == 'kv+pos':
-            self.attention_mapping = KVPosAttentionMapping(args, 1, bias=True)
-        else:
-            self.attention_mapping = QKVAttentionMapping(args, positional_encoding=positional_encoding)
+            self.map_pos = nn.Linear(args.positional_encoding_dim, 1, bias=True)
 
-        if self_attn and in_decoder:
-            self.self_attn_decoder_mask = SelfAttnDecoderMask()
-        else:
-            self.self_attn_decoder_mask = nn.Identity()
+        if args.positional_encoding_type == 'rotary':
+            self.rotary_embedding = utils.get_positional_encoding(args)
 
         # a linear projection to cast (n_heads sets of) computed attention-weighted vectors to output vectors
         self.cast_output = nn.Linear(args.n_heads * args.d_values, d_output)
@@ -83,8 +66,38 @@ class MultiHeadAttention(nn.Module):
         values = values.permute(0, 2, 1, 3)
 
         # Perform multi-head attention
+        if hasattr(self, 'map_pos'):
+            # for kv+pos
+            B, H, N, _ = queries.shape
+            B, H, M, _ = keys.shape
 
-        attention_weights, queries, keys, values = self.attention_mapping(queries, keys, values, query_sequence_pad_length, key_value_sequence_pad_length)
+            tmp = keys if N == M else queries
+
+            attention_weights = torch.matmul(tmp, keys.transpose(-2, -1)) / math.sqrt(self.args.n_heads) # (N, query_sequence_pad_length, key_value_sequence_pad_length)
+
+            # assumes positional encoding is tensor
+            pos = self.positional_encoding[:, :query_sequence_pad_length, :key_value_sequence_pad_length, :] # (1, query_sequence_pad_length, key_value_sequence_pad_length, d_model)
+            attention_weights = attention_weights.unsqueeze(-1) + pos.unsqueeze(0) # (N, query_sequence_pad_length, key_value_sequence_pad_length, d_model)
+            attention_weights = self.map_pos(attention_weights).squeeze(-1)
+
+            attention_weights = attention_weights.contiguous().view(-1, query_sequence_pad_length, key_value_sequence_pad_length) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+
+            # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
+            # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
+            queries = queries.contiguous().view(-1, query_sequence_pad_length, self.args.d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
+            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.args.d_queries) # (N * n_heads, key_value_sequence_pad_length, d_keys)
+            values = values.contiguous().view(-1, key_value_sequence_pad_length, self.args.d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
+        else:
+            if hasattr(self, 'rotary_embedding') and self.rotary_embedding is not None:
+                queries = self.rotary_embedding.rotate_queries_or_keys(queries)
+                keys = self.rotary_embedding.rotate_queries_or_keys(keys)
+                
+            # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
+            # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
+            queries = queries.contiguous().view(-1, query_sequence_pad_length, self.args.d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
+            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, self.args.d_queries) # (N * n_heads, key_value_sequence_pad_length, d_keys)
+            values = values.contiguous().view(-1, key_value_sequence_pad_length, self.args.d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
+            attention_weights = torch.bmm(queries, keys.transpose(-2, -1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # Scale dot-products
         attention_weights = (1. / math.sqrt(self.args.d_queries)) * attention_weights # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
@@ -100,8 +113,13 @@ class MultiHeadAttention(nn.Module):
         attention_weights = attention_weights.masked_fill(~not_pad_in_keys, -float('inf')) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # MASK 2: if this is self-attention in the decoder, keys chronologically ahead of queries
-        if self_attention:
-            attention_weights = self.self_attn_decoder_mask(attention_weights) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+        if self_attention and self.in_decoder:
+            # Therefore, a position [n, i, j] is valid only if j <= i
+            # torch.tril(), i.e. lower triangle in a 2D matrix, sets j > i to 0
+            not_future_mask = torch.ones_like(attention_weights).tril().bool().to(attention_weights.device) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+
+            # Mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
+            attention_weights = attention_weights.masked_fill(~not_future_mask, -float('inf')) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         attention_weights = self.softmax(attention_weights) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 

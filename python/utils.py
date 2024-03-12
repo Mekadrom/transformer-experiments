@@ -85,6 +85,7 @@ def get_positional_encoding(args):
                 d_model=args.d_model,
                 maxlen=args.maxlen+1,
             ).to(args.device)
+        positional_encoding.requires_grad = args.learnable_positional_encoding
     elif args.positional_encoding_type == 'rotary':
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
@@ -104,24 +105,12 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
             optimizer = checkpoint['optimizer']
         else:
             optimizer = None
-
-        if 'positional_encoding' in checkpoint:
-            positional_encoding = checkpoint['positional_encoding']
-            if hasattr(args, 'positional_encoding_type') and ((type(positional_encoding) == 'RotaryEmbedding' and args.positional_encoding_type != 'RotaryEmbedding') or (type(positional_encoding) != 'RotaryEmbedding' and args.positional_encoding_type == 'RotaryEmbedding')):
-                print("WARNING: positional encoding type mismatch between args and saved model. Using positional encoding from args instead.")
-                positional_encoding = get_positional_encoding(args)
-        else:
-            positional_encoding = None
     else:
         print("Starting from scratch...")
-        positional_encoding = get_positional_encoding(args)
-        if args.debug_simple:
-            model = TransformerModelProvider().provide_simple(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
-        else:
-            model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), positional_encoding=positional_encoding, use_shared_qkv=args.use_shared_qkv, tie_embeddings=tgt_bpe_model==src_bpe_model)
+        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
-    return model, optimizer, positional_encoding
+    return model, optimizer
 
 def print_model(model):
     print(f"Model structure: \n {model}")
@@ -179,7 +168,7 @@ def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model):
     )
     return train_loader, val_loader, test_loader
 
-def save_checkpoint(epoch, model, optimizer, positional_encoding, prefix=''):
+def save_checkpoint(epoch, model, optimizer, prefix=''):
     """
     Checkpoint saver. Each save overwrites previous save.
 
@@ -188,7 +177,7 @@ def save_checkpoint(epoch, model, optimizer, positional_encoding, prefix=''):
     :param optimizer: optimized
     :param prefix: checkpoint filename prefix
     """
-    state = {'epoch': epoch, 'model': model, 'optimizer': optimizer, 'positional_encoding': positional_encoding}
+    state = {'epoch': epoch, 'model': model, 'optimizer': optimizer}
     filename = prefix + 'transformer_checkpoint.pth.tar'
     torch.save(state, filename)
 
@@ -503,24 +492,20 @@ def get_args():
     argparser.add_argument('--run_name', type=str, required=True)
     argparser.add_argument('--tokenizer_run_name', type=str, required=True)
 
-    # ease of changing default
-    default_d_model = 512
-
-    argparser.add_argument('--d_model', type=int, default=default_d_model)
+    argparser.add_argument('--d_model', type=int, default=512)
     argparser.add_argument('--n_heads', type=int, default=8)
-    argparser.add_argument('--mha_d_output', type=int, default=512)
-    argparser.add_argument('--mca_d_output', type=int, default=0)
     argparser.add_argument('--kernel_size', type=int, default=3)
     argparser.add_argument('--d_queries', type=int, default=64)
     argparser.add_argument('--d_values', type=int, default=64)
     argparser.add_argument('--qkv_config', type=str, default='qkv', choices=['qkv', 'kv+pos', 'kv'])
-    argparser.add_argument('--use_shared_qkv', action='store_true')
     argparser.add_argument('--d_inner', type=int, default=2048)
     argparser.add_argument('--use_moe', action='store_true')
     argparser.add_argument('--n_experts', type=int, default=0)
     argparser.add_argument('--moe_top_k', type=int, default=0)
     argparser.add_argument('--moe_diversity_loss_coefficient', type=float, default=0.0)
     argparser.add_argument('--moe_diversity_inclusion_epoch', type=int, default=0)
+    argparser.add_argument('--conv_incl_type', type=str, default='none', choices=['none', 'concat', 'sum', 'concat_nonlinear', 'sum_nonlinear'])
+    argparser.add_argument('--convs_per_attn', type=int, default=0)
     argparser.add_argument('--n_encoder_layers', type=int, default=6)
     argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)
@@ -534,12 +519,6 @@ def get_args():
     argparser.add_argument('--positional_encoding_type', type=str, default='sinusoidal', choices=['rotary', 'buffer', 'sinusoidal', 'none']) # buffer and sinusoidal refer to the same thing
     argparser.add_argument('--positional_encoding_dim', type=int, default=64) # 64 makes sense for rotary, but not for kv+pos buffer/sinusoidal
     argparser.add_argument('--learnable_positional_encoding', action='store_true', default=False)
-
-    # values configured like so: "LayerType:LayerDim,LayerType:LayerDim,..."
-    # eg "MultiHeadAttention:512,LightweightConv1d:256,DynamicConv1d:256"
-    # the dim values summed up have to be divisible by the n_heads
-    argparser.add_argument('--encoder_layer_self_attn_config', type=str, default=None)
-    argparser.add_argument('--decoder_layer_self_attn_config', type=str, default=None)
 
     argparser.add_argument('--encoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'ffn-cycle-rev', 'heads-cycle-rev', 'all'])
     argparser.add_argument('--decoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'ffn-cycle-rev', 'heads-cycle-rev', 'all'])
@@ -585,28 +564,11 @@ def get_args():
         print("rotary positional encoding only works with qkv_config=qkv")
         exit(1)
 
-    if args.mca_d_output > 0 and args.qkv_config != 'qkv':
-        print("convolutions only work with qkv_config=qkv")
-        exit(1)
-
-    if args.mha_d_output + args.mca_d_output != args.d_model:
-        print("mha_d_output + mca_d_output must equal d_model")
-        exit(1)
-
     if args.n_heads == 0:
         print("it is not recommended to not have any multi-head attention layers")
-
-    if args.n_heads == 0 and args.mha_d_output != 0:
-        print("n_heads must be non-zero if mha_d_output is non-zero")
         exit(1)
 
     args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
     args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))
-
-    if args.decoder_layer_self_attn_config is None:
-        args.__setattr__('decoder_layer_self_attn_config', "shared")
-
-    if args.decoder_layer_self_attn_config == 'shared':
-        args.__setattr__('decoder_layer_self_attn_config', args.encoder_layer_self_attn_config)
 
     return args, unk

@@ -1,73 +1,68 @@
-from .multiconv_attn import MultiConvAttention
+from .concat_attn import ConcatenateAttention
+from .linearconv_attn import LinearConvAttention
 from .multihead_attn import MultiHeadAttention
-from .positional_encoding import PositionalEncoding
 from .positionwise_fcn import PositionWiseFCNetwork
 from .sum import Sum
-from .tuple_identity import TupleIdentity
+from .sum_attn import SumAttention
 
 import admin_torch
 import math
-import torch
 import torch.nn as nn
+import utils
+
+def get_attn_layer(args, self_attn, in_decoder):
+    mha = MultiHeadAttention(args, args.d_model, in_decoder=in_decoder)
+
+    apply_nonlinearty = 'nonlinear' in args.conv_incl_type
+
+    if args.conv_incl_type == 'none' or args.convs_per_attn == 0:
+        return mha
+    elif args.conv_incl_type == 'sum':
+        return SumAttention(args, mha, LinearConvAttention(args, in_decoder), apply_nonlinearity=apply_nonlinearty)
+    elif args.conv_incl_type == 'concat':
+        return ConcatenateAttention(args, mha, LinearConvAttention(args, in_decoder), apply_nonlinearity=apply_nonlinearty)
+    else:
+        raise Exception(f"Unknown convolutional inclusion type: {args.conv_incl_type}")
 
 class EncoderLayer(nn.Module):
-    def __init__(self, args, positional_encoding):
+    def __init__(self, args):
         super(EncoderLayer, self).__init__()
 
-        self.mha = MultiHeadAttention(args, args.mha_d_output, positional_encoding, True, False)
-        if args.mca_d_output > 0:
-            self.mca = MultiConvAttention(args, False)
-        else:
-            self.mca = None
+        self.self_attn = get_attn_layer(args, True, False)
 
         if args.use_admin:
-            self.attn_residual = admin_torch.as_module(args.n_layers)
+            self.self_attn_residual = admin_torch.as_module(args.n_layers)
+            self.fcn_residual = admin_torch.as_module(args.n_layers)
         else:
-            self.attn_residual = Sum()
+            self.self_attn_residual = Sum()
+            self.fcn_residual = Sum()
 
-        self.fcn = PositionWiseFCNetwork(args, in_decoder=False)
+        self.fcn = PositionWiseFCNetwork(args)
 
     def forward(self, encoder_sequences, encoder_sequence_lengths):
-        # Store input for adding later
-        input_to_add = encoder_sequences.clone()
-
-        multihead_attn, _ = self.mha(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)
-        if self.mca is not None:
-            conv_attn = self.mca(encoder_sequences, encoder_sequences)
-            encoder_sequences = torch.cat([multihead_attn, conv_attn], dim=-1) # (N, pad_length, d_model)
-        else:
-            encoder_sequences = multihead_attn
-
-        encoder_sequences = self.attn_residual(input_to_add, encoder_sequences)
-
+        encoder_sequences = self.self_attn_residual(encoder_sequences, self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0])
+        residual = encoder_sequences
         encoder_sequences, gating_variances = self.fcn(sequences=encoder_sequences)
-
+        encoder_sequences = self.fcn_residual(residual, encoder_sequences)
         return encoder_sequences, gating_variances
 
 class Encoder(nn.Module):
-    def __init__(self, args, vocab_size, positional_encoding):
+    def __init__(self, args, vocab_size):
         super(Encoder, self).__init__()
 
         self.args = args
 
-        # disable gradients for buffer/sinusoidal positional encoding if gradients are not configured to be enabled
-        if type(positional_encoding) == torch.Tensor:
-            positional_encoding.requires_grad = args.learnable_positional_encoding
-            positional_encoding = positional_encoding.to(args.device)
-
         self.embedding = nn.Embedding(vocab_size, args.d_model)
         self.apply_dropout = nn.Dropout(args.dropout)
         self.layer_norm = nn.LayerNorm(args.d_model)
-        self.encoder_layers = self.make_encoder_layers(positional_encoding, args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers)
+        self.encoder_layers = self.make_encoder_layers(args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers)
 
-        if type(positional_encoding) == torch.Tensor and len(positional_encoding.shape) == 3:
-            self.positional_encoding_apply = PositionalEncoding(positional_encoding)
-        else:
-            self.positional_encoding_apply = TupleIdentity()
+        if args.positional_encoding_type != 'rotary':
+            self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args))
 
-    def make_encoder_layers(self, positional_encoding, n_layers, param_sharing_type, m_independent_layers):
+    def make_encoder_layers(self, n_layers, param_sharing_type, m_independent_layers):
         def new_encoder_layer():
-            return EncoderLayer(self.args, positional_encoding)
+            return EncoderLayer(self.args)
 
         layers = []
         for i in range(n_layers):
@@ -112,12 +107,12 @@ class Encoder(nn.Module):
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
                     new_layer = new_encoder_layer()
-                    new_layer.mha = layers[res_idx].mha
+                    new_layer.self_attn = layers[res_idx].mha
                     layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     new_layer = new_encoder_layer()
-                    new_layer.mha = layers[res_idx].mha
+                    new_layer.self_attn = layers[res_idx].mha
                     layers.append(new_layer)
             elif param_sharing_type == 'all':
                 layers.append(layers[0])
@@ -131,7 +126,9 @@ class Encoder(nn.Module):
 
     def apply_positional_embedding(self, encoder_sequences):
         # 1D buffer/sinusoidal encoding is applied here. 2D buffer/sinusoidal encoding and rotary encoding are applied in the MultiHeadAttention layer(s)
-        return self.positional_encoding_apply(encoder_sequences)
+        if hasattr(self, 'tensor_positional_encoding'):
+            return encoder_sequences + self.tensor_positional_encoding[:, :encoder_sequences.size(1), :]
+        return encoder_sequences
     
     def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, encoder_layer):
         return encoder_layer(encoder_sequences, encoder_sequence_lengths)
@@ -153,68 +150,51 @@ class Encoder(nn.Module):
         return encoder_sequences, gating_variances
 
 class DecoderLayer(nn.Module):
-    def __init__(self, args, positional_encoding):
+    def __init__(self, args):
         super(DecoderLayer, self).__init__()
 
         self.args = args
 
-        self.self_mha = MultiHeadAttention(args, args.mha_d_output, positional_encoding, True, True)
-        if args.mca_d_output > 0:
-            self.self_mca = MultiConvAttention(args, True)
+        self.self_attn = get_attn_layer(args, True, True)
+        self.cross_attn = MultiHeadAttention(args, args.d_model, in_decoder=True)
+
+        if args.use_admin:
+            self.self_attn_residual = admin_torch.as_module(args.n_layers)
+            self.cross_attn_residual = admin_torch.as_module(args.n_layers)
+            self.fcn_residual = admin_torch.as_module(args.n_layers)
         else:
-            self.self_mca = None
+            self.self_attn_residual = Sum()
+            self.cross_attn_residual = Sum()
+            self.fcn_residual = Sum()
 
-        self.cross_mha = MultiHeadAttention(args, args.d_model, positional_encoding, False, True)
-
-        self.attn_residual = Sum()
-
-        self.fcn = PositionWiseFCNetwork(args, in_decoder=True)
+        self.fcn = PositionWiseFCNetwork(args)
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
-        residual = decoder_sequences.clone() # (N, pad_length, d_model)
-        mha_self_attn, _ = self.self_mha(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths) # (N, pad_length, d_model), trash attention_weights
-        if self.self_mca is not None:
-            conv_self_att = self.cross_mca(decoder_sequences, decoder_sequences) # (N, pad_length, d_model)
-        
-            decoder_sequences = torch.cat([mha_self_attn, conv_self_att], dim=-1) # (N, pad_length, d_model)
-        else:
-            decoder_sequences = mha_self_attn
-
-        decoder_sequences = self.attn_residual(residual, decoder_sequences) # (N, pad_length, d_model)
-
-        residual = decoder_sequences.clone() # (N, pad_length, d_model)
-        decoder_sequences, _ = self.cross_mha(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths) # (N, pad_length, d_model)
-        decoder_sequences = self.attn_residual(decoder_sequences, residual) # (N, pad_length, d_model)
-
-        decoder_sequences, gating_variances = self.fcn(sequences=decoder_sequences) # (N, pad_length, d_model)
-
+        decoder_sequences = self.self_attn_residual(decoder_sequences, self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths)[0]) # (N, pad_length, d_model), trash attention_weights
+        decoder_sequences = self.cross_attn_residual(decoder_sequences, self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0]) # (N, pad_length, d_model)
+        residual = decoder_sequences
+        decoder_sequences, gating_variances = self.fcn(sequences=decoder_sequences)
+        decoder_sequences = self.fcn_residual(residual, decoder_sequences) # (N, pad_length, d_model)
         return decoder_sequences, gating_variances
 
 class Decoder(nn.Module):
-    def __init__(self, args, vocab_size, positional_encoding):
+    def __init__(self, args, vocab_size):
         super(Decoder, self).__init__()
 
         self.args = args
 
-        # disable gradients for buffer/sinusoidal positional encoding if gradients are not configured to be enabled
-        if type(positional_encoding) == torch.Tensor:
-            positional_encoding.requires_grad = args.learnable_positional_encoding
-            positional_encoding = positional_encoding.to(args.device)
-
         self.embedding = nn.Embedding(vocab_size, args.d_model)
         self.apply_dropout = nn.Dropout(args.dropout)
         self.layer_norm = nn.LayerNorm(args.d_model)
-        self.decoder_layers = self.make_decoder_layers(positional_encoding, args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers)
+        self.decoder_layers = self.make_decoder_layers(args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers)
         self.classifier = nn.Linear(args.d_model, vocab_size)
 
-        if type(positional_encoding) == torch.Tensor and len(positional_encoding.shape) == 3:
-            self.positional_encoding_apply = PositionalEncoding(positional_encoding)
-        else:
-            self.positional_encoding_apply = TupleIdentity()
+        if args.positional_encoding_type != 'rotary':
+            self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args))
 
-    def make_decoder_layers(self, positional_encoding, n_layers, param_sharing_type, m_independent_layers):
+    def make_decoder_layers(self, n_layers, param_sharing_type, m_independent_layers):
         def new_decoder_layer():
-            return DecoderLayer(self.args, positional_encoding)
+            return DecoderLayer(self.args)
         
         layers = []
         for i in range(n_layers):
@@ -259,15 +239,15 @@ class Decoder(nn.Module):
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
                     new_layer = new_decoder_layer()
-                    new_layer.self_mha = layers[res_idx].self_mha
-                    new_layer.cross_mha = layers[res_idx].cross_mha
+                    new_layer.self_attn = layers[res_idx].self_mha
+                    new_layer.cross_attn = layers[res_idx].cross_mha
                     new_layer.cross_mca = layers[res_idx].cross_mca
                     layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     new_layer = new_decoder_layer()
-                    new_layer.self_mha = layers[res_idx].self_mha
-                    new_layer.cross_mha = layers[res_idx].cross_mha
+                    new_layer.self_attn = layers[res_idx].self_mha
+                    new_layer.cross_attn = layers[res_idx].cross_mha
                     new_layer.cross_mca = layers[res_idx].cross_mca
                     layers.append(new_layer)
             elif param_sharing_type == 'all':
@@ -282,7 +262,9 @@ class Decoder(nn.Module):
     
     def apply_positional_embedding(self, decoder_sequences):
         # 1D buffer/sinusoidal encoding is applied here. 2D buffer/sinusoidal encoding and rotary encoding are applied in the MultiHeadAttention layer(s)
-        return self.positional_encoding_apply(decoder_sequences)
+        if hasattr(self, 'tensor_positional_encoding'):
+            return decoder_sequences + self.tensor_positional_encoding[:, :decoder_sequences.size(1), :]
+        return decoder_sequences
     
     def apply_decoder_layer(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer):
         return decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths)
@@ -304,15 +286,15 @@ class Decoder(nn.Module):
         return decoder_sequences, gating_variances
 
 class Transformer(nn.Module):
-    def __init__(self, args, src_vocab_size, tgt_vocab_size, positional_encoding):
+    def __init__(self, args, src_vocab_size, tgt_vocab_size):
         super(Transformer, self).__init__()
 
         self.args = args
 
-        self.encoder = Encoder(args, src_vocab_size, positional_encoding)
-        self.decoder = Decoder(args, tgt_vocab_size, positional_encoding)
+        self.encoder = Encoder(args, src_vocab_size)
+        self.decoder = Decoder(args, tgt_vocab_size)
 
-    def init_weights(self, use_shared_qkv=False, tie_embeddings=True):
+    def init_weights(self, tie_embeddings=True):
         # Glorot uniform initialization with a gain of self.init_weights_gain
         for p in self.parameters():
             # Glorot initialization needs at least two dimensions on the tensor
@@ -336,65 +318,6 @@ class Transformer(nn.Module):
 
         if tie_embeddings:
             self.decoder.classifier.weight = self.decoder.embedding.weight
-
-        if use_shared_qkv:
-            # makes every transformer layer use the same qkv "database" (generally use this with much larger query and value embedding sizes)
-            encoder_query_cast_weights = self.encoder.encoder_layers[0].mha.cast_queries.weight
-            encoder_query_cast_biases = self.encoder.encoder_layers[0].mha.cast_queries.bias
-            encoder_key_cast_weights = self.encoder.encoder_layers[0].mha.cast_keys.weight
-            encoder_key_cast_biases = self.encoder.encoder_layers[0].mha.cast_keys.bias
-            encoder_value_cast_weights = self.encoder.encoder_layers[0].mha.cast_values.weight
-            encoder_value_cast_biases = self.encoder.encoder_layers[0].mha.cast_values.bias
-            encoder_output_cast_weights = self.encoder.encoder_layers[0].mha.cast_output.weight
-            encoder_output_cast_biases = self.encoder.encoder_layers[0].mha.cast_output.bias
-
-            for encoder_layer in self.encoder.encoder_layers:
-                encoder_layer.mha.cast_queries.weight = encoder_query_cast_weights
-                encoder_layer.mha.cast_queries.bias = encoder_query_cast_biases
-                encoder_layer.mha.cast_keys.weight = encoder_key_cast_weights
-                encoder_layer.mha.cast_keys.bias = encoder_key_cast_biases
-                encoder_layer.mha.cast_values.weight = encoder_value_cast_weights
-                encoder_layer.mha.cast_values.bias = encoder_value_cast_biases
-                encoder_layer.mha.cast_output.weight = encoder_output_cast_weights
-                encoder_layer.mha.cast_output.bias = encoder_output_cast_biases
-
-            decoder_query_cast_weights = self.decoder.decoder_layers[0].self_mha.cast_queries.weight
-            decoder_query_cast_biases = self.decoder.decoder_layers[0].self_mha.cast_queries.bias
-            decoder_key_cast_weights = self.decoder.decoder_layers[0].self_mha.cast_keys.weight
-            decoder_key_cast_biases = self.decoder.decoder_layers[0].self_mha.cast_keys.bias
-            decoder_value_cast_weights = self.decoder.decoder_layers[0].self_mha.cast_values.weight
-            decoder_value_cast_biases = self.decoder.decoder_layers[0].self_mha.cast_values.bias
-            decoder_output_cast_weights = self.decoder.decoder_layers[0].self_mha.cast_output.weight
-            decoder_output_cast_biases = self.decoder.decoder_layers[0].self_mha.cast_output.bias
-
-            for decoder_layer in self.decoder.decoder_layers:
-                decoder_layer.self_mha.cast_queries.weight = decoder_query_cast_weights
-                decoder_layer.self_mha.cast_queries.bias = decoder_query_cast_biases
-                decoder_layer.self_mha.cast_keys.weight = decoder_key_cast_weights
-                decoder_layer.self_mha.cast_keys.bias = decoder_key_cast_biases
-                decoder_layer.self_mha.cast_values.weight = decoder_value_cast_weights
-                decoder_layer.self_mha.cast_values.bias = decoder_value_cast_biases
-                decoder_layer.self_mha.cast_output.weight = decoder_output_cast_weights
-                decoder_layer.self_mha.cast_output.bias = decoder_output_cast_biases
-
-            decoder_query_cast_weights = self.decoder.decoder_layers[0].cross_mha.cast_queries.weight
-            decoder_query_cast_biases = self.decoder.decoder_layers[0].cross_mha.cast_queries.bias
-            decoder_key_cast_weights = self.decoder.decoder_layers[0].cross_mha.cast_keys.weight
-            decoder_key_cast_biases = self.decoder.decoder_layers[0].cross_mha.cast_keys.bias
-            decoder_value_cast_weights = self.decoder.decoder_layers[0].cross_mha.cast_values.weight
-            decoder_value_cast_biases = self.decoder.decoder_layers[0].cross_mha.cast_values.bias
-            decoder_output_cast_weights = self.decoder.decoder_layers[0].cross_mha.cast_output.weight
-            decoder_output_cast_biases = self.decoder.decoder_layers[0].cross_mha.cast_output.bias
-
-            for decoder_layer in self.decoder.decoder_layers:
-                decoder_layer.cross_mha.cast_queries.weight = decoder_query_cast_weights
-                decoder_layer.cross_mha.cast_queries.bias = decoder_query_cast_biases
-                decoder_layer.cross_mha.cast_keys.weight = decoder_key_cast_weights
-                decoder_layer.cross_mha.cast_keys.bias = decoder_key_cast_biases
-                decoder_layer.cross_mha.cast_values.weight = decoder_value_cast_weights
-                decoder_layer.cross_mha.cast_values.bias = decoder_value_cast_biases
-                decoder_layer.cross_mha.cast_output.weight = decoder_output_cast_weights
-                decoder_layer.cross_mha.cast_output.bias = decoder_output_cast_biases
 
         print("Model initialized.")
 

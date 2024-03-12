@@ -34,16 +34,14 @@ class ClassicTrainer():
 
         self.src_bpe_model, self.tgt_bpe_model = load_tokenizers(self.bpe_run_dir)
 
-        self.model, self.optimizer, self.positional_encoding = self.load_model_positional_encoding_and_optimizer()
+        self.model, self.optimizer = self.load_model_and_optimizer()
         self.model = self.model.to(args.device)
-        self.positional_encoding.to(args.device)
 
         print_model(self.model)
         print(f"Optimizer: {self.optimizer}")
-        print(f"Positional Encoding: {self.positional_encoding.shape if type(self.positional_encoding) == torch.Tensor else self.positional_encoding}")
 
         if args.save_initial_checkpoint:
-            save_checkpoint(-1, self.model, self.optimizer, self.positional_encoding, f"runs/{args.run_name}/")
+            save_checkpoint(-1, self.model, self.optimizer, f"runs/{args.run_name}/")
 
         if args.start_epoch == 0 and not self.args.debug_simple:
             print("Visualizing attention weights before training...")
@@ -64,7 +62,7 @@ class ClassicTrainer():
         self.sacrebleu_epochs = []
         self.target_sequence_transform = lambda source_sequences, source_sequence_lengths, target_sequences, target_sequence_lengths: (target_sequences, target_sequence_lengths)
 
-    def load_model_positional_encoding_and_optimizer(self):
+    def load_model_and_optimizer(self):
         return load_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model)
 
     def train(self, model_name_prefix=''):
@@ -78,9 +76,9 @@ class ClassicTrainer():
             self.val_loader.create_batches()
             self.validate_epoch()
 
-            save_checkpoint(epoch, self.model, self.optimizer, self.positional_encoding, prefix=f"runs/{self.run_name}/{model_name_prefix}")
+            save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/{model_name_prefix}")
 
-        average_checkpoints(self.positional_encoding, self.run_name, model_name_prefix=model_name_prefix)
+        average_checkpoints(self.run_name, model_name_prefix=model_name_prefix)
 
         self.val_loader.create_batches()
         self.validate_epoch()
@@ -161,7 +159,7 @@ class ClassicTrainer():
 
                 # 'epoch' is 0-indexed
                 if epoch in [self.epochs - 1, self.epochs - 2] and self.steps % 1500 == 0:
-                    save_checkpoint(epoch, self.model, self.optimizer, positional_encoding=self.positional_encoding, prefix=f"runs/{self.run_name}/step{str(self.steps)}_")
+                    save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/step{str(self.steps)}_")
             start_data_time = time.time()
     
     def validate_epoch(self):
@@ -224,7 +222,7 @@ class ClassicTrainer():
         input_sequence = self.model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
         for e, encoder_layer in enumerate(self.model.encoder.encoder_layers):
-            self_mha, attention_weights = encoder_layer.mha(input_sequence, input_sequence, input_sequence, input_sequence_length)
+            input_sequence, attention_weights = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence_length)
 
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))
@@ -234,11 +232,6 @@ class ClassicTrainer():
                 image_data = self.visualize_attention_weights_for_layer('Encoder-Self', e, i, attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
                 self.summary_writer.add_image(f"Encoder Layer {e} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            if encoder_layer.mca is not None:
-                mca_attn = encoder_layer.mca(input_sequence, input_sequence)
-
-                input_sequence = torch.cat([self_mha, mca_attn], dim=-1)
-
             input_sequence, _ = encoder_layer.fcn(sequences=input_sequence) # (N, pad_length, d_model)
 
         input_sequence = self.model.encoder.layer_norm(input_sequence)
@@ -247,7 +240,7 @@ class ClassicTrainer():
         target_sequence = self.model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
 
         for d, decoder_layer in enumerate(self.model.decoder.decoder_layers):
-            self_mha_out, attention_weights = decoder_layer.self_mha(target_sequence, target_sequence, target_sequence, target_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length) # (N, pad_length, d_model)
             
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))
@@ -257,12 +250,7 @@ class ClassicTrainer():
                 image_data = self.visualize_attention_weights_for_layer('Decoder-Self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            if decoder_layer.self_mca is not None:
-                mca_attn = decoder_layer.self_mca(target_sequence, target_sequence)
-
-                target_sequence = torch.cat([self_mha_out, mca_attn], dim=-1)
-
-            target_sequence, attention_weights = decoder_layer.cross_mha(target_sequence, input_sequence, input_sequence, input_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length) # (N, pad_length, d_model)
 
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))
