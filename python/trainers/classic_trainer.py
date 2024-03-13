@@ -6,6 +6,7 @@ from utils import *
 
 import io
 import matplotlib.pyplot as plt
+import numpy as np
 import os
 import seaborn as sns
 import time
@@ -48,7 +49,7 @@ class ClassicTrainer():
             # get attention weight visualization before any updates are made to the model
             with torch.no_grad():
                 self.model.eval()
-                self.visualize_attention_weights(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+                self.viz_model(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
         self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model)
 
@@ -195,7 +196,7 @@ class ClassicTrainer():
             print("\nValidation loss: %.3f\n\n" % losses.avg)
 
             if not self.args.debug_simple:
-                self.visualize_attention_weights(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+                self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
     def evaluate(self, src, tgt):
         best, _ = beam_search_translate(src, self.model, self.src_bpe_model, self.tgt_bpe_model, device=self.device, beam_size=4, length_norm_coefficient=0.6)
@@ -210,7 +211,7 @@ class ClassicTrainer():
         print(f"src: {src} | prediction: {best} | actual: {tgt}")
         print(debug_validate_table)
 
-    def visualize_attention_weights(self, step, src, tgt):
+    def viz_model(self, step, src, tgt):
         input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device) # (1, input_sequence_length)
         input_tokens = [self.src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
         input_sequence_length = torch.LongTensor([input_sequence.size(1)]).unsqueeze(0).to(self.device) # (1)
@@ -222,15 +223,23 @@ class ClassicTrainer():
         input_sequence = self.model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
         for e, encoder_layer in enumerate(self.model.encoder.encoder_layers):
-            input_sequence, attention_weights = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence_length)
+            input_sequence, attention_weights, conv_filter_out = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence_length)
 
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))
 
             # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer('Encoder-Self', e, i, attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
+                image_data = self.viz_attn_weights('Encoder-Self', e, i, attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
                 self.summary_writer.add_image(f"Encoder Layer {e} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+
+            # conv_filters_out shape is (N, pad_length, d_model // 2) if it exists. turn this into (N, 1, pad_length, d_model // 2) for visualization as a single image
+            if conv_filter_out is not None:
+                conv_filter_out = conv_filter_out.cpu().detach()
+                conv_filter_out = conv_filter_out.contiguous().view(1, conv_filter_out.size(1), conv_filter_out.size(2))
+
+                image_data = self.viz_conv_weights('Encoder-Conv', e, conv_filter_out.squeeze(0).numpy(), input_tokens)
+                self.summary_writer.add_image(f"Encoder Layer {e} Conv Filters", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             input_sequence, _ = encoder_layer.fcn(sequences=input_sequence) # (N, pad_length, d_model)
 
@@ -240,29 +249,57 @@ class ClassicTrainer():
         target_sequence = self.model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
 
         for d, decoder_layer in enumerate(self.model.decoder.decoder_layers):
-            target_sequence, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights, conv_filter_out = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length) # (N, pad_length, d_model)
             
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer('Decoder-Self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
+                image_data = self.viz_attn_weights('Decoder-Self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length) # (N, pad_length, d_model)
+            # conv_filters_out shape is (N, pad_length, d_model // 2) if it exists. turn this into (N, 1, pad_length, d_model // 2) for visualization as a single image
+            if conv_filter_out is not None:
+                conv_filter_out = conv_filter_out.cpu().detach()
+                conv_filter_out = conv_filter_out.contiguous().view(1, conv_filter_out.size(1), conv_filter_out.size(2))
+
+                image_data = self.viz_conv_weights('Decoder-Conv', d, conv_filter_out.squeeze(0).numpy(), target_tokens)
+                self.summary_writer.add_image(f"Decoder Layer {d} Self-Conv Filters", plt.imread(image_data), global_step=step, dataformats='HWC')
+
+            target_sequence, attention_weights, conv_filter_out = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length) # (N, pad_length, d_model)
 
             attention_weights = attention_weights.cpu().detach()
             attention_weights = attention_weights.contiguous().view(1, self.n_heads, attention_weights.size(1), attention_weights.size(2))
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
             for i in range(attention_weights.size(1)):
-                image_data = self.visualize_attention_weights_for_layer('Decoder-Cross', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
+                image_data = self.viz_attn_weights('Decoder-Cross', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+
+            # conv_filters_out shape is (N, pad_length, d_model // 2) if it exists. turn this into (N, 1, pad_length, d_model // 2) for visualization as a single image
+            if conv_filter_out is not None:
+                conv_filter_out = conv_filter_out.cpu().detach()
+                conv_filter_out = conv_filter_out.contiguous().view(1, conv_filter_out.size(1), conv_filter_out.size(2))
+
+                image_data = self.viz_conv_weights('Decoder-Conv', d, conv_filter_out.squeeze(0).numpy(), target_tokens)
+                self.summary_writer.add_image(f"Decoder Layer {d} Cross-Conv Filters", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             target_sequence, _ = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
 
-    def visualize_attention_weights_for_layer(self, stack_name, layer_num, head_num, activation_weights, attendee_tokens, attending_tokens):
+    def viz_conv_weights(self, stack_name, layer_num, conv_weights, tokens):
+        fig, ax = plt.subplots(figsize=(20, 10))
+        s = sns.heatmap(conv_weights, square=False, annot=False, xticklabels=[], yticklabels=tokens)
+        s.set(xlabel="Features", ylabel="Input Sequence", title=f"{stack_name}-Conv Layer {layer_num} Activations")
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close(fig)
+        buf.seek(0)
+
+        return buf
+
+    def viz_attn_weights(self, stack_name, layer_num, head_num, activation_weights, attendee_tokens, attending_tokens):
         fig, ax = plt.subplots(figsize=(10, 10))
         s = sns.heatmap(activation_weights, square=True, annot=True, annot_kws={"fontsize":6}, fmt=".4f", xticklabels=attendee_tokens, yticklabels=attending_tokens, ax=ax)
         s.set(xlabel="Input Sequence", ylabel="Output Sequence", title=f"{stack_name}-Attn Layer {layer_num} Head {head_num} Weights")

@@ -4,7 +4,7 @@ import torch.nn as nn
 import utils
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, args, self_attn, in_decoder=False):
+    def __init__(self, args, self_attn, in_decoder=False, incl_conv=None):
         super(MultiHeadAttention, self).__init__()
 
         self.args = args
@@ -17,6 +17,9 @@ class MultiHeadAttention(nn.Module):
         if args.positional_encoding_type == 'rotary':
             self.rotary_embedding = utils.get_positional_encoding(args)
 
+        if incl_conv is None:
+            incl_conv = args.use_lite_conv
+
         # A linear projection to cast (n_heads sets of) queries from the input query sequences
         self.cast_queries = nn.Linear(args.d_model, args.n_heads * args.d_queries) # (N, query_sequence_pad_length, n_heads * d_queries)
         # A linear projection to cast (n_heads sets of) keys and values from the input reference sequences
@@ -24,7 +27,7 @@ class MultiHeadAttention(nn.Module):
         self.cast_values = nn.Linear(args.d_model, args.n_heads * args.d_values) # (N, key_value_sequence_pad_length, n_heads * d_values)
 
         # don't use lite conv for cross-attention
-        if args.use_lite_conv and self_attn:
+        if incl_conv:
             self.lite_conv = nn.Sequential(
                 nn.Conv1d(args.d_model // 2, args.d_model // 2, kernel_size=3, padding=1, groups=args.d_model // 2),
                 nn.Conv1d(args.d_model // 2, args.d_model // 2, kernel_size=1),
@@ -171,6 +174,7 @@ class MultiHeadAttention(nn.Module):
 
             output = torch.cat([mha_output, lite_conv_output], dim=-1)
         else:
+            lite_conv_output = None
             output = mha_output
 
-        return output, attention_weights
+        return output, attention_weights, lite_conv_output

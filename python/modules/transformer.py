@@ -84,11 +84,15 @@ class Encoder(nn.Module):
                     res_idx = ((i - 1) % m_independent_layers) + 1
                     new_layer = new_encoder_layer()
                     new_layer.fcn = layers[res_idx].fcn
+                    if hasattr(layers[res_idx], 'fcn_residual'):
+                        new_layer.fcn_residual = layers[res_idx].fcn_residual
                     layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     new_layer = new_encoder_layer()
                     new_layer.fcn = layers[res_idx].fcn
+                    if hasattr(layers[res_idx], 'fcn_residual'):
+                        new_layer.fcn_residual = layers[res_idx].fcn_residual
                     layers.append(new_layer)
             elif param_sharing_type == 'heads-cycle-rev':
                 if i <= m_independent_layers:
@@ -96,12 +100,16 @@ class Encoder(nn.Module):
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
                     new_layer = new_encoder_layer()
-                    new_layer.self_attn = layers[res_idx].mha
+                    new_layer.self_attn = layers[res_idx].self_attn
+                    if hasattr(layers[res_idx], 'self_attn_residual'):
+                        new_layer.self_attn_residual = layers[res_idx].self_attn_residual
                     layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     new_layer = new_encoder_layer()
-                    new_layer.self_attn = layers[res_idx].mha
+                    new_layer.self_attn = layers[res_idx].self_attn
+                    if hasattr(layers[res_idx], 'self_attn_residual'):
+                        new_layer.self_attn_residual = layers[res_idx].self_attn_residual
                     layers.append(new_layer)
             elif param_sharing_type == 'all':
                 layers.append(layers[0])
@@ -144,7 +152,7 @@ class DecoderLayer(nn.Module):
 
         self.args = args
 
-        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True)
+        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True, incl_conv=False)
         self.cross_attn = MultiHeadAttention(args, self_attn=False, in_decoder=True)
 
         if args.use_admin:
@@ -225,11 +233,15 @@ class Decoder(nn.Module):
                     res_idx = ((i - 1) % m_independent_layers) + 1
                     new_layer = new_decoder_layer()
                     new_layer.fcn = layers[res_idx].fcn
+                    if hasattr(layers[res_idx], 'fcn_residual'):
+                        new_layer.fcn_residual = layers[res_idx].fcn_residual
                     layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     new_layer = new_decoder_layer()
                     new_layer.fcn = layers[res_idx].fcn
+                    if hasattr(layers[res_idx], 'fcn_residual'):
+                        new_layer.fcn_residual = layers[res_idx].fcn_residual
                     layers.append(new_layer)
             elif param_sharing_type == 'heads-cycle-rev':
                 if i <= m_independent_layers:
@@ -237,16 +249,22 @@ class Decoder(nn.Module):
                 elif i <= m_independent_layers * (math.ceil(n_layers / m_independent_layers) - 1):
                     res_idx = ((i - 1) % m_independent_layers) + 1
                     new_layer = new_decoder_layer()
-                    new_layer.self_attn = layers[res_idx].self_mha
-                    new_layer.cross_attn = layers[res_idx].cross_mha
-                    new_layer.cross_mca = layers[res_idx].cross_mca
+                    new_layer.self_attn = layers[res_idx].self_attn
+                    new_layer.cross_attn = layers[res_idx].cross_attn
+                    if hasattr(layers[res_idx], 'self_attn_residual'):
+                        new_layer.self_attn_residual = layers[res_idx].self_attn_residual
+                    if hasattr(layers[res_idx], 'cross_attn_residual'):
+                        new_layer.cross_attn_residual = layers[res_idx].cross_attn_residual
                     layers.append(new_layer)
                 else:
                     res_idx = m_independent_layers - ((i - 1) % m_independent_layers)
                     new_layer = new_decoder_layer()
-                    new_layer.self_attn = layers[res_idx].self_mha
-                    new_layer.cross_attn = layers[res_idx].cross_mha
-                    new_layer.cross_mca = layers[res_idx].cross_mca
+                    new_layer.self_attn = layers[res_idx].self_attn
+                    new_layer.cross_attn = layers[res_idx].cross_attn
+                    if hasattr(layers[res_idx], 'self_attn_residual'):
+                        new_layer.self_attn_residual = layers[res_idx].self_attn_residual
+                    if hasattr(layers[res_idx], 'cross_attn_residual'):
+                        new_layer.cross_attn_residual = layers[res_idx].cross_attn_residual
                     layers.append(new_layer)
             elif param_sharing_type == 'all':
                 layers.append(layers[0])
