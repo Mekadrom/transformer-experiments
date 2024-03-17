@@ -3,7 +3,6 @@ from trainers.classic_trainer import ClassicTrainer
 from trainers.distillation_trainer import DistillationTrainer
 
 import os
-import torch
 import torch.backends.cudnn as cudnn
 
 """

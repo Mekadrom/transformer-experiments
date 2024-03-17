@@ -3,7 +3,7 @@ from dataloader import SequenceLoader
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
 from tqdm import tqdm
-from transformer_provider import TransformerModelProvider
+from model_provider import TransformerModelProvider
 
 import argparse
 import codecs
@@ -107,7 +107,7 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
             optimizer = None
     else:
         print("Starting from scratch...")
-        model = TransformerModelProvider().provide(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+        model = TransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
     return model, optimizer
