@@ -90,7 +90,7 @@ def get_positional_encoding(args):
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
 
-def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar'):
+def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar', vae_model=False):
     print('Initializing model...')
 
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
@@ -107,7 +107,11 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
             optimizer = None
     else:
         print("Starting from scratch...")
-        model = TransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+        if vae_model:
+            model = TransformerModelProvider().provide_vae_transformer(args, src_bpe_model.vocab_size())
+        else:
+            model = TransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
     return model, optimizer
@@ -133,14 +137,16 @@ def print_model(model):
 
     print(f'The model has {total_params:,} trainable parameters')
 
-def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model):
+def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, vae_model=False):
+    target_suffix = 'src' if vae_model else 'tgt'
+
     print('Loading training data SequenceLoader...')
     train_loader = SequenceLoader(
         src_bpe_model=src_bpe_model,
         tgt_bpe_model=tgt_bpe_model,
         data_folder=os.path.join(run_dir),
         source_suffix="src",
-        target_suffix="tgt",
+        target_suffix=target_suffix,
         split="train",
         tokens_in_batch=tokens_in_batch
     )
@@ -151,7 +157,7 @@ def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model):
         tgt_bpe_model=tgt_bpe_model,
         data_folder=os.path.join(run_dir),
         source_suffix="src",
-        target_suffix="tgt",
+        target_suffix=target_suffix,
         split="val",
         tokens_in_batch=tokens_in_batch
     )
@@ -162,7 +168,7 @@ def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model):
         tgt_bpe_model=tgt_bpe_model,
         data_folder=os.path.join(run_dir),
         source_suffix="src",
-        target_suffix="tgt",
+        target_suffix=target_suffix,
         split="test",
         tokens_in_batch=tokens_in_batch
     )
@@ -357,7 +363,7 @@ def average_checkpoints(epoch, optimizer, source_folder, model_name_prefix='step
     # Save averaged checkpoint
     torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python, test_loader=None):
+def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python, test_loader=None, vae_model=False):
     """
     Returns None when command line sacrebleu is used
     """
@@ -367,11 +373,12 @@ def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sac
     bleu_score = None
 
     if test_loader is None:
+        target_suffix = "src" if vae_model else "tgt"
         test_loader = SequenceLoader(src_bpe_model=src_bpe_model,
                                     tgt_bpe_model=tgt_bpe_model,
                                     data_folder=os.path.join('..', "data"),
                                     source_suffix="src",
-                                    target_suffix="tgt",
+                                    target_suffix=target_suffix,
                                     split="test",
                                     tokens_in_batch=None)
         test_loader.create_batches()

@@ -25,7 +25,6 @@ class ClassicTrainer():
         self.batches_per_step = args.batches_per_step
 
         self.run_dir = os.path.join('runs', self.run_name)
-
         if not os.path.exists(self.run_dir):
             os.makedirs(self.run_dir)
 
@@ -49,9 +48,12 @@ class ClassicTrainer():
             # get attention weight visualization before any updates are made to the model
             with torch.no_grad():
                 self.model.eval()
-                self.viz_model(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+                if self.args.train_vae:
+                    self.viz_model(0, "Anyone who retains the ability to recognise beauty will never become old.", "Anyone who retains the ability to recognise beauty will never become old.")
+                else:
+                    self.viz_model(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
-        self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model)
+        self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=args.train_vae)
 
         # todo: make this configurable
         self.criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(self.device)
@@ -64,7 +66,7 @@ class ClassicTrainer():
         self.target_sequence_transform = lambda source_sequences, source_sequence_lengths, target_sequences, target_sequence_lengths: (target_sequences, target_sequence_lengths)
 
     def load_model_and_optimizer(self):
-        return load_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model)
+        return load_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model, vae_model=self.args.train_vae)
 
     def train(self, model_name_prefix=''):
         print(f"Training for {self.epochs} epochs...")
@@ -152,7 +154,10 @@ class ClassicTrainer():
                 if self.steps % self.print_frequency == 0:
                     print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
                           'Loss {total_losses.val:.4f} ({total_losses.avg:.4f})'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, total_losses=total_losses))
-                    self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
+                    if self.args.train_vae:
+                        self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Anyone who retains the ability to recognise beauty will never become old.')
+                    else:
+                        self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
 
                 self.summary_writer.add_scalar('Translation Training Loss', translation_losses.avg, self.steps)
                 self.summary_writer.add_scalar('Training Loss', total_losses.avg, self.steps)
@@ -200,7 +205,10 @@ class ClassicTrainer():
             print("\nValidation loss: %.3f\n\n" % losses.avg)
 
             if not self.args.debug_simple:
-                self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+                if self.args.train_vae:
+                    self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Anyone who retains the ability to recognise beauty will never become old.")
+                else:
+                    self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
     def evaluate(self, src, tgt):
         best, _ = beam_search_translate(src, self.model, self.src_bpe_model, self.tgt_bpe_model, device=self.device, beam_size=4, length_norm_coefficient=0.6)

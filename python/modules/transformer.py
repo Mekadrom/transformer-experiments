@@ -309,33 +309,6 @@ class Transformer(nn.Module):
         self.encoder = Encoder(args, src_vocab_size)
         self.decoder = Decoder(args, tgt_vocab_size)
 
-    def init_weights(self, tie_embeddings=True):
-        # Glorot uniform initialization with a gain of self.init_weights_gain
-        for p in self.parameters():
-            # Glorot initialization needs at least two dimensions on the tensor
-            if p.dim() > 1:
-                if self.args.init_weights_from in ['glorot_uniform', 'xavier_uniform']:
-                    nn.init.xavier_uniform_(p, gain=self.args.init_weights_gain)
-                elif self.args.init_weights_from in ['glorot_normal', 'xavier_normal']:
-                    nn.init.xavier_normal_(p, gain=self.args.init_weights_gain)
-                elif self.args.init_weights_from == 'kaiming_uniform':
-                    nn.init.kaiming_uniform_(p)
-                elif self.args.init_weights_from == 'kaiming_normal':
-                    nn.init.kaiming_normal_(p)
-                elif self.args.init_weights_from == 'orthogonal':
-                    nn.init.orthogonal_(p)
-                else:
-                    raise Exception(f"Unknown weight initialization method: {self.args.init_weights_from}")
-
-        # Share weights between the embedding layers and the logit layer
-        nn.init.normal_(self.encoder.embedding.weight, mean=0., std=math.pow(self.args.d_model, -0.5))
-        self.decoder.embedding.weight = self.encoder.embedding.weight
-
-        if tie_embeddings:
-            self.decoder.classifier.weight = self.decoder.embedding.weight
-
-        print("Model initialized.")
-
     def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths):
         encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, encoder_sequence_lengths) # (N, encoder_sequence_pad_length, d_model)
         decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths) # (N, decoder_sequence_pad_length, vocab_size)

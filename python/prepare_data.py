@@ -19,16 +19,40 @@ def main(args):
 
     if not os.path.exists(src_tokenizer_file):
         print(f"Training source tokenizer and saving to {src_tokenizer_file}")
-        data = os.path.join('data', 'actual', 'train.src')
+        data = os.path.join('..', 'data', 'actual', 'train.src')
         if args.shared_vocab:
             data = os.path.join(run_dir, 'temp.srctgt')
             with open(data, 'w', encoding='utf-8') as f:
-                with open(os.path.join('data', 'actual', 'train.src'), 'r', encoding='utf-8') as source:
-                    with open(os.path.join('data', 'actual', 'train.tgt'), 'r', encoding='utf-8') as target:
+                with open(os.path.join('..', 'data', 'actual', 'train.src'), 'r', encoding='utf-8') as source:
+                    with open(os.path.join('..', 'data', 'actual', 'temp.tgt'), 'r', encoding='utf-8') as target:
                         for line in source:
-                            f.write(line.strip() + '\n')
+                            if args.prepend_cls_token:
+                                f.write('<CLS> ' + line.strip() + '\n')
+                            else:
+                                f.write(line.strip() + '\n')
                         f.write('\n')
                         for line in target:
+                            if args.prepend_cls_token:
+                                f.write('<CLS> ' + line.strip() + '\n')
+                            else:
+                                f.write(line.strip() + '\n')
+        else:
+            data = os.path.join('..', 'data', 'actual', 'temp.src')
+            tgt_data = os.path.join('..', 'data', 'actual', 'temp.tgt')
+            # used to append <CLS> before every line
+            with open(data, 'w', encoding='utf-8') as f:
+                with open(os.path.join('..', 'data', 'actual', 'train.src'), 'r', encoding='utf-8') as source:
+                    for line in source:
+                        if args.prepend_cls_token:
+                            f.write('<CLS> ' + line.strip() + '\n')
+                        else:
+                            f.write(line.strip() + '\n')
+            with open(tgt_data, 'w', encoding='utf-8') as f:
+                with open(os.path.join('..', 'data', 'actual', 'train.tgt'), 'r', encoding='utf-8') as target:
+                    for line in target:
+                        if args.prepend_cls_token:
+                            f.write('<CLS> ' + line.strip() + '\n')
+                        else:
                             f.write(line.strip() + '\n')
             
         youtokentome.BPE.train(data=data, vocab_size=args.src_vocab_size, model=src_tokenizer_file)
@@ -38,16 +62,16 @@ def main(args):
 
     if not os.path.exists(tgt_tokenizer_file) and not args.shared_vocab:
         print(f"Training target tokenizer and saving to {tgt_tokenizer_file}")
-        youtokentome.BPE.train(data=os.path.join('data', 'actual', 'train.tgt'), vocab_size=args.tgt_vocab_size, model=tgt_tokenizer_file)
+        youtokentome.BPE.train(data=os.path.join('..', 'data', 'actual', 'temp.tgt'), vocab_size=args.tgt_vocab_size, model=tgt_tokenizer_file)
 
     src_bpe_model = youtokentome.BPE(model=src_tokenizer_file)
     tgt_bpe_model = youtokentome.BPE(model=tgt_tokenizer_file) if not args.shared_vocab else src_bpe_model
 
     def fix_set(file_name):
         print('\nRe-reading single files...')
-        with codecs.open(os.path.join('data', 'actual', f"{file_name}.src"), 'r', encoding='utf-8') as f:
+        with codecs.open(os.path.join('..', 'data', 'actual', f"{file_name}.src"), 'r', encoding='utf-8') as f:
             source = f.read().split('\n')
-        with codecs.open(os.path.join('data', 'actual', f"{file_name}.tgt"), 'r', encoding='utf-8') as f:
+        with codecs.open(os.path.join('..', 'data', 'actual', f"{file_name}.tgt"), 'r', encoding='utf-8') as f:
             target = f.read().split('\n')
 
         # Filter
@@ -87,6 +111,7 @@ if __name__ == '__main__':
     argparser.add_argument('--max_length', type=int, default=150)
     argparser.add_argument('--min_length', type=int, default=3)
     argparser.add_argument('--max_length_ratio', type=float, default=1.5)
+    argparser.add_argument('--prepend_cls_token', action='store_true')
 
     args, unk = argparser.parse_known_args()
 
