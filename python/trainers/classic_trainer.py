@@ -79,11 +79,15 @@ class ClassicTrainer():
 
             save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/{model_name_prefix}")
 
-        average_checkpoints(self.run_name, model_name_prefix=model_name_prefix)
+        print(f"Training complete. Averaging checkpoints...")
+        average_checkpoints(self.epochs, self.optimizer, self.run_name, model_name_prefix=model_name_prefix)
 
+        print(f"Training complete. Evaluating one last time...")
         self.val_loader.create_batches()
         self.validate_epoch()
-        sacrebleu_evaluate(self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, device=self.device, sacrebleu_in_python=True)
+
+        print(f"Training complete. Scoring with sacrebleu...")
+        sacrebleu_evaluate(self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, device=self.device, sacrebleu_in_python=True, test_loader=self.test_loader)
     
     def train_epoch(self, epoch):
         # training mode enables dropout

@@ -1,6 +1,5 @@
 from .multihead_attn import MultiHeadAttention
 from .positionwise_fcn import PositionWiseFCNetwork
-from .sum import Sum
 
 import admin_torch
 import math

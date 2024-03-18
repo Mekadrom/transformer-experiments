@@ -329,7 +329,7 @@ def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam
 
         return best_hypothesis, all_hypotheses
 
-def average_checkpoints(positional_encoding, source_folder, model_name_prefix='step', model_name_suffix='.pth.tar'):
+def average_checkpoints(epoch, optimizer, source_folder, model_name_prefix='step', model_name_suffix='.pth.tar'):
     source_folder = f"runs/{source_folder}" if not source_folder.startswith('runs/') else source_folder
     
     # Get list of checkpoint names
@@ -338,7 +338,7 @@ def average_checkpoints(positional_encoding, source_folder, model_name_prefix='s
 
     # Average parameters from checkpoints
     averaged_params = OrderedDict()
-    for c in checkpoint_names:
+    for c in tqdm(checkpoint_names, desc="Averaging checkpoints"):
         checkpoint = torch.load(os.path.join(source_folder, c))['model']
         checkpoint_params = checkpoint.state_dict()
         checkpoint_param_names = checkpoint_params.keys()
@@ -355,9 +355,9 @@ def average_checkpoints(positional_encoding, source_folder, model_name_prefix='s
     averaged_checkpoint.load_state_dict(averaged_params)
 
     # Save averaged checkpoint
-    torch.save({'model': averaged_checkpoint, 'positional_encoding': positional_encoding}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
+    torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python):
+def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python, test_loader=None):
     """
     Returns None when command line sacrebleu is used
     """
@@ -366,14 +366,15 @@ def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sac
 
     bleu_score = None
 
-    test_loader = SequenceLoader(src_bpe_model=src_bpe_model,
-                                tgt_bpe_model=tgt_bpe_model,
-                                data_folder=os.path.join('..', "data"),
-                                source_suffix="src",
-                                target_suffix="tgt",
-                                split="test",
-                                tokens_in_batch=None)
-    test_loader.create_batches()
+    if test_loader is None:
+        test_loader = SequenceLoader(src_bpe_model=src_bpe_model,
+                                    tgt_bpe_model=tgt_bpe_model,
+                                    data_folder=os.path.join('..', "data"),
+                                    source_suffix="src",
+                                    target_suffix="tgt",
+                                    split="test",
+                                    tokens_in_batch=None)
+        test_loader.create_batches()
 
     # Evaluate
     with torch.no_grad():
