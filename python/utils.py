@@ -217,7 +217,57 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam_size=4, length_norm_coefficient=0.6):
+def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model, device):
+    with torch.no_grad():
+        # If the source sequence is a string, convert to a tensor of IDs
+        if isinstance(src, str):
+            encoder_sequences = src_bpe_model.encode(
+                src,
+                output_type=youtokentome.OutputType.ID,
+                bos=False,
+                eos=False
+            )
+            encoder_sequences = torch.LongTensor(encoder_sequences).unsqueeze(0)
+
+        else:
+            encoder_sequences = src
+        encoder_sequences = encoder_sequences.to(device)
+        encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device)
+
+        encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths)
+
+        if args.train_vae:
+            # mu and logvar + reparemeterization trick to sample from the latent space, which replaces the encoder's output
+            cls_token = encoder_sequences[:, 0, :]
+            mu = model.mu(cls_token)
+            logvar = model.logvar(cls_token)
+
+            encoder_sequences = model.reparameterize(mu, logvar).unsqueeze(0)
+            encoder_sequence_lengths = torch.ones(encoder_sequences.shape[:-1], dtype=torch.long, device=encoder_sequences.device)
+
+        steps = 0
+        decoded = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device)
+        while True:
+            decoder_sequences, _ = model.decoder(decoded, torch.LongTensor([decoded.size(1)]).to(device), encoder_sequences, encoder_sequence_lengths)
+
+            next_word_scores = decoder_sequences[:, -1, :]
+            next_word_scores = F.log_softmax(next_word_scores, dim=-1)
+
+            next_word = torch.argmax(next_word_scores, dim=-1)
+
+            decoded = torch.cat([decoded, next_word.unsqueeze(1)], dim=1)
+
+            if next_word.item() == tgt_bpe_model.subword_to_id('<EOS>'):
+                return ' '.join(tgt_bpe_model.decode(decoded.tolist(), ignore_ids=[0, 2, 3]))
+
+            steps += 1
+            if steps >= args.maxlen:
+                # gone on too long
+                break
+
+        return ' '.join(tgt_bpe_model.decode(decoded.tolist(), ignore_ids=[0, 2, 3]))
+
+def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device, beam_size=4, length_norm_coefficient=0.6):
     """
     Translates a source language sequence to the target language, with beam search decoding.
 
@@ -252,6 +302,15 @@ def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam
 
         # Encode
         encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths) # (1, source_sequence_length, d_model)
+
+        if args.train_vae:
+            # mu and logvar + reparemeterization trick to sample from the latent space, which replaces the encoder's output
+            cls_token = encoder_sequences[:, 0, :]
+            mu = model.mu(cls_token)
+            logvar = model.logvar(cls_token)
+
+            encoder_sequences = model.reparameterize(mu, logvar)
+            encoder_sequence_lengths = torch.ones(encoder_sequences.size(0), dtype=torch.long, device=encoder_sequences.device)
 
         # Our hypothesis to begin with is just <BOS>
         hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device) # (1, 1)
@@ -315,7 +374,7 @@ def beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device, beam
             hypotheses_lengths = torch.LongTensor(hypotheses.size(0) * [hypotheses.size(1)]).to(device) # (s)
 
             # Stop if things have been going on for too long
-            if step > 100:
+            if step > args.maxlen:
                 break
             step += 1
 
@@ -541,6 +600,7 @@ def get_args():
     argparser.add_argument('--beta2', type=float, default=0.98)
     argparser.add_argument('--epsilon', type=float, default=1e-9)
     argparser.add_argument('--label_smoothing', type=float, default=0.1)
+    argparser.add_argument('--clip_grad_norm', type=float, default=0.0)
 
     argparser.add_argument('--prune_mode', type=str, default='none', choices=['none', 'only-prune', 'train-prune', 'train-prune-retrain'])
     argparser.add_argument('--prune_type', type=str, default='all', choices=['heads', 'ffn', 'all'])
@@ -554,6 +614,12 @@ def get_args():
     argparser.add_argument('--prune_retrain_warmup_steps', type=float, default=800)
 
     argparser.add_argument('--distillation_teacher_run_name', type=str, default=None)
+
+    # vae args
+    argparser.add_argument('--train_vae', action='store_true')
+    argparser.add_argument('--latent_size', type=int, default=512)
+    argparser.add_argument('--kl_loss_coefficient', type=float, default=0.0)
+    argparser.add_argument('--vae_tie_embeddings', action='store_true')
 
     # debug/technical args that are not hyperparameters
     argparser.add_argument('--start_epoch', type=int, default=0)
@@ -577,5 +643,7 @@ def get_args():
 
     args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
     args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))
+
+    torch.set_printoptions(profile='full')
 
     return args, unk

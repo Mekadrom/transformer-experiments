@@ -34,11 +34,18 @@ class ClassicTrainer():
 
         self.src_bpe_model, self.tgt_bpe_model = load_tokenizers(self.bpe_run_dir)
 
+        if args.train_vae:
+            self.tgt_bpe_model = self.src_bpe_model
+
         self.model, self.optimizer = self.load_model_and_optimizer()
         self.model = self.model.to(args.device)
 
+        # todo: make this configurable
+        self.criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(self.device)
+
         print_model(self.model)
         print(f"Optimizer: {self.optimizer}")
+        print(f"Criterion: {self.criterion}")
 
         if args.save_initial_checkpoint:
             save_checkpoint(-1, self.model, self.optimizer, f"runs/{args.run_name}/")
@@ -49,14 +56,11 @@ class ClassicTrainer():
             with torch.no_grad():
                 self.model.eval()
                 if self.args.train_vae:
-                    self.viz_model(0, "Anyone who retains the ability to recognise beauty will never become old.", "Anyone who retains the ability to recognise beauty will never become old.")
+                    self.viz_model(0, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.", "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
                 else:
                     self.viz_model(0, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
         self.train_loader, self.val_loader, self.test_loader = load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=args.train_vae)
-
-        # todo: make this configurable
-        self.criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(self.device)
 
         self.steps = 0
         self.start_epoch = args.start_epoch
@@ -98,6 +102,7 @@ class ClassicTrainer():
         data_time = AverageMeter()
         step_time = AverageMeter()
         total_losses = AverageMeter()
+        kl_losses = AverageMeter()
         translation_losses = AverageMeter()
         encoder_moe_gating_variance_losses = AverageMeter()
         decoder_moe_gating_variance_losses = AverageMeter()
@@ -115,7 +120,10 @@ class ClassicTrainer():
 
             data_time.update(time.time() - start_data_time)
 
-            predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = self.model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+            if self.args.train_vae:
+                predicted_sequences, mu, logvar = self.model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+            else:
+                predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = self.model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
             if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
                 encoder_moe_gating_variances = torch.stack(encoder_moe_gating_variances).std(dim=0).mean()
@@ -123,18 +131,27 @@ class ClassicTrainer():
                 moe_diversity_loss = (encoder_moe_gating_variances + decoder_moe_gating_variances) / 2
                 encoder_moe_gating_variance_losses.update(encoder_moe_gating_variances.item(), 1)
                 decoder_moe_gating_variance_losses.update(decoder_moe_gating_variances.item(), 1)
+
+                moe_diversity_loss = moe_diversity_loss * self.args.moe_diversity_loss_coefficient
             else:
                 moe_diversity_loss = 0
+
+            if self.args.train_vae:
+                kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                kl_loss = torch.mean(kl_loss * self.args.kl_loss_coefficient)
+                kl_loss = torch.clamp(kl_loss, min=0)
+                kl_losses.update(kl_loss.item(), src_seqs.size(0))
+            else:
+                kl_loss = 0
 
             # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
             # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
             # Therefore, pads start after (length - 1) positions
-                
             translation_loss = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
 
             translation_losses.update(translation_loss.item(), (tgt_seq_lengths - 1).sum().item())
 
-            loss = translation_loss + moe_diversity_loss * self.args.moe_diversity_loss_coefficient
+            loss = translation_loss + moe_diversity_loss + kl_loss
 
             (loss / self.batches_per_step).backward()
 
@@ -142,6 +159,9 @@ class ClassicTrainer():
 
             # Update model (i.e. perform a training step) only after gradients are accumulated from batches_per_step batches
             if (i + 1) % self.batches_per_step == 0:
+                if self.args.clip_grad_norm is not None and self.args.clip_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad_norm)
+                
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
@@ -155,7 +175,7 @@ class ClassicTrainer():
                     print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
                           'Loss {total_losses.val:.4f} ({total_losses.avg:.4f})'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, total_losses=total_losses))
                     if self.args.train_vae:
-                        self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Anyone who retains the ability to recognise beauty will never become old.')
+                        self.evaluate(src='In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.', tgt='In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.')
                     else:
                         self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
 
@@ -164,6 +184,9 @@ class ClassicTrainer():
                 if moe_diversity_loss > 0:
                     self.summary_writer.add_scalar('Encoder MoE Gating Variances', encoder_moe_gating_variance_losses.avg, self.steps)
                     self.summary_writer.add_scalar('Decoder MoE Gating Variances', decoder_moe_gating_variance_losses.avg, self.steps)
+
+                if self.args.train_vae:
+                    self.summary_writer.add_scalar('KL Loss', kl_losses.avg, self.steps)
 
                 start_step_time = time.time()
 
@@ -206,22 +229,35 @@ class ClassicTrainer():
 
             if not self.args.debug_simple:
                 if self.args.train_vae:
-                    self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Anyone who retains the ability to recognise beauty will never become old.")
+                    self.viz_model(self.steps, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.", "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
                 else:
                     self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
     def evaluate(self, src, tgt):
-        best, _ = beam_search_translate(src, self.model, self.src_bpe_model, self.tgt_bpe_model, device=self.device, beam_size=4, length_norm_coefficient=0.6)
+        if self.args.train_vae:
+            translation = greedy_translate(self.args, src, self.model, self.src_bpe_model, self.tgt_bpe_model, device=self.device)
 
-        debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
-        debug_validate_table.add_row([src, best, tgt])
+            debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
+            debug_validate_table.add_row([src, translation, tgt])
 
-        console_size = os.get_terminal_size()
-        debug_validate_table.max_width = (console_size.columns // 3) - 15
-        debug_validate_table.min_width = (console_size.columns // 3) - 15
+            console_size = os.get_terminal_size()
+            debug_validate_table.max_width = (console_size.columns // 3) - 15
+            debug_validate_table.min_width = (console_size.columns // 3) - 15
 
-        print(f"src: {src} | prediction: {best} | actual: {tgt}")
-        print(debug_validate_table)
+            # print(f"src: {src} | prediction: {translation} | actual: {tgt}")
+            print(debug_validate_table)
+        else:
+            best, _ = beam_search_translate(self.args, src, self.model, self.src_bpe_model, self.tgt_bpe_model, device=self.device, beam_size=4, length_norm_coefficient=0.6)
+
+            debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
+            debug_validate_table.add_row([src, best, tgt])
+
+            console_size = os.get_terminal_size()
+            debug_validate_table.max_width = (console_size.columns // 3) - 15
+            debug_validate_table.min_width = (console_size.columns // 3) - 15
+
+            # print(f"src: {src} | prediction: {best} | actual: {tgt}")
+            print(debug_validate_table)
 
     def viz_model(self, step, src, tgt):
         input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device) # (1, input_sequence_length)

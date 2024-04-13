@@ -27,6 +27,8 @@ class VAETransformer(nn.Module):
 
         mu = self.mu(cls_token)
         logvar = self.logvar(cls_token)
-        z = self.reparameterize(mu, logvar)
-        decoder_sequences, _ = self.decoder(decoder_sequences, decoder_sequence_lengths, z, decoder_sequence_lengths)
+        z = self.reparameterize(mu, logvar).unsqueeze(1) # shape: (batch_size, 1, latent_size) or (batch_size, sequence_length, latent_size)
+        z_length = torch.ones(z.size(0), dtype=torch.long, device=z.device).unsqueeze(1) # shape: (batch_size, 1)
+
+        decoder_sequences, _ = self.decoder(decoder_sequences, decoder_sequence_lengths, z, z_length)
         return decoder_sequences, mu, logvar
