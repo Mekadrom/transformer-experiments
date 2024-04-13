@@ -29,6 +29,10 @@ class LabelSmoothedCE(nn.Module):
         :param lengths: true lengths of these sequences, to be able to ignore pads, a tensor of size (N)
         :return: mean label-smoothed cross-entropy loss, a scalar
         """
+
+        # print(f"inputs = torch.{torch.argmax(F.softmax(inputs, dim=-1)[0].cpu(), dim=-1)}")
+        # print(f"targets = torch.{targets[0].cpu()}")
+
         # Remove pad-positions and flatten
         inputs, _, _, _ = pack_padded_sequence(
             input=inputs,
@@ -43,14 +47,19 @@ class LabelSmoothedCE(nn.Module):
             enforce_sorted=False
         ) # (sum(lengths))
 
-        # "Smoothed" one-hot vectors for the gold sequences
-        target_vector = torch.zeros_like(inputs).scatter(dim=1, index=targets.unsqueeze(1), value=1.).to(self.args.device) # (sum(lengths), n_classes), one-hot
-        target_vector = target_vector * (1. - self.eps) + self.eps / target_vector.size(1) # (sum(lengths), n_classes), "smoothed" one-hot
+        if self.eps == 0.:
+            # Compute cross-entropy loss
+            loss = F.cross_entropy(inputs, targets)
+            return loss
+        else:
+            # "Smoothed" one-hot vectors for the gold sequences
+            target_vector = torch.zeros_like(inputs).scatter(dim=1, index=targets.unsqueeze(1), value=1.).to(self.args.device) # (sum(lengths), n_classes), one-hot
+            target_vector = target_vector * (1. - self.eps) + self.eps / target_vector.size(1) # (sum(lengths), n_classes), "smoothed" one-hot
 
-        # Compute smoothed cross-entropy loss
-        loss = (-1 * target_vector * F.log_softmax(inputs, dim=1)).sum(dim=1) # (sum(lengths))
+            # Compute smoothed cross-entropy loss
+            loss = (-1 * target_vector * F.log_softmax(inputs, dim=1)).sum(dim=1) # (sum(lengths))
 
-        # Compute mean loss
-        loss = torch.mean(loss)
+            # Compute mean loss
+            loss = torch.mean(loss)
 
-        return loss
+            return loss

@@ -11,14 +11,8 @@ class MultiHeadAttention(nn.Module):
         self.self_attn = self_attn
         self.in_decoder = in_decoder
 
-        if args.qkv_config == 'kv+pos':
-            self.map_pos = nn.Linear(args.positional_encoding_dim, 1, bias=True)
-
         if args.positional_encoding_type == 'rotary':
             self.rotary_embedding = utils.get_positional_encoding(args)
-
-        if incl_conv is None:
-            incl_conv = args.use_lite_conv
 
         # A linear projection to cast (n_heads sets of) queries from the input query sequences
         self.cast_queries = nn.Linear(args.d_model, args.n_heads * args.d_queries) # (N, query_sequence_pad_length, n_heads * d_queries)
@@ -26,18 +20,8 @@ class MultiHeadAttention(nn.Module):
         self.cast_keys = nn.Linear(args.d_model, args.n_heads * args.d_queries) # (N, key_value_sequence_pad_length, n_heads * d_keys)
         self.cast_values = nn.Linear(args.d_model, args.n_heads * args.d_values) # (N, key_value_sequence_pad_length, n_heads * d_values)
 
-        # don't use lite conv for cross-attention
-        if incl_conv:
-            self.lite_conv = nn.Sequential(
-                nn.Conv1d(args.d_model // 2, args.d_model // 2, kernel_size=3, padding=1, groups=args.d_model // 2),
-                nn.Conv1d(args.d_model // 2, args.d_model // 2, kernel_size=1),
-            )
-
-            # a linear projection to cast (n_heads sets of) computed attention-weighted vectors to output vectors
-            self.mha_cast_output = nn.Linear(args.n_heads * args.d_values // 2, args.d_model // 2)
-        else:
-            # a linear projection to cast (n_heads sets of) computed attention-weighted vectors to output vectors
-            self.mha_cast_output = nn.Linear(args.n_heads * args.d_values, args.d_model)
+        # a linear projection to cast (n_q_heads sets of) computed attention-weighted vectors to output vectors
+        self.mha_cast_output = nn.Linear(args.n_q_heads * args.d_values, args.d_model)
 
         self.softmax = nn.Softmax(dim=-1)
 
@@ -64,39 +48,19 @@ class MultiHeadAttention(nn.Module):
         keys = keys.permute(0, 2, 1, 3)
         values = values.permute(0, 2, 1, 3)
 
-        # Perform multi-head attention
-        if hasattr(self, 'map_pos'):
-            # for kv+pos
-            B, H, N, _ = queries.shape
-            B, H, M, _ = keys.shape
+        if hasattr(self, 'rotary_embedding') and self.rotary_embedding is not None:
+            queries = self.rotary_embedding.rotate_queries_or_keys(queries)
+            keys = self.rotary_embedding.rotate_queries_or_keys(keys)
+            
+        # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
+        # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
+        # queries = queries.contiguous().view(-1, query_sequence_pad_length, d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
+        # keys = keys.contiguous().view(-1, key_value_sequence_pad_length, d_queries) # (N * n_heads, key_value_sequence_pad_length, d_keys)
+        # values = values.contiguous().view(-1, key_value_sequence_pad_length, d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
 
-            tmp = keys if N == M else queries
+        # attention_weights = torch.bmm(queries, keys.transpose(-2, -1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
-            attention_weights = torch.matmul(tmp, keys.transpose(-2, -1)) / math.sqrt(self.args.n_heads) # (N, query_sequence_pad_length, key_value_sequence_pad_length)
-
-            # assumes positional encoding is tensor
-            pos = self.positional_encoding[:, :query_sequence_pad_length, :key_value_sequence_pad_length, :] # (1, query_sequence_pad_length, key_value_sequence_pad_length, d_model)
-            attention_weights = attention_weights.unsqueeze(-1) + pos.unsqueeze(0) # (N, query_sequence_pad_length, key_value_sequence_pad_length, d_model)
-            attention_weights = self.map_pos(attention_weights).squeeze(-1)
-
-            attention_weights = attention_weights.contiguous().view(-1, query_sequence_pad_length, key_value_sequence_pad_length) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
-
-            # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
-            # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
-            queries = queries.contiguous().view(-1, query_sequence_pad_length, d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
-            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, d_keys) # (N * n_heads, key_value_sequence_pad_length, d_keys)
-            values = values.contiguous().view(-1, key_value_sequence_pad_length, d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
-        else:
-            if hasattr(self, 'rotary_embedding') and self.rotary_embedding is not None:
-                queries = self.rotary_embedding.rotate_queries_or_keys(queries)
-                keys = self.rotary_embedding.rotate_queries_or_keys(keys)
-                
-            # For convenience, convert to 3D tensors by merging the batch and n_heads dimensions
-            # This is to prepare it for the batch matrix multiplication (i.e. the dot product)
-            queries = queries.contiguous().view(-1, query_sequence_pad_length, d_queries) # (N * n_heads, query_sequence_pad_length, d_queries)
-            keys = keys.contiguous().view(-1, key_value_sequence_pad_length, d_queries) # (N * n_heads, key_value_sequence_pad_length, d_keys)
-            values = values.contiguous().view(-1, key_value_sequence_pad_length, d_values) # (N * n_heads, key_value_sequence_pad_length, d_values)
-            attention_weights = torch.bmm(queries, keys.transpose(-2, -1)) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+        attention_weights = torch.einsum('...td,...Td->...tT', queries, keys)
 
         # Scale dot-products
         attention_weights = (1. / math.sqrt(d_queries)) * attention_weights # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
@@ -127,7 +91,8 @@ class MultiHeadAttention(nn.Module):
         attention_weights = self.dropout(attention_weights) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # Calculate sequences as the weighted sums of values based on these softmax weights
-        sequences = torch.bmm(attention_weights, values) # (N * n_heads, query_sequence_pad_length, d_values)
+        # sequences = torch.bmm(attention_weights, values) # (N * n_heads, query_sequence_pad_length, d_values)
+        sequences = torch.einsum('...tT,...Td->...td', attention_weights, values)
 
         # Unmerge batch and n_heads dimensions and restore original order of axes
         sequences = sequences.contiguous().view(batch_size, self.args.n_heads, query_sequence_pad_length, d_values).permute(0, 2, 1, 3) # (N, query_sequence_pad_length, n_heads, d_values)
@@ -153,28 +118,4 @@ class MultiHeadAttention(nn.Module):
         keys: torch.Tensor = self.cast_keys(key_sequences)
         values: torch.Tensor = self.cast_values(value_sequences)
 
-        if hasattr(self, 'lite_conv'):
-            # half of embedding dim goes to MHA, half goes to conv
-            mha_queries, lite_conv_queries = torch.split(queries, queries.size(-1) // 2, dim=-1)
-            mha_keys, lite_conv_keys = torch.split(keys, keys.size(-1) // 2, dim=-1)
-            mha_values, lite_conv_values = torch.split(values, values.size(-1) // 2, dim=-1)
-        else:
-            mha_queries = queries
-            mha_keys = keys
-            mha_values = values
-
-            lite_conv_queries = None
-            lite_conv_keys = None
-            lite_conv_values = None
-
-        mha_output, attention_weights = self.multihead_attn(mha_queries, mha_keys, mha_values, key_value_sequence_lengths)
-
-        if hasattr(self, 'lite_conv') and lite_conv_queries is not None and lite_conv_keys is not None and lite_conv_values is not None:
-            lite_conv_output = self.lite_conv(lite_conv_queries.transpose(1, 2)).transpose(1, 2) # (N, query_sequence_pad_length, d_model // 2)
-
-            output = torch.cat([mha_output, lite_conv_output], dim=-1)
-        else:
-            lite_conv_output = None
-            output = mha_output
-
-        return output, attention_weights, lite_conv_output
+        return self.multihead_attn(queries, keys, values, key_value_sequence_lengths)
