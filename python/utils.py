@@ -72,19 +72,11 @@ def load_tokenizers(run_dir):
 
 def get_positional_encoding(args):
     if args.positional_encoding_type == 'sinusoidal' or args.positional_encoding_type == 'buffer':
-        if args.qkv_config == 'kv+pos':
-            positional_encoding = get_buffered_positional_encoding(
-                args,
-                d_model=args.d_model,
-                maxlen=args.maxlen+1,
-                num_dims=2
-            ).to(args.device)
-        else:
-            positional_encoding = get_buffered_positional_encoding(
-                args,
-                d_model=args.d_model,
-                maxlen=args.maxlen+1,
-            ).to(args.device)
+        positional_encoding = get_buffered_positional_encoding(
+            args,
+            d_model=args.d_model,
+            maxlen=args.maxlen+1,
+        ).to(args.device)
         positional_encoding.requires_grad = args.learnable_positional_encoding
     elif args.positional_encoding_type == 'rotary':
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
@@ -314,7 +306,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
 
         # Our hypothesis to begin with is just <BOS>
         hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device) # (1, 1)
-        hypotheses_lengths = torch.LongTensor([hypotheses.size(1)]).to(device) # (1)
+        hypotheses_lengths = torch.LongTensor([hypotheses.size(1)]).to(device).unsqueeze(-1) # (1)
 
         # Tensor to store hypotheses' scores; now it's just 0
         hypotheses_scores = torch.zeros(1).to(device) # (1)
@@ -334,7 +326,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
                 hypotheses,
                 hypotheses_lengths,
                 encoder_sequences.repeat(s, 1, 1),
-                encoder_sequence_lengths.repeat(s) # (s, step, tgt_vocab_size)
+                encoder_sequence_lengths.repeat(s).unsqueeze(-1) # (s, step, tgt_vocab_size)
             )
 
             # Scores at this step
@@ -371,7 +363,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
             # Else, continue with incomplete hypotheses
             hypotheses = top_k_hypotheses[~complete] # (s, step + 1)
             hypotheses_scores = top_k_hypotheses_scores[~complete] # (s)
-            hypotheses_lengths = torch.LongTensor(hypotheses.size(0) * [hypotheses.size(1)]).to(device) # (s)
+            hypotheses_lengths = torch.LongTensor(hypotheses.size(0) * [hypotheses.size(1)]).to(device).unsqueeze(-1) # (s)
 
             # Stop if things have been going on for too long
             if step > args.maxlen:
@@ -560,18 +552,16 @@ def get_args():
     argparser.add_argument('--tokenizer_run_name', type=str, required=True)
 
     argparser.add_argument('--d_model', type=int, default=512)
-    argparser.add_argument('--n_heads', type=int, default=8)
-    argparser.add_argument('--kernel_size', type=int, default=3)
+    argparser.add_argument('--n_q_heads', type=int, default=8)
+    argparser.add_argument('--n_kv_heads', type=int, default=8)
     argparser.add_argument('--d_queries', type=int, default=64)
     argparser.add_argument('--d_values', type=int, default=64)
-    argparser.add_argument('--qkv_config', type=str, default='qkv', choices=['qkv', 'kv+pos', 'kv'])
     argparser.add_argument('--d_inner', type=int, default=2048)
     argparser.add_argument('--use_moe', action='store_true')
     argparser.add_argument('--n_experts', type=int, default=0)
     argparser.add_argument('--moe_top_k', type=int, default=0)
     argparser.add_argument('--moe_diversity_loss_coefficient', type=float, default=0.0)
     argparser.add_argument('--moe_diversity_inclusion_epoch', type=int, default=0)
-    argparser.add_argument('--use_lite_conv', action='store_true')
     argparser.add_argument('--n_encoder_layers', type=int, default=6)
     argparser.add_argument('--n_decoder_layers', type=int, default=6)
     argparser.add_argument('--dropout', type=float, default=0.1)
@@ -633,11 +623,7 @@ def get_args():
     if len(unk) > 0:
         print(f"unknown arguments: {unk}")
 
-    if args.positional_encoding_type == 'rotary' and args.qkv_config != 'qkv':
-        print("rotary positional encoding only works with qkv_config=qkv")
-        exit(1)
-
-    if args.n_heads == 0:
+    if args.n_q_heads == 0 or args.n_kv_heads == 0:
         print("it is not recommended to not have any multi-head attention layers")
         exit(1)
 

@@ -151,7 +151,7 @@ class DecoderLayer(nn.Module):
 
         self.args = args
 
-        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True, incl_conv=False)
+        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True)
         self.cross_attn = MultiHeadAttention(args, self_attn=False, in_decoder=True)
 
         if args.use_admin:
