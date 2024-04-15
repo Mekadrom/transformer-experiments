@@ -60,7 +60,7 @@ class MultiHeadAttention(nn.Module):
 
         # generate attention weights by taking the dot product of queries and keys
         attention_weights = torch.einsum('...thHd,...Thd->...hHtT', q_heads, k_heads) # (N, n_kv_heads, q_heads_per_kv_heads, query_sequence_pad_length, key_value_sequence_pad_length) OR (NhHtT)
-        attention_weights = (1. / math.sqrt(d_queries)) * attention_weights
+        attention_weights = (1.0 / math.sqrt(d_queries)) * attention_weights
 
         if key_padding_mask is not None:
             assert key_padding_mask.shape[0] == attention_weights.shape[0], f"batch dimension for padding is wrong: {key_padding_mask.shape[0]} != {attention_weights.shape[0]}. overall shape: {key_padding_mask.shape} != {attention_weights.shape}"
@@ -71,15 +71,18 @@ class MultiHeadAttention(nn.Module):
             # print(f"key_padding_mask: {key_padding_mask.shape}, attention_weights: {attention_weights.shape}")
 
             # mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
+            # print(f"key_padding_mask: {key_padding_mask}")
             attention_weights = attention_weights.masked_fill(key_padding_mask, -float('inf'))
+            # print(f"attention_weights: {attention_weights == -float('inf')}")
+
+        if self.self_attn and self.in_decoder:
+            assert attn_mask is not None, "attn_mask must be provided for decoder self-attention"
 
         if attn_mask is not None:
             assert attn_mask.shape[0] == attention_weights.shape[3], f"attn_mask length is wrong: {attn_mask.shape[0]} != {attention_weights.shape[3]}. overall shape: {attn_mask.shape} != {attention_weights.shape}"
             assert attn_mask.shape[1] == attention_weights.shape[4], f"attn_mask length is wrong: {attn_mask.shape[1]} != {attention_weights.shape[4]}. overall shape: {attn_mask.shape} != {attention_weights.shape}"
 
             attn_mask = attn_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
-
-            # print(f"attn_mask: {attn_mask.shape}, attention_weights: {attention_weights.shape}")
 
             # mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
             attention_weights = attention_weights.masked_fill(attn_mask, -float('inf'))

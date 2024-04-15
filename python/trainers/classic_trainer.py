@@ -292,8 +292,11 @@ class ClassicTrainer():
         target_sequence = self.model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
         target_sequence = self.model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
 
+        ones = torch.ones(target_sequence.size(1), target_sequence.size(1)).to(target_sequence.device)
+        attn_mask = torch.triu(ones, diagonal=1).bool()
+
         for d, decoder_layer in enumerate(self.model.decoder.decoder_layers):
-            target_sequence, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length, tgt_key_padding_mask) # (N, pad_length, d_model)
+            target_sequence, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length, tgt_key_padding_mask, attn_mask) # (N, pad_length, d_model)
             
             attention_weights = attention_weights.cpu().detach().contiguous()
 
