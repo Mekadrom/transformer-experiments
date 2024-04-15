@@ -35,4 +35,4 @@ model.eval()
 sacrebleu_in_python = args.sacrebleu_in_python
 
 if __name__ == '__main__':
-    sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=sacrebleu_in_python)
+    sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=sacrebleu_in_python)

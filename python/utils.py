@@ -422,7 +422,7 @@ def average_checkpoints(epoch, optimizer, source_folder, model_name_prefix='step
     # Save averaged checkpoint
     torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python, test_loader=None, vae_model=False):
+def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python, test_loader=None, vae_model=False):
     """
     Returns None when command line sacrebleu is used
     """
@@ -448,7 +448,7 @@ def sacrebleu_evaluate(run_dir, src_bpe_model, tgt_bpe_model, model, device, sac
         hypotheses = list()
         references = list()
         for i, (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in enumerate(tqdm(test_loader, total=test_loader.n_batches)):
-            hypotheses.append(beam_search_translate(src=source_sequence, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, device=device, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
+            hypotheses.append(beam_search_translate(args, src=source_sequence, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, device=device, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
             references.extend(tgt_bpe_model.decode(target_sequence.tolist(), ignore_ids=[0, 2, 3]))
 
         if sacrebleu_in_python:

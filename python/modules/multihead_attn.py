@@ -21,7 +21,7 @@ class MultiHeadAttention(nn.Module):
         self.cast_values = nn.Linear(args.d_model, args.n_heads * args.d_values) # (N, key_value_sequence_pad_length, n_heads * d_values)
 
         # a linear projection to cast (n_q_heads sets of) computed attention-weighted vectors to output vectors
-        self.mha_cast_output = nn.Linear(args.n_q_heads * args.d_values, args.d_model)
+        self.mha_cast_output = nn.Linear(args.n_heads * args.d_values, args.d_model)
 
         self.softmax = nn.Softmax(dim=-1)
 
@@ -67,6 +67,8 @@ class MultiHeadAttention(nn.Module):
 
         # Before computing softmax weights, prevent queries from attending to certain keys
 
+        attention_weights = attention_weights.view(-1, query_sequence_pad_length, key_value_sequence_pad_length)
+
         # MASK 1: keys that are pads
         not_pad_in_keys = torch.LongTensor(range(key_value_sequence_pad_length)).unsqueeze(0).unsqueeze(0).expand_as(attention_weights).to(attention_weights.device) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
         not_pad_in_keys = not_pad_in_keys < key_value_sequence_lengths.repeat_interleave(self.args.n_heads).unsqueeze(1).unsqueeze(2).expand_as(attention_weights) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
@@ -89,6 +91,8 @@ class MultiHeadAttention(nn.Module):
         attention_weights_for_visualization = attention_weights.clone().detach()
 
         attention_weights = self.dropout(attention_weights) # (N * n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+
+        attention_weights = attention_weights.contiguous().view(batch_size, self.args.n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         # Calculate sequences as the weighted sums of values based on these softmax weights
         # sequences = torch.bmm(attention_weights, values) # (N * n_heads, query_sequence_pad_length, d_values)
