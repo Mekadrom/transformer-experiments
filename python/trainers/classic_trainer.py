@@ -281,9 +281,8 @@ class ClassicTrainer():
 
             # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
-                for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Encoder-Self', e, i, j, attention_weights[:, i, j, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
-                    self.summary_writer.add_image(f"Encoder Layer {e} Query Head {i} Key Head {j} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+                image_data = self.viz_attn_weights('Encoder-Self', e, i, attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
+                self.summary_writer.add_image(f"Encoder Layer {e} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             input_sequence, _ = encoder_layer.fcn(sequences=input_sequence) # (N, pad_length, d_model)
 
@@ -302,9 +301,8 @@ class ClassicTrainer():
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
-                for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Decoder-Self', d, i, j, attention_weights[:, i, j, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
-                    self.summary_writer.add_image(f"Decoder Layer {d} Query Head {i} Key Head {j} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+                image_data = self.viz_attn_weights('Decoder-Self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
+                self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask) # (N, pad_length, d_model)
 
@@ -312,16 +310,15 @@ class ClassicTrainer():
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
             for i in range(attention_weights.size(1)):
-                for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Decoder-Cross', d, i, j, attention_weights[:, i, j, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
-                    self.summary_writer.add_image(f"Decoder Layer {d} Query Head {i} Key Head {j} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+                image_data = self.viz_attn_weights('Decoder-Cross', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
+                self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             target_sequence, _ = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
 
-    def viz_attn_weights(self, stack_name, layer_num, q_head_group_num, kv_head_num, activation_weights, attendee_tokens, attending_tokens):
+    def viz_attn_weights(self, stack_name, layer_num, n_head, activation_weights, attendee_tokens, attending_tokens):
         fig, ax = plt.subplots(figsize=(10, 10))
         s = sns.heatmap(activation_weights, square=True, annot=True, annot_kws={"fontsize":6}, fmt=".4f", xticklabels=attendee_tokens, yticklabels=attending_tokens, ax=ax)
-        s.set(xlabel="Input Sequence", ylabel="Output Sequence", title=f"{stack_name}-Attn Layer {layer_num} Query Head {q_head_group_num} Key Head {kv_head_num} Weights")
+        s.set(xlabel="Input Sequence", ylabel="Output Sequence", title=f"{stack_name}-Attn Layer {layer_num} Head {n_head} Weights")
 
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
