@@ -61,6 +61,7 @@ class MultiHeadAttention(nn.Module):
         # generate attention weights by taking the dot product of queries and keys
         attention_weights = torch.einsum('...thHd,...Thd->...hHtT', q_heads, k_heads) # (N, n_kv_heads, q_heads_per_kv_heads, query_sequence_pad_length, key_value_sequence_pad_length) OR (NhHtT)
         attention_weights = (1.0 / math.sqrt(d_queries)) * attention_weights
+        attention_weights = 30.0 * torch.tanh(attention_weights / 30.0)
 
         if key_padding_mask is not None:
             assert key_padding_mask.shape[0] == attention_weights.shape[0], f"batch dimension for padding is wrong: {key_padding_mask.shape[0]} != {attention_weights.shape[0]}. overall shape: {key_padding_mask.shape} != {attention_weights.shape}"
