@@ -29,7 +29,18 @@ class MultiHeadAttention(nn.Module):
 
         self.dropout = nn.Dropout(args.dropout)
 
-    def multihead_attn(self, q_heads, k_heads, v_heads, key_value_sequence_lengths):
+    def forward(self, query_sequences, key_sequences, value_sequences, key_value_sequence_lengths, key_padding_mask=None, attn_mask=None):
+        query_sequences = self.layer_norm(query_sequences)
+
+        # if this isn't self-attention, they will already have been normed in the last layer of the Encoder (from whence they came)
+        if self.self_attn:
+            key_sequences = self.layer_norm(key_sequences)
+            value_sequences = self.layer_norm(value_sequences)
+
+        q_heads = self.cast_queries(query_sequences)
+        k_heads = self.cast_keys(key_sequences)
+        v_heads = self.cast_values(value_sequences)
+
         N = q_heads.size(0) # batch size (N) in number of sequences
         t = q_heads.size(1) # query sequence padded lengths
         T = k_heads.size(1) # key-value sequence padded lengths
@@ -47,33 +58,31 @@ class MultiHeadAttention(nn.Module):
             q_heads = self.rotary_embedding.rotate_queries_or_keys(q_heads)
             k_heads = self.rotary_embedding.rotate_queries_or_keys(k_heads)
 
-        # compute attention weights    
+        # generate attention weights by taking the dot product of queries and keys
         attention_weights = torch.einsum('...thHd,...Thd->...hHtT', q_heads, k_heads) # (N, n_kv_heads, q_heads_per_kv_heads, query_sequence_pad_length, key_value_sequence_pad_length) OR (NhHtT)
-
-        # Scale dot-products
         attention_weights = (1. / math.sqrt(d_queries)) * attention_weights
 
-        # Before computing softmax weights, prevent queries from attending to certain keys
+        if key_padding_mask is not None:
+            assert key_padding_mask.shape[0] == attention_weights.shape[0], f"batch dimension for padding is wrong: {key_padding_mask.shape[0]} != {attention_weights.shape[0]}. overall shape: {key_padding_mask.shape} != {attention_weights.shape}"
+            assert key_padding_mask.shape[1] == attention_weights.shape[4], f"padding mask length is wrong: {key_padding_mask.shape[1]} != {attention_weights.shape[4]}. overall shape: {key_padding_mask.shape} != {attention_weights.shape}"
 
-        # MASK 1: keys that are pads
-        not_pad_in_keys = torch.LongTensor(range(T)).unsqueeze(0).unsqueeze(0).expand_as(attention_weights).to(attention_weights.device)  # (N, n_kv_heads, q_heads_per_kv_heads, query_sequence_pad_length, key_value_sequence_pad_length)
-        # print(f"not_pad_in_keys: {not_pad_in_keys.shape}")
-        # print(f"key_value_sequence_lengths: {key_value_sequence_lengths.shape}")
-        # print(f"key_value_sequence_lengths.repeat_interleave: {key_value_sequence_lengths.repeat_interleave(self.args.n_kv_heads, dim=-1).shape}")
-        not_pad_in_keys = not_pad_in_keys < key_value_sequence_lengths.repeat_interleave(self.args.n_kv_heads, dim=-1).unsqueeze(-1).repeat_interleave(self.args.n_q_heads // self.args.n_kv_heads, dim=-1).unsqueeze(-1).unsqueeze(-1).expand_as(attention_weights)  # (N, n_kv_heads, q_heads_per_kv_heads, query_sequence_pad_length, key_value_sequence_pad_length)
-        # Note: PyTorch auto-broadcasts singleton dimensions in comparison operations (as well as arithmetic operations)
+            key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1).unsqueeze(1)
 
-        # Mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
-        attention_weights = attention_weights.masked_fill(~not_pad_in_keys, -float('inf'))
+            # print(f"key_padding_mask: {key_padding_mask.shape}, attention_weights: {attention_weights.shape}")
 
-        # MASK 2: if this is self-attention in the decoder, keys chronologically ahead of queries
-        if self.self_attn and self.in_decoder:
-            # Therefore, a position [n, i, j] is valid only if j <= i
-            # torch.tril(), i.e. lower triangle in a 2D matrix, sets j > i to 0
-            not_future_mask = torch.ones_like(attention_weights).tril().bool().to(attention_weights.device)
+            # mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
+            attention_weights = attention_weights.masked_fill(key_padding_mask, -float('inf'))
 
-            # Mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
-            attention_weights = attention_weights.masked_fill(~not_future_mask, -float('inf'))
+        if attn_mask is not None:
+            assert attn_mask.shape[0] == attention_weights.shape[3], f"attn_mask length is wrong: {attn_mask.shape[0]} != {attention_weights.shape[3]}. overall shape: {attn_mask.shape} != {attention_weights.shape}"
+            assert attn_mask.shape[1] == attention_weights.shape[4], f"attn_mask length is wrong: {attn_mask.shape[1]} != {attention_weights.shape[4]}. overall shape: {attn_mask.shape} != {attention_weights.shape}"
+
+            attn_mask = attn_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+
+            # print(f"attn_mask: {attn_mask.shape}, attention_weights: {attention_weights.shape}")
+
+            # mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
+            attention_weights = attention_weights.masked_fill(attn_mask, -float('inf'))
 
         attention_weights = self.softmax(attention_weights)
 
@@ -93,17 +102,3 @@ class MultiHeadAttention(nn.Module):
         sequences = self.mha_cast_output(sequences)
 
         return sequences, attention_weights_for_visualization
-
-    def forward(self, query_sequences: torch.Tensor, key_sequences: torch.Tensor, value_sequences: torch.Tensor, key_value_sequence_lengths: torch.Tensor):
-        query_sequences = self.layer_norm(query_sequences)
-
-        # if this isn't self-attention, they will already have been normed in the last layer of the Encoder (from whence they came)
-        if self.self_attn:
-            key_sequences = self.layer_norm(key_sequences)
-            value_sequences = self.layer_norm(value_sequences)
-
-        query_heads: torch.Tensor = self.cast_queries(query_sequences)
-        key_heads: torch.Tensor = self.cast_keys(key_sequences)
-        value_heads: torch.Tensor = self.cast_values(value_sequences)
-
-        return self.multihead_attn(query_heads, key_heads, value_heads, key_value_sequence_lengths)

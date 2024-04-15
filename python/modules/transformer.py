@@ -3,6 +3,7 @@ from .positionwise_fcn import PositionWiseFCNetwork
 
 import admin_torch
 import math
+import torch
 import torch.nn as nn
 import utils
 
@@ -18,19 +19,19 @@ class EncoderLayer(nn.Module):
 
         self.fcn = PositionWiseFCNetwork(args)
 
-    def forward(self, encoder_sequences, encoder_sequence_lengths):
+    def forward(self, encoder_sequences, encoder_sequence_lengths, key_padding_mask):
+        self_attn = self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths, key_padding_mask)[0]
         if hasattr(self, 'self_attn_residual'):
-            encoder_sequences = self.self_attn_residual(encoder_sequences, self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0])
+            encoder_sequences = self.self_attn_residual(encoder_sequences, self_attn)
         else:
-            encoder_sequences = encoder_sequences + self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0]
+            encoder_sequences = encoder_sequences + self_attn
 
-        residual = encoder_sequences
-        encoder_sequences, gating_variances = self.fcn(encoder_sequences)
+        fcn, gating_variances = self.fcn(encoder_sequences)
 
         if hasattr(self, 'fcn_residual'):
-            encoder_sequences = self.fcn_residual(residual, encoder_sequences)
+            encoder_sequences = self.fcn_residual(encoder_sequences, fcn)
         else:
-            encoder_sequences = residual + encoder_sequences
+            encoder_sequences = encoder_sequences + fcn
             
         return encoder_sequences, gating_variances
 
@@ -126,17 +127,17 @@ class Encoder(nn.Module):
             return encoder_sequences + self.tensor_positional_encoding[:, :encoder_sequences.size(1), :]
         return encoder_sequences
     
-    def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, encoder_layer):
-        return encoder_layer(encoder_sequences, encoder_sequence_lengths)
+    def apply_encoder_layer(self, encoder_sequences, encoder_sequence_lengths, key_padding_mask, encoder_layer):
+        return encoder_layer(encoder_sequences, encoder_sequence_lengths, key_padding_mask)
 
-    def forward(self, encoder_sequences, encoder_sequence_lengths):
+    def forward(self, encoder_sequences, encoder_sequence_lengths, key_padding_mask):
         encoder_sequences = self.perform_embedding_transformation(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_dropout(encoder_sequences) # (N, pad_length, d_model)
 
         gating_variances = []
         for encoder_layer in self.encoder_layers:
-            encoder_sequences, gating_variance = self.apply_encoder_layer(encoder_sequences, encoder_sequence_lengths, encoder_layer)
+            encoder_sequences, gating_variance = self.apply_encoder_layer(encoder_sequences, encoder_sequence_lengths, key_padding_mask, encoder_layer)
             if gating_variance is not None:
                 gating_variances.append(gating_variance)
 
@@ -161,24 +162,29 @@ class DecoderLayer(nn.Module):
 
         self.fcn = PositionWiseFCNetwork(args)
 
-    def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
+    def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask=None):
+        if attn_mask is None:
+            ones = torch.ones(decoder_sequences.size(1), decoder_sequences.size(1)).to(decoder_sequences.device)
+            attn_mask = torch.triu(ones, diagonal=1).bool()
+
+        self_attn = self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths, tgt_key_padding_mask, attn_mask)[0]
         if hasattr(self, 'self_attn_residual'):
-            decoder_sequences = self.self_attn_residual(decoder_sequences, self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths)[0])
+            decoder_sequences = self.self_attn_residual(decoder_sequences, self_attn)
         else:
-            decoder_sequences = decoder_sequences + self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths)[0]
+            decoder_sequences = decoder_sequences + self_attn
 
+        cross_attn = self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask)[0]
         if hasattr(self, 'cross_attn_residual'):
-            decoder_sequences = self.cross_attn_residual(decoder_sequences, self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0])
+            decoder_sequences = self.cross_attn_residual(decoder_sequences, cross_attn)
         else:
-            decoder_sequences = decoder_sequences + self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths)[0]
+            decoder_sequences = decoder_sequences + cross_attn
 
-        residual = decoder_sequences
-        decoder_sequences, gating_variances = self.fcn(decoder_sequences)
+        fcn, gating_variances = self.fcn(decoder_sequences)
         
         if hasattr(self, 'fcn_residual'):
-            decoder_sequences = self.fcn_residual(residual, decoder_sequences)
+            decoder_sequences = self.fcn_residual(decoder_sequences, fcn)
         else:
-            decoder_sequences = residual + decoder_sequences
+            decoder_sequences = decoder_sequences + fcn
 
         return decoder_sequences, gating_variances
 
@@ -281,17 +287,17 @@ class Decoder(nn.Module):
             return decoder_sequences + self.tensor_positional_encoding[:, :decoder_sequences.size(1), :]
         return decoder_sequences
     
-    def apply_decoder_layer(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer):
-        return decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths)
+    def apply_decoder_layer(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask, decoder_layer):
+        return decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask)
 
-    def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths):
+    def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask=None):
         decoder_sequences = self.apply_embedding_transformation(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_positional_embedding(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_dropout(decoder_sequences)
 
         gating_variances = []
         for decoder_layer in self.decoder_layers:
-            decoder_sequences, gating_variance = self.apply_decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, decoder_layer)
+            decoder_sequences, gating_variance = self.apply_decoder_layer(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask, decoder_layer)
             if gating_variance is not None:
                 gating_variances.append(gating_variance)
 
@@ -309,7 +315,7 @@ class Transformer(nn.Module):
         self.encoder = Encoder(args, src_vocab_size)
         self.decoder = Decoder(args, tgt_vocab_size)
 
-    def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths):
-        encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, encoder_sequence_lengths) # (N, encoder_sequence_pad_length, d_model)
-        decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths) # (N, decoder_sequence_pad_length, vocab_size)
+    def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask=None):
+        encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask) # (N, encoder_sequence_pad_length, d_model)
+        decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask) # (N, decoder_sequence_pad_length, vocab_size)
         return decoder_sequences, encoder_gating_variances, decoder_gating_variances

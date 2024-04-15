@@ -292,8 +292,10 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
         encoder_sequences = encoder_sequences.to(device) # (1, source_sequence_length)
         encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device) # (1)
 
+        src_key_padding_mask = (encoder_sequences == 0).to(device) # (1, source_sequence_length)
+
         # Encode
-        encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths) # (1, source_sequence_length, d_model)
+        encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask) # (1, source_sequence_length, d_model)
 
         if args.train_vae:
             # mu and logvar + reparemeterization trick to sample from the latent space, which replaces the encoder's output
@@ -322,11 +324,16 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
         # At this point, s is 1, because we only have 1 hypothesis to work with, i.e. "<BOS>"
         while True:
             s = hypotheses.size(0)
+
+            tgt_key_padding_masks = torch.zeros(s, hypotheses.size(1)).to(device).bool()
+
             decoder_sequences, _ = model.decoder(
                 hypotheses,
                 hypotheses_lengths,
                 encoder_sequences.repeat(s, 1, 1),
-                encoder_sequence_lengths.repeat(s).unsqueeze(-1) # (s, step, tgt_vocab_size)
+                encoder_sequence_lengths.repeat(s).unsqueeze(-1), # (s, step, tgt_vocab_size)
+                src_key_padding_mask.repeat(s, 1), # (s, source_sequence_length)
+                tgt_key_padding_masks
             )
 
             # Scores at this step

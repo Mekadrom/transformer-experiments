@@ -86,6 +86,9 @@ class ClassicTrainer():
 
             save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/{model_name_prefix}")
 
+        # recalculate steps to make sure validation data is updated with correct steps
+        self.steps = (self.epochs * self.train_loader.n_batches // self.batches_per_step)
+
         print(f"Training complete. Averaging checkpoints...")
         average_checkpoints(self.epochs, self.optimizer, self.run_name, model_name_prefix=model_name_prefix)
 
@@ -119,12 +122,15 @@ class ClassicTrainer():
 
             tgt_seqs, tgt_seq_lengths = self.target_sequence_transform(src_seqs, src_seq_lengths, tgt_seqs, tgt_seq_lengths)
 
+            src_key_padding_mask = src_seqs == 0 # (N, max_source_sequence_pad_length_this_batch)
+            tgt_key_padding_mask = tgt_seqs == 0 # (N, max_target_sequence_pad_length_this_batch)
+
             data_time.update(time.time() - start_data_time)
 
             if self.args.train_vae:
                 predicted_sequences, mu, logvar = self.model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1)) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
             else:
-                predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = self.model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1)) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+                predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = self.model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
             if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
                 encoder_moe_gating_variances = torch.stack(encoder_moe_gating_variances).std(dim=0).mean()
@@ -201,20 +207,23 @@ class ClassicTrainer():
 
         with torch.no_grad():
             losses = AverageMeter()
-            for (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in tqdm(self.val_loader, total=self.val_loader.n_batches):
-                source_sequence = source_sequence.to(self.device) # (1, source_sequence_length)
-                target_sequence = target_sequence.to(self.device) # (1, target_sequence_length)
-                source_sequence_length = source_sequence_length.to(self.device) # (1)
-                target_sequence_length = target_sequence_length.to(self.device) # (1)
+            for (src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) in tqdm(self.val_loader, total=self.val_loader.n_batches):
+                src_seqs = src_seqs.to(self.device) # (1, max_source_sequence_pad_length_this_batch)
+                tgt_seqs = tgt_seqs.to(self.device) # (1, max_target_sequence_pad_length_this_batch)
+                src_seq_lengths = src_seq_lengths.to(self.device) # (1)
+                tgt_seq_lengths = tgt_seq_lengths.to(self.device) # (1)
 
-                predicted_sequence, _, _ = self.model(source_sequence, target_sequence, source_sequence_length, target_sequence_length) # (1, target_sequence_length, vocab_size)
+                src_key_padding_mask = src_seqs == 0 # (N, max_source_sequence_pad_length_this_batch)
+                tgt_key_padding_mask = tgt_seqs == 0 # (N, max_target_sequence_pad_length_this_batch)
+
+                predicted_sequence, _, _ = self.model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths, src_key_padding_mask, tgt_key_padding_mask) # (1, target_sequence_length, vocab_size)
 
                 # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
                 # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
                 # Therefore, pads start after (length - 1) positions
-                loss = self.criterion(inputs=predicted_sequence, targets=target_sequence[:, 1:], lengths=target_sequence_length - 1) # scalar
+                loss = self.criterion(inputs=predicted_sequence, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
 
-                losses.update(loss.item(), (target_sequence_length - 1).sum().item())
+                losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
 
             self.summary_writer.add_scalar('Validation Loss', losses.avg, self.steps)
             print("\nValidation loss: %.3f\n\n" % losses.avg)
@@ -259,19 +268,21 @@ class ClassicTrainer():
         target_tokens = [self.tgt_bpe_model.decode([id.item()])[0] for id in target_sequence.squeeze(0)]
         target_sequence_length = torch.LongTensor([target_sequence.size(1)]).unsqueeze(0).to(self.device) # (1)
 
+        src_key_padding_mask = input_sequence == 0 # (N, pad_length)
+        tgt_key_padding_mask = target_sequence == 0 # (N, pad_length)
+
         input_sequence = self.model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
         input_sequence = self.model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
         for e, encoder_layer in enumerate(self.model.encoder.encoder_layers):
-            input_sequence, attention_weights = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence_length)
+            input_sequence, attention_weights = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask)
 
-            attention_weights = attention_weights.cpu().detach()
-            attention_weights = attention_weights.contiguous().view(1, self.n_q_heads // self.n_kv_heads, self.n_kv_heads, attention_weights.size(-2), attention_weights.size(-1))
+            attention_weights = attention_weights.cpu().detach().contiguous()
 
             # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
                 for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Encoder-Self', e, i, attention_weights[:, i, j, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
+                    image_data = self.viz_attn_weights('Encoder-Self', e, i, j, attention_weights[:, i, j, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
                     self.summary_writer.add_image(f"Encoder Layer {e} Query Head {i} Key Head {j} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             input_sequence, _ = encoder_layer.fcn(sequences=input_sequence) # (N, pad_length, d_model)
@@ -282,34 +293,32 @@ class ClassicTrainer():
         target_sequence = self.model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
 
         for d, decoder_layer in enumerate(self.model.decoder.decoder_layers):
-            target_sequence, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length, tgt_key_padding_mask) # (N, pad_length, d_model)
             
-            attention_weights = attention_weights.cpu().detach()
-            attention_weights = attention_weights.contiguous().view(1, self.n_q_heads // self.n_kv_heads, self.n_kv_heads, attention_weights.size(-2), attention_weights.size(-1))
+            attention_weights = attention_weights.cpu().detach().contiguous()
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
                 for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Decoder-Self', d, i, attention_weights[:, i, j, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
+                    image_data = self.viz_attn_weights('Decoder-Self', d, i, j, attention_weights[:, i, j, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
                     self.summary_writer.add_image(f"Decoder Layer {d} Query Head {i} Key Head {j} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length) # (N, pad_length, d_model)
+            target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask) # (N, pad_length, d_model)
 
-            attention_weights = attention_weights.cpu().detach()
-            attention_weights = attention_weights.contiguous().view(1, self.n_q_heads // self.n_kv_heads, self.n_kv_heads, attention_weights.size(-2), attention_weights.size(-1))
+            attention_weights = attention_weights.cpu().detach().contiguous()
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
             for i in range(attention_weights.size(1)):
                 for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Decoder-Cross', d, i, attention_weights[:, i, j, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
+                    image_data = self.viz_attn_weights('Decoder-Cross', d, i, j, attention_weights[:, i, j, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
                     self.summary_writer.add_image(f"Decoder Layer {d} Query Head {i} Key Head {j} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             target_sequence, _ = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
 
-    def viz_attn_weights(self, stack_name, layer_num, head_num, activation_weights, attendee_tokens, attending_tokens):
+    def viz_attn_weights(self, stack_name, layer_num, q_head_group_num, kv_head_num, activation_weights, attendee_tokens, attending_tokens):
         fig, ax = plt.subplots(figsize=(10, 10))
         s = sns.heatmap(activation_weights, square=True, annot=True, annot_kws={"fontsize":6}, fmt=".4f", xticklabels=attendee_tokens, yticklabels=attending_tokens, ax=ax)
-        s.set(xlabel="Input Sequence", ylabel="Output Sequence", title=f"{stack_name}-Attn Layer {layer_num} Head {head_num} Weights")
+        s.set(xlabel="Input Sequence", ylabel="Output Sequence", title=f"{stack_name}-Attn Layer {layer_num} Query Head {q_head_group_num} Key Head {kv_head_num} Weights")
 
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
