@@ -17,8 +17,6 @@ class ClassicTrainer():
 
         self.run_name = args.run_name
         self.d_model = args.d_model
-        self.n_q_heads = args.n_q_heads
-        self.n_kv_heads = args.n_kv_heads
         self.n_steps = args.n_steps
         self.warmup_steps = args.warmup_steps
         self.device = args.device
@@ -281,9 +279,8 @@ class ClassicTrainer():
 
             # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
-                for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Encoder-Self', e, i, j, attention_weights[:, i, j, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
-                    self.summary_writer.add_image(f"Encoder Layer {e} Query Head {i} Key Head {j} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+                image_data = self.viz_attn_weights('Encoder-Self', e, i, 0, attention_weights[:, i, :, :].squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
+                self.summary_writer.add_image(f"Encoder Layer {e} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             input_sequence, _ = encoder_layer.fcn(sequences=input_sequence) # (N, pad_length, d_model)
 
@@ -302,9 +299,8 @@ class ClassicTrainer():
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
             for i in range(attention_weights.size(1)):
-                for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Decoder-Self', d, i, j, attention_weights[:, i, j, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
-                    self.summary_writer.add_image(f"Decoder Layer {d} Query Head {i} Key Head {j} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+                image_data = self.viz_attn_weights('Decoder-Self', d, i, 0, attention_weights[:, i, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
+                self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask) # (N, pad_length, d_model)
 
@@ -312,9 +308,8 @@ class ClassicTrainer():
 
             # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
             for i in range(attention_weights.size(1)):
-                for j in range(attention_weights.size(2)):
-                    image_data = self.viz_attn_weights('Decoder-Cross', d, i, j, attention_weights[:, i, j, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
-                    self.summary_writer.add_image(f"Decoder Layer {d} Query Head {i} Key Head {j} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+                image_data = self.viz_attn_weights('Decoder-Cross', d, i, 0, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, target_tokens)
+                self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             target_sequence, _ = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
 

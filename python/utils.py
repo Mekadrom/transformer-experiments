@@ -559,8 +559,7 @@ def get_args():
     argparser.add_argument('--tokenizer_run_name', type=str, required=True)
 
     argparser.add_argument('--d_model', type=int, default=512)
-    argparser.add_argument('--n_q_heads', type=int, default=8)
-    argparser.add_argument('--n_kv_heads', type=int, default=8)
+    argparser.add_argument('--n_heads', type=int, default=8)
     argparser.add_argument('--d_queries', type=int, default=64)
     argparser.add_argument('--d_values', type=int, default=64)
     argparser.add_argument('--d_inner', type=int, default=2048)
@@ -630,7 +629,7 @@ def get_args():
     if len(unk) > 0:
         print(f"unknown arguments: {unk}")
 
-    if args.n_q_heads == 0 or args.n_kv_heads == 0:
+    if args.n_heads == 0:
         print("it is not recommended to not have any multi-head attention layers")
         exit(1)
 
