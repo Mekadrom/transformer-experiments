@@ -174,7 +174,7 @@ if __name__ == "__main__":
 
     while True:
         src = input("Enter source sentence: ")
-        print(f"predicted: {beam_search_translate(src, model, src_bpe_model, tgt_bpe_model, device='cpu')}")
+        print(f"predicted: {beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device='cpu')}")
         tgt = input("Enter target sentence: ")
 
         src_tokens, tgt_tokens, encoder_layer_weights, decoder_layer_self_attn_weights, decoder_layer_cross_attn_weights = extract_attention_weights(model, src_bpe_model, tgt_bpe_model, src, tgt)

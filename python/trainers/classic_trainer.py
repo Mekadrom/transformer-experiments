@@ -94,7 +94,7 @@ class ClassicTrainer():
         self.validate_epoch()
 
         print(f"Training complete. Scoring with sacrebleu...")
-        sacrebleu_evaluate(self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, device=self.device, sacrebleu_in_python=True, test_loader=self.test_loader)
+        sacrebleu_evaluate(self.args, self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, device=self.device, sacrebleu_in_python=True, test_loader=self.test_loader)
     
     def train_epoch(self, epoch):
         # training mode enables dropout

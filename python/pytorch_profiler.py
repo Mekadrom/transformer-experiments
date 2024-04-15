@@ -45,7 +45,7 @@ if __name__ == '__main__':
         else:
             for s in TRANSLATE_STRINGS:
                 with record_function("model_inference"):
-                    best, all = utils.beam_search_translate(s, model, src_bpe_model, tgt_bpe_model, device=args.device)
+                    best, all = utils.beam_search_translate(args, s, model, src_bpe_model, tgt_bpe_model, device=args.device)
                     print(f'"{s}" -> "{best}"')
                 prof.step()  # Next step in profiling
 
