@@ -1,0 +1,11 @@
+tokenizer_run_name: BPE
+
+d_model: 16
+n_gqa_groups: 2
+n_heads: 2
+d_queries: 4
+d_values: 4
+d_inner: 64
+n_encoder_layers: 2
+n_decoder_layers: 2
+positional_encoding_type: sinusoidal

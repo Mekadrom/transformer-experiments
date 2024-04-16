@@ -1,0 +1,7 @@
+tokenizer_run_name: BPE_SEPARATE
+
+d_model: 1024
+n_heads: 16
+d_inner: 4096
+dropout: 0.3
+n_steps: 300000

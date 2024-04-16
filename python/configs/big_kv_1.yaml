@@ -1,0 +1,5 @@
+tokenizer_run_name: BPE_SEPARATE
+
+d_queries: 128
+d_values: 128
+positional_encoding_dim: 128

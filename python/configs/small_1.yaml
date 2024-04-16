@@ -1,0 +1,5 @@
+tokenizer_run_name: BPE_SEPARATE
+
+d_model: 256
+n_heads: 4
+d_inner: 1024

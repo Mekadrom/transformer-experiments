@@ -14,14 +14,16 @@ class MultiHeadAttention(nn.Module):
         if args.positional_encoding_type == 'rotary':
             self.rotary_embedding = utils.get_positional_encoding(args)
 
+        self.n_q_heads = args.n_gqa_groups * args.n_heads
+
         # A linear projection to cast (n_kv_heads sets of) queries from the input query sequences
-        self.cast_queries = nn.Linear(args.d_model, args.n_q_heads * args.d_queries) # (N, query_sequence_pad_length, n_kv_heads * d_queries)
+        self.cast_queries = nn.Linear(args.d_model, self.n_q_heads * args.d_queries) # (N, query_sequence_pad_length, n_kv_heads * d_queries)
         # A linear projection to cast (n_kv_heads sets of) keys and values from the input reference sequences
-        self.cast_keys = nn.Linear(args.d_model, args.n_kv_heads * args.d_queries) # (N, key_value_sequence_pad_length, n_kv_heads * d_keys)
-        self.cast_values = nn.Linear(args.d_model, args.n_kv_heads * args.d_values) # (N, key_value_sequence_pad_length, n_kv_heads * d_values)
+        self.cast_keys = nn.Linear(args.d_model, args.n_heads * args.d_queries) # (N, key_value_sequence_pad_length, n_kv_heads * d_keys)
+        self.cast_values = nn.Linear(args.d_model, args.n_heads * args.d_values) # (N, key_value_sequence_pad_length, n_kv_heads * d_values)
 
         # a linear projection to cast (n_q_heads sets of) computed attention-weighted vectors to output vectors
-        self.mha_cast_output = nn.Linear(args.n_kv_heads * args.d_values, args.d_model)
+        self.mha_cast_output = nn.Linear(args.n_heads * args.d_values, args.d_model)
 
         self.softmax = nn.Softmax(dim=-1)
 
@@ -45,16 +47,14 @@ class MultiHeadAttention(nn.Module):
         t = q_heads.size(1) # query sequence padded lengths
         T = k_heads.size(1) # key-value sequence padded lengths
 
-        d_queries = q_heads.size(-1) // self.args.n_q_heads # dimensionality of the queries
-        d_keys = k_heads.size(-1) // self.args.n_kv_heads # dimensionality of the keys
-        d_values = v_heads.size(-1) // self.args.n_kv_heads # dimensionality of the values
-
-        n_query_groups = self.args.n_q_heads // self.args.n_kv_heads
+        d_queries = q_heads.size(-1) // self.n_q_heads # dimensionality of the queries
+        d_keys = k_heads.size(-1) // self.args.n_heads # dimensionality of the keys
+        d_values = v_heads.size(-1) // self.args.n_heads # dimensionality of the values
 
         # Split the last dimension by the n_kv_heads subspaces
-        q_heads = q_heads.contiguous().view(N, t, n_query_groups, self.args.n_kv_heads, d_queries) # (N, query_sequence_pad_length, n_query_groups, n_kv_heads, d_queries)
-        k_heads = k_heads.contiguous().view(N, T, self.args.n_kv_heads, d_keys) # (N, key_value_sequence_pad_length, n_kv_heads, d_keys)
-        v_heads = v_heads.contiguous().view(N, T, self.args.n_kv_heads, d_values) # (N, key_value_sequence_pad_length, n_kv_heads, d_values)
+        q_heads = q_heads.contiguous().view(N, t, self.args.n_gqa_groups, self.args.n_heads, d_queries) # (N, query_sequence_pad_length, n_gqa_groups, n_heads, d_queries)
+        k_heads = k_heads.contiguous().view(N, T, self.args.n_heads, d_keys) # (N, key_value_sequence_pad_length, n_heads, d_keys)
+        v_heads = v_heads.contiguous().view(N, T, self.args.n_heads, d_values) # (N, key_value_sequence_pad_length, n_heads, d_values)
 
         q_heads = q_heads.permute(0, 2, 3, 1, 4) # Nghtd
         k_heads = k_heads.permute(0, 2, 1, 3) # NhTd
@@ -65,7 +65,7 @@ class MultiHeadAttention(nn.Module):
             k_heads = self.rotary_embedding.rotate_queries_or_keys(k_heads, seq_dim=-2)
 
         # generate attention weights by taking the dot product of queries and keys
-        attention_weights = torch.einsum('...ghnd,...hsd->...hns', q_heads, k_heads) # (N, n_kv_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+        attention_weights = torch.einsum('...ghnd,...hsd->...hns', q_heads, k_heads) # (N, n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
         attention_weights = (1.0 / (d_queries ** 0.5)) * attention_weights
         attention_weights = 30.0 * torch.tanh(attention_weights / 30.0)
 
@@ -97,16 +97,16 @@ class MultiHeadAttention(nn.Module):
         attention_weights = self.softmax(attention_weights)
 
         # for visualization, switch the kv_heads and q_per_kv_heads dimensions
-        attention_weights_for_visualization = attention_weights.clone().detach() # (N, n_kv_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+        attention_weights_for_visualization = attention_weights.clone().detach() # (N, n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
 
         attention_weights = self.dropout(attention_weights)
 
         # Calculate sequences as the weighted sums of values based on these softmax weights
-        sequences = torch.einsum('...hns,...hsv->...hnv', attention_weights, v_heads) # (N, n_kv_heads, query_sequence_pad_length, d_values)
+        sequences = torch.einsum('...hns,...hsv->...hnv', attention_weights, v_heads) # (N, n_heads, query_sequence_pad_length, d_values)
 
-        sequences = sequences.permute(0, 2, 1, 3) # (N, query_sequence_pad_length, n_kv_heads, d_values
+        sequences = sequences.permute(0, 2, 1, 3) # (N, query_sequence_pad_length, n_heads, d_values
 
-        # Concatenate the n_kv_heads subspaces (each with an output of size d_values)
+        # Concatenate the n_heads subspaces (each with an output of size d_values)
         sequences = sequences.contiguous().view(N, t, -1) # (N, query_sequence_pad_length, n_q_heads * d_values)
 
         sequences = self.dropout(sequences)

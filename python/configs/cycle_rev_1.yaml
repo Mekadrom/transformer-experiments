@@ -1,0 +1,9 @@
+tokenizer_run_name: BPE_SEPARATE
+
+n_encoder_layers: 12
+n_decoder_layers: 12
+
+encoder_param_sharing_type: cycle-rev
+decoder_param_sharing_type: cycle-rev
+m_encoder_independent_layers: 6
+m_decoder_independent_layers: 6

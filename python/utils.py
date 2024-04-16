@@ -9,13 +9,14 @@ import argparse
 import codecs
 import math
 import os
-import torch
-import youtokentome
+import sacrebleu
 import time
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.prune as prune
-import sacrebleu
+import yaml
+import youtokentome
 
 def get_lr(step, d_model, warmup_steps):
     """
@@ -552,86 +553,38 @@ def create_activation_function(activation_function_name):
     else:
         raise Exception(f"Unknown activation function {activation_function_name}")
 
+class YamlDict(dict):
+    def __init__(self, *args, **kwargs):
+        super(YamlDict, self).__init__(*args, **kwargs)
+        self.__dict__ = self
+
+    def __getattribute__(self, name):
+        return self.__getitem__(name) if name in self else super().__getattribute__(name)
+
+def load_yaml(file_path):
+    with open(os.path.join('configs', 'defaults.yaml'), 'r') as default_config:
+        with open(file_path, 'r') as f:
+            y = yaml.safe_load(default_config)
+            y.update(yaml.safe_load(f))
+            return YamlDict(y)
+
 def get_args():
     argparser = argparse.ArgumentParser()
 
     argparser.add_argument('--run_name', type=str, required=True)
-    argparser.add_argument('--tokenizer_run_name', type=str, required=True)
+    argparser.add_argument('--config_file_path', type=str, required=True)
 
-    argparser.add_argument('--d_model', type=int, default=512)
-    argparser.add_argument('--n_q_heads', type=int, default=8)
-    argparser.add_argument('--n_kv_heads', type=int, default=8)
-    argparser.add_argument('--d_queries', type=int, default=64)
-    argparser.add_argument('--d_values', type=int, default=64)
-    argparser.add_argument('--d_inner', type=int, default=2048)
-    argparser.add_argument('--use_moe', action='store_true')
-    argparser.add_argument('--n_experts', type=int, default=0)
-    argparser.add_argument('--moe_top_k', type=int, default=0)
-    argparser.add_argument('--moe_diversity_loss_coefficient', type=float, default=0.0)
-    argparser.add_argument('--moe_diversity_inclusion_epoch', type=int, default=0)
-    argparser.add_argument('--n_encoder_layers', type=int, default=6)
-    argparser.add_argument('--n_decoder_layers', type=int, default=6)
-    argparser.add_argument('--dropout', type=float, default=0.1)
+    argsparser_args, unk = argparser.parse_known_args()
 
-    argparser.add_argument('--maxlen', type=int, default=150)
+    args = load_yaml(argsparser_args.config_file_path)
+    args.__setattr__('run_name', argsparser_args.run_name)
 
-    argparser.add_argument('--init_weights_from', type=str, default='glorot_uniform', choices=['glorot_uniform', 'glorot_normal', 'xavier_uniform', 'xavier_normal', 'kaiming_uniform', 'kaiming_normal', 'orthogonal'])
-    argparser.add_argument('--init_weights_gain', type=float, default=1.0)
-    argparser.add_argument('--use_admin', action='store_true')
-
-    argparser.add_argument('--positional_encoding_type', type=str, default='sinusoidal', choices=['rotary', 'buffer', 'sinusoidal', 'none']) # buffer and sinusoidal refer to the same thing
-    argparser.add_argument('--positional_encoding_dim', type=int, default=64) # 64 makes sense for rotary, but not for kv+pos buffer/sinusoidal
-    argparser.add_argument('--learnable_positional_encoding', action='store_true', default=False)
-
-    argparser.add_argument('--encoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'ffn-cycle-rev', 'heads-cycle-rev', 'all'])
-    argparser.add_argument('--decoder_param_sharing_type', type=str, default='none', choices=['none', 'sequence', 'cycle', 'cycle-rev', 'ffn-cycle-rev', 'heads-cycle-rev', 'all'])
-    argparser.add_argument('--m_encoder_independent_layers', type=int, default=0)
-    argparser.add_argument('--m_decoder_independent_layers', type=int, default=0)
-    argparser.add_argument('--activation_function', type=str, default='relu', choices=['relu', 'gelu', 'elu', 'pau'])
-
-    argparser.add_argument('--tokens_in_batch', type=int, default=5000)
-    argparser.add_argument('--target_tokens_per_batch', type=int, default=25000)
-    argparser.add_argument('--n_steps', type=int, default=100000)
-    argparser.add_argument('--warmup_steps', type=int, default=8000)
-    argparser.add_argument('--beta1', type=float, default=0.9)
-    argparser.add_argument('--beta2', type=float, default=0.98)
-    argparser.add_argument('--epsilon', type=float, default=1e-9)
-    argparser.add_argument('--label_smoothing', type=float, default=0.1)
-    argparser.add_argument('--clip_grad_norm', type=float, default=0.0)
-
-    argparser.add_argument('--prune_mode', type=str, default='none', choices=['none', 'only-prune', 'train-prune', 'train-prune-retrain'])
-    argparser.add_argument('--prune_type', type=str, default='all', choices=['heads', 'ffn', 'all'])
-    argparser.add_argument('--prune_structured', action='store_true')
-    argparser.add_argument('--prune_heads_amount', type=float, default=0.0)
-    argparser.add_argument('--prune_heads_norm', type=int, default=2)
-    argparser.add_argument('--prune_ffn_amount', type=float, default=0.0)
-    argparser.add_argument('--prune_ffn_norm', type=int, default=2)
-    argparser.add_argument('--n_prune_retrains', type=int, default=1)
-    argparser.add_argument('--prune_retrain_n_steps', type=int, default=10000)
-    argparser.add_argument('--prune_retrain_warmup_steps', type=float, default=800)
-
-    argparser.add_argument('--distillation_teacher_run_name', type=str, default=None)
-
-    # vae args
-    argparser.add_argument('--train_vae', action='store_true')
-    argparser.add_argument('--latent_size', type=int, default=512)
-    argparser.add_argument('--kl_loss_coefficient', type=float, default=0.0)
-    argparser.add_argument('--vae_tie_embeddings', action='store_true')
-
-    # debug/technical args that are not hyperparameters
-    argparser.add_argument('--start_epoch', type=int, default=0)
-    argparser.add_argument('--print_frequency', type=int, default=20)
-    argparser.add_argument('--device', type=str, default='cuda:0')
-    argparser.add_argument('--save_initial_checkpoint', action='store_true')
-    argparser.add_argument('--debug_simple', action='store_true')
-    argparser.add_argument('--cudnn_benchmark', action='store_true')
-
-    args, unk = argparser.parse_known_args()
+    print(f"args: {args}")
 
     if len(unk) > 0:
         print(f"unknown arguments: {unk}")
 
-    if args.n_q_heads == 0 or args.n_kv_heads == 0:
+    if args.n_gqa_groups == 0 or args.n_heads == 0:
         print("it is not recommended to not have any multi-head attention layers")
         exit(1)
 
@@ -639,5 +592,7 @@ def get_args():
     args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))
 
     torch.set_printoptions(profile='full')
+
+    torch.autograd.set_detect_anomaly(args.detect_nans)
 
     return args, unk

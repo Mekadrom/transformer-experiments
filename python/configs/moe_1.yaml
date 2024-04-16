@@ -1,0 +1,5 @@
+tokenizer_run_name: BPE_SEPARATE
+
+use_moe: true
+n_experts: 2
+moe_top_k: 1

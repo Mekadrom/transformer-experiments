@@ -17,8 +17,6 @@ class ClassicTrainer():
 
         self.run_name = args.run_name
         self.d_model = args.d_model
-        self.n_q_heads = args.n_q_heads
-        self.n_kv_heads = args.n_kv_heads
         self.n_steps = args.n_steps
         self.warmup_steps = args.warmup_steps
         self.device = args.device
@@ -51,7 +49,7 @@ class ClassicTrainer():
         if args.save_initial_checkpoint:
             save_checkpoint(-1, self.model, self.optimizer, f"runs/{args.run_name}/")
 
-        if args.start_epoch == 0 and not self.args.debug_simple:
+        if args.start_epoch == 0:
             print("Visualizing attention weights before training...")
             # get attention weight visualization before any updates are made to the model
             with torch.no_grad():
@@ -228,11 +226,10 @@ class ClassicTrainer():
             self.summary_writer.add_scalar('Validation Loss', losses.avg, self.steps)
             print("\nValidation loss: %.3f\n\n" % losses.avg)
 
-            if not self.args.debug_simple:
-                if self.args.train_vae:
-                    self.viz_model(self.steps, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.", "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
-                else:
-                    self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+            if self.args.train_vae:
+                self.viz_model(self.steps, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.", "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
+            else:
+                self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
     def evaluate(self, src, tgt):
         if self.args.train_vae:
