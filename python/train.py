@@ -12,7 +12,7 @@ Most of the changes I've made have been to enable a highly configurable set of h
 """
 if __name__ == '__main__':
     args, unk = get_args()
-    cudnn.benchmark = False
+    cudnn.benchmark = args.cudnn_benchmark
 
     print(f"using learning rate {args.lr}")
 

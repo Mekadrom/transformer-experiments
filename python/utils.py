@@ -624,6 +624,7 @@ def get_args():
     argparser.add_argument('--device', type=str, default='cuda:0')
     argparser.add_argument('--save_initial_checkpoint', action='store_true')
     argparser.add_argument('--debug_simple', action='store_true')
+    argparser.add_argument('--cudnn_benchmark', action='store_true')
 
     args, unk = argparser.parse_known_args()
 
