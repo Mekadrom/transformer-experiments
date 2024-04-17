@@ -1,0 +1,5 @@
+tokenizer_run_name: BPE_SEPARATE
+
+n_gqa_groups: 4
+d_queries: 32
+positional_encoding_dim: 32
