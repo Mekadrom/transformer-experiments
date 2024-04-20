@@ -1,8 +1,11 @@
 tokenizer_run_name: BPE_SEPARATE
 
-d_model: 768
-n_heads: 10
-d_inner: 3072
+d_model: 1024
+n_gqa_groups: 3
+n_heads: 16
+d_queries: 128
+d_values: 128
+d_inner: 4096
 n_encoder_layers: 12
 n_decoder_layers: 12
 encoder_param_sharing_type: cycle-rev
