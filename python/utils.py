@@ -401,6 +401,9 @@ def average_checkpoints(epoch, optimizer, source_folder, model_name_prefix='step
     checkpoint_names = [f for f in os.listdir(source_folder) if f.startswith(model_name_prefix) and f.endswith(model_name_suffix)]
     assert len(checkpoint_names) > 0, "Did not find any checkpoints!"
 
+    # order the checkpoint names by step number
+    checkpoint_names = sorted(checkpoint_names, key=lambda x: int(x[len(model_name_prefix):-len(model_name_suffix)]))
+
     # Average parameters from checkpoints
     averaged_params = OrderedDict()
     for c in tqdm(checkpoint_names, desc="Averaging checkpoints"):

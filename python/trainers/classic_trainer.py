@@ -11,6 +11,25 @@ import os
 import seaborn as sns
 import time
 
+class EarlyStopping:
+    def __init__(self, patience=7, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        if self.best_loss == None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+
 class ClassicTrainer():
     def __init__(self, args):
         self.args = args
@@ -41,6 +60,11 @@ class ClassicTrainer():
 
         # todo: make this configurable
         self.criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(self.device)
+
+        if args.early_stopping:
+            self.early_stopping = EarlyStopping(patience=args.early_stopping_patience, min_delta=args.early_stopping_min_delta)
+        else:
+            self.early_stopping = None
 
         print_model(self.model)
         print(f"Optimizer: {self.optimizer}")
@@ -80,15 +104,26 @@ class ClassicTrainer():
             self.train_epoch(epoch=epoch)
 
             self.val_loader.create_batches()
-            self.validate_epoch()
+            val_loss_avg = self.validate_epoch()
 
             save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/{model_name_prefix}")
+
+            if self.early_stopping is not None:
+                self.early_stopping(val_loss_avg)
+                if self.early_stopping.early_stop:
+                    print("Early stopping")
+                    average_checkpoints(self.epochs, self.optimizer, self.run_name, model_name_prefix='step')
+
+                    print(f"Training complete. Evaluating one last time...")
+                    self.val_loader.create_batches()
+                    self.validate_epoch()
+                    break
 
         # recalculate steps to make sure validation data is updated with correct steps
         self.steps = (self.epochs * self.train_loader.n_batches // self.batches_per_step)
 
         print(f"Training complete. Averaging checkpoints...")
-        average_checkpoints(self.epochs, self.optimizer, self.run_name, model_name_prefix=model_name_prefix)
+        average_checkpoints(self.epochs, self.optimizer, self.run_name, model_name_prefix='step')
 
         print(f"Training complete. Evaluating one last time...")
         self.val_loader.create_batches()
@@ -196,7 +231,8 @@ class ClassicTrainer():
                 start_step_time = time.time()
 
                 # 'epoch' is 0-indexed
-                if epoch in [self.epochs - 1, self.epochs - 2] and self.steps % 1500 == 0:
+                # early stopping requires the ability to average the last few checkpoints
+                if (epoch in [self.epochs - 1, self.epochs - 2] and self.steps % 1500 == 0) or self.args.early_stopping:
                     save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/step{str(self.steps)}_")
             start_data_time = time.time()
     
@@ -230,6 +266,8 @@ class ClassicTrainer():
                 self.viz_model(self.steps, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.", "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
             else:
                 self.viz_model(self.steps, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+
+            return losses.avg
 
     def evaluate(self, src, tgt):
         if self.args.train_vae:

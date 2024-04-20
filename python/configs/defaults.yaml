@@ -63,3 +63,7 @@ device: cuda
 save_initial_checkpoint: false
 cudnn_benchmark: false
 detect_nans: false
+
+early_stopping: false
+early_stopping_patience: 10
+early_stopping_min_delta: 0.0
