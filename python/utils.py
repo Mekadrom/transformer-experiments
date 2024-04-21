@@ -564,11 +564,12 @@ class YamlDict(dict):
     def __getattribute__(self, name):
         return self.__getitem__(name) if name in self else super().__getattribute__(name)
 
-def load_yaml(file_path):
+def load_yaml(file_path, ovr_args):
     with open(os.path.join('configs', 'defaults.yaml'), 'r') as default_config:
         with open(file_path, 'r') as f:
             y = yaml.safe_load(default_config)
             y.update(yaml.safe_load(f))
+            y.update(ovr_args)
             return YamlDict(y)
 
 def get_args():
@@ -579,13 +580,16 @@ def get_args():
 
     argsparser_args, unk = argparser.parse_known_args()
 
-    args = load_yaml(argsparser_args.config_file_path)
-    args.__setattr__('run_name', argsparser_args.run_name)
-
-    print(f"args: {args}")
+    # convert unk list to dict
+    unk = {unk[i][2:]: unk[i + 1] for i in range(0, len(unk), 2)}
 
     if len(unk) > 0:
         print(f"unknown arguments: {unk}")
+
+    args = load_yaml(argsparser_args.config_file_path, unk)
+    args.__setattr__('run_name', argsparser_args.run_name)
+
+    print(f"args: {args}")
 
     if args.n_gqa_groups == 0 or args.n_heads == 0:
         print("it is not recommended to not have any multi-head attention layers")
