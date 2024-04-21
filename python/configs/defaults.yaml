@@ -63,7 +63,9 @@ device: cuda
 save_initial_checkpoint: false
 cudnn_benchmark: false
 detect_nans: false
+
 torch_compile_model: false
+dynamo_cache_size_limit: 16
 
 early_stopping: false
 early_stopping_patience: 10

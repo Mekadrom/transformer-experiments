@@ -60,6 +60,7 @@ class ClassicTrainer():
 
         if args.torch_compile_model:
             torch.set_float32_matmul_precision('high')
+            torch._dynamo.config.cache_size_limit = int(args.dynamo_cache_size_limit)
             self.model = torch.compile(self.model)
 
         # todo: make this configurable
