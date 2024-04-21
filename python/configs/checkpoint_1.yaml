@@ -13,4 +13,5 @@ decoder_param_sharing_type: cycle-rev
 m_encoder_independent_layers: 6
 m_decoder_independent_layers: 6
 
+tokens_in_batch: 2500
 n_steps: 300000
