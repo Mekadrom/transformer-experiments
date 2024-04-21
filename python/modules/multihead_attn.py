@@ -62,7 +62,7 @@ class MultiHeadAttention(nn.Module):
 
         if hasattr(self, 'rotary_embedding') and self.rotary_embedding is not None:
             q_heads = self.rotary_embedding.rotate_queries_or_keys(q_heads, seq_dim=-2)
-            k_heads = self.rotary_embedding.rotate_queries_or_keys(k_heads, seq_dim=-2)
+            k_heads = self.rotary_embedding.rotate_queries_or_keys(k_heads.unsqueeze(0), seq_dim=-2).squeeze(0) # adds a singleton dimension for the rotation operation and then removes it for the torch compiler
 
         # generate attention weights by taking the dot product of queries and keys
         attention_weights = torch.einsum('...ghnd,...hsd->...hns', q_heads, k_heads) # (N, n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
