@@ -58,6 +58,10 @@ class ClassicTrainer():
         self.model, self.optimizer = self.load_model_and_optimizer()
         self.model = self.model.to(args.device)
 
+        if args.torch_compile_model:
+            torch.set_float32_matmul_precision('high')
+            self.model = torch.compile(self.model)
+
         # todo: make this configurable
         self.criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(self.device)
 
