@@ -1,3 +1,0 @@
-export const environment = {
-    googleClientId: {{ google.client_id }}
-};
