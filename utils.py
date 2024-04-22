@@ -227,7 +227,9 @@ def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model, device):
         encoder_sequences = encoder_sequences.to(device)
         encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device)
 
-        encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths)
+        src_key_padding_mask = (encoder_sequences == 0).to(device)
+
+        encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask)
 
         if args.train_vae:
             # mu and logvar + reparemeterization trick to sample from the latent space, which replaces the encoder's output
@@ -333,7 +335,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
                 hypotheses_lengths,
                 encoder_sequences.repeat(s, 1, 1),
                 encoder_sequence_lengths.repeat(s).unsqueeze(-1), # (s, step, tgt_vocab_size)
-                src_key_padding_mask.repeat(s, 1), # (s, source_sequence_length)
+                torch.zeros([s.size(0), 1]).bool().to(device), # (s, 1)
                 tgt_key_padding_masks
             )
 

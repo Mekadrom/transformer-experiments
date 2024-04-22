@@ -54,7 +54,8 @@ distillation_teacher_run_name:
 
 train_vae: false
 latent_size: 512
-kl_loss_coefficient: 0.0
+latent_seq_len: 16
+kl_loss_coefficient: 1.0
 vae_tie_embeddings: false
 
 start_epoch: 0

@@ -173,11 +173,12 @@ class DecoderLayer(nn.Module):
         else:
             decoder_sequences = decoder_sequences + self_attn
 
-        cross_attn = self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask)[0]
-        if hasattr(self, 'cross_attn_residual'):
-            decoder_sequences = self.cross_attn_residual(decoder_sequences, cross_attn)
-        else:
-            decoder_sequences = decoder_sequences + cross_attn
+        if encoder_sequences is not None and encoder_sequence_lengths is not None:
+            cross_attn = self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask)[0]
+            if hasattr(self, 'cross_attn_residual'):
+                decoder_sequences = self.cross_attn_residual(decoder_sequences, cross_attn)
+            else:
+                decoder_sequences = decoder_sequences + cross_attn
 
         fcn, gating_variances = self.fcn(decoder_sequences)
         
@@ -189,7 +190,7 @@ class DecoderLayer(nn.Module):
         return decoder_sequences, gating_variances
 
 class Decoder(nn.Module):
-    def __init__(self, args, vocab_size):
+    def __init__(self, args, vocab_size, is_vae=False):
         super(Decoder, self).__init__()
 
         self.args = args
@@ -307,15 +308,18 @@ class Decoder(nn.Module):
         return decoder_sequences, gating_variances
 
 class Transformer(nn.Module):
-    def __init__(self, args, src_vocab_size, tgt_vocab_size):
+    def __init__(self, args, src_vocab_size, tgt_vocab_size, autoregressive=False):
         super(Transformer, self).__init__()
 
         self.args = args
+        self.autoregressive = autoregressive
 
-        self.encoder = Encoder(args, src_vocab_size)
+        if not autoregressive:
+            self.encoder = Encoder(args, src_vocab_size)
         self.decoder = Decoder(args, tgt_vocab_size)
 
     def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask=None):
-        encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask) # (N, encoder_sequence_pad_length, d_model)
+        if not self.autoregressive:
+            encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask) # (N, encoder_sequence_pad_length, d_model)
         decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask) # (N, decoder_sequence_pad_length, vocab_size)
         return decoder_sequences, encoder_gating_variances, decoder_gating_variances

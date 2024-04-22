@@ -86,7 +86,7 @@ class ClassicTrainer():
             with torch.no_grad():
                 self.model.eval()
                 if self.args.train_vae:
-                    self.viz_model(0, self.model, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.", "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
+                    self.viz_model(0, self.model, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
                 else:
                     self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
@@ -168,7 +168,7 @@ class ClassicTrainer():
             data_time.update(time.time() - start_data_time)
 
             if self.args.train_vae:
-                predicted_sequences, mu, logvar = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1)) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+                predicted_sequences, mu, logvar = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
             else:
                 predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
@@ -302,7 +302,12 @@ class ClassicTrainer():
             # print(f"src: {src} | prediction: {best} | actual: {tgt}")
             print(debug_validate_table)
 
-    def viz_model(self, step, model, src, tgt):
+    def viz_model(self, step, model, src, tgt=None):
+        is_vae = False
+        if tgt == None:
+            is_vae = True
+            tgt = src
+
         input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device) # (1, input_sequence_length)
         input_tokens = [self.src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
         input_sequence_length = torch.LongTensor([input_sequence.size(1)]).unsqueeze(0).to(self.device) # (1)
@@ -330,6 +335,19 @@ class ClassicTrainer():
 
         input_sequence = model.encoder.layer_norm(input_sequence)
 
+        if is_vae:
+            cls_token = input_sequence[:, 0, :]
+            mu = model.mu(cls_token)
+            logvar = model.logvar(cls_token)
+            z = model.reparameterize(mu, logvar).unsqueeze(1)
+
+            src_key_padding_mask = torch.zeros([1, self.args.latent_seq_len], dtype=torch.bool, device=z.device)
+
+            input_sequence = model.decoder_extrapolator(z).view(z.size(0), -1, self.args.d_model)
+            input_sequence_length = torch.ones(z.size(1), dtype=torch.long, device=z.device).unsqueeze(1)
+
+            input_tokens = [f"latent_{i}" for i in range(self.args.latent_seq_len)]
+            
         target_sequence = model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
         target_sequence = model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
 
