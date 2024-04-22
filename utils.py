@@ -4,6 +4,7 @@ from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
 from tqdm import tqdm
 from model_provider import TransformerModelProvider
+from modules import swiglu
 
 import argparse
 import codecs
@@ -555,6 +556,8 @@ def create_activation_function(activation_function_name):
         return nn.PReLU()
     elif activation_function_name == 'leaky_relu':
         return nn.LeakyReLU()
+    elif activation_function_name == 'swiglu':
+        return swiglu.SwiGLU()
     else:
         raise Exception(f"Unknown activation function {activation_function_name}")
 
