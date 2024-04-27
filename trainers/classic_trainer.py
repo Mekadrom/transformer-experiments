@@ -3,10 +3,10 @@ from prettytable import PrettyTable
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from utils import *
+from modules import calc_kl_loss
 
 import io
 import matplotlib.pyplot as plt
-import numpy as np
 import os
 import seaborn as sns
 import time
@@ -17,7 +17,6 @@ class EarlyStopping:
         self.min_delta = min_delta
         self.counter = 0
         self.best_loss = None
-        self.early_stop = False
 
     def __call__(self, val_loss):
         if self.best_loss == None:
@@ -25,10 +24,11 @@ class EarlyStopping:
         elif val_loss > self.best_loss - self.min_delta:
             self.counter += 1
             if self.counter >= self.patience:
-                self.early_stop = True
+                return True
         else:
             self.best_loss = val_loss
             self.counter = 0
+        return False
 
 class ClassicTrainer():
     def __init__(self, args):
@@ -68,8 +68,8 @@ class ClassicTrainer():
         # todo: make this configurable
         self.criterion = LabelSmoothedCE(args=args, eps=args.label_smoothing).to(self.device)
 
-        if args.early_stopping:
-            self.early_stopping = EarlyStopping(patience=args.early_stopping_patience, min_delta=args.early_stopping_min_delta)
+        if args.early_stop:
+            self.early_stopping = EarlyStopping(patience=args.early_stop_patience, min_delta=args.early_stop_min_delta)
         else:
             self.early_stopping = None
 
@@ -116,10 +116,9 @@ class ClassicTrainer():
             save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/{model_name_prefix}")
 
             if self.early_stopping is not None:
-                self.early_stopping(val_loss_avg)
-                if self.early_stopping.early_stop:
+                if self.early_stopping(val_loss_avg):
                     print("Early stopping")
-                    average_checkpoints(self.epochs, self.optimizer, self.run_name, model_name_prefix='step')
+                    average_checkpoints(self.epochs, self.optimizer, self.run_name, self.args.early_stop_num_latest_checkpoints_to_avg, model_name_prefix='step')
 
                     print(f"Training complete. Evaluating one last time...")
                     self.val_loader.create_batches()
@@ -167,10 +166,7 @@ class ClassicTrainer():
 
             data_time.update(time.time() - start_data_time)
 
-            if self.args.train_vae:
-                predicted_sequences, mu, logvar = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
-            else:
-                predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+            predicted_sequences, e_t_vars, e_q_vars, e_k_vars, e_v_vars, encoder_moe_gating_variances, d_t_vars, d_s_q_vars, d_s_k_vars, d_s_v_vars, d_c_q_vars, d_c_k_vars, d_c_v_vars, decoder_moe_gating_variances = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
             if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
                 encoder_moe_gating_variances = torch.stack(encoder_moe_gating_variances).std(dim=0).mean()
@@ -183,20 +179,38 @@ class ClassicTrainer():
             else:
                 moe_diversity_loss = 0
 
-            if self.args.train_vae:
-                kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-                kl_loss = torch.mean(kl_loss * self.args.kl_loss_coefficient)
-                kl_loss = torch.clamp(kl_loss, min=0)
-                kl_losses.update(kl_loss.item(), src_seqs.size(0))
-            else:
-                kl_loss = 0
-
             # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
             # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
             # Therefore, pads start after (length - 1) positions
             translation_loss = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
 
             translation_losses.update(translation_loss.item(), (tgt_seq_lengths - 1).sum().item())
+
+            kl_loss = 0.0
+
+            if e_t_vars is not None and e_t_vars[0] is not None and e_t_vars[1] is not None:
+                kl_loss += calc_kl_loss(e_t_vars[0], e_t_vars[1])
+            if e_q_vars is not None and e_q_vars[0] is not None and e_q_vars[1] is not None:
+                kl_loss += calc_kl_loss(e_q_vars[0], e_q_vars[1])
+            if e_k_vars is not None and e_k_vars[0] is not None and e_k_vars[1] is not None:
+                kl_loss += calc_kl_loss(e_k_vars[0], e_k_vars[1])
+            if e_v_vars is not None and e_v_vars[0] is not None and e_v_vars[1] is not None:
+                kl_loss += calc_kl_loss(e_v_vars[0], e_v_vars[1])
+
+            if d_t_vars is not None and d_t_vars[0] is not None and d_t_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_t_vars[0], d_t_vars[1])
+            if d_s_q_vars is not None and d_s_q_vars[0] is not None and d_s_q_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_s_q_vars[0], d_s_q_vars[1])
+            if d_s_k_vars is not None and d_s_k_vars[0] is not None and d_s_k_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_s_k_vars[0], d_s_k_vars[1])
+            if d_s_v_vars is not None and d_s_v_vars[0] is not None and d_s_v_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_s_v_vars[0], d_s_v_vars[1])
+            if d_c_q_vars is not None and d_c_q_vars[0] is not None and d_c_q_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_c_q_vars[0], d_c_q_vars[1])
+            if d_c_k_vars is not None and d_c_k_vars[0] is not None and d_c_k_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_c_k_vars[0], d_c_k_vars[1])
+            if d_c_v_vars is not None and d_c_v_vars[0] is not None and d_c_v_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_c_v_vars[0], d_c_v_vars[1])
 
             loss = translation_loss + moe_diversity_loss + kl_loss
 
@@ -238,8 +252,8 @@ class ClassicTrainer():
                 start_step_time = time.time()
 
                 # 'epoch' is 0-indexed
-                # early stopping requires the ability to average the last few checkpoints
-                if (epoch in [self.epochs - 1, self.epochs - 2] and self.steps % 1500 == 0) or self.args.early_stopping:
+                # early stopping requires the ability to average the last few checkpoints so just save all of them
+                if (epoch in [self.epochs - 1, self.epochs - 2] and self.steps % 1500 == 0) or self.args.early_stop:
                     save_checkpoint(epoch, model, self.optimizer, prefix=f"runs/{self.run_name}/step{str(self.steps)}_")
             start_data_time = time.time()
     
@@ -318,11 +332,11 @@ class ClassicTrainer():
         src_key_padding_mask = input_sequence == 0 # (N, pad_length)
         tgt_key_padding_mask = target_sequence == 0 # (N, pad_length)
 
-        input_sequence = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
+        input_sequence, _, _ = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
         input_sequence = model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
         for e, encoder_layer in enumerate(model.encoder.encoder_layers):
-            input_sequence, attention_weights = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask)
+            input_sequence, attention_weights, _, _, _, _, _, _ = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask)
 
             attention_weights = attention_weights.cpu().detach().contiguous()
 
@@ -348,14 +362,14 @@ class ClassicTrainer():
 
             input_tokens = [f"latent_{i}" for i in range(self.args.latent_seq_len)]
             
-        target_sequence = model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
+        target_sequence, _, _ = model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
         target_sequence = model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
 
         ones = torch.ones(target_sequence.size(1), target_sequence.size(1)).to(target_sequence.device)
         attn_mask = torch.triu(ones, diagonal=1).bool()
 
         for d, decoder_layer in enumerate(model.decoder.decoder_layers):
-            target_sequence, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length, tgt_key_padding_mask, attn_mask) # (N, pad_length, d_model)
+            target_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, target_sequence_length, tgt_key_padding_mask, attn_mask) # (N, pad_length, d_model)
             
             attention_weights = attention_weights.cpu().detach().contiguous()
 
@@ -364,7 +378,7 @@ class ClassicTrainer():
                 image_data = self.viz_attn_weights('Decoder-Self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), target_tokens, target_tokens)
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask) # (N, pad_length, d_model)
+            target_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask) # (N, pad_length, d_model)
 
             attention_weights = attention_weights.cpu().detach().contiguous()
 

@@ -397,7 +397,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
 
         return best_hypothesis, all_hypotheses
 
-def average_checkpoints(epoch, optimizer, source_folder, model_name_prefix='step', model_name_suffix='.pth.tar'):
+def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=None, model_name_prefix='step', model_name_suffix='.pth.tar'):
     source_folder = f"runs/{source_folder}" if not source_folder.startswith('runs/') else source_folder
     
     # Get list of checkpoint names
@@ -406,6 +406,10 @@ def average_checkpoints(epoch, optimizer, source_folder, model_name_prefix='step
 
     # order the checkpoint names by step number
     checkpoint_names = sorted(checkpoint_names, key=lambda x: int(x[len(model_name_prefix):-len(model_name_suffix)]))
+
+    if num_latest_checkpoints is not None:
+        # only take X latest checkpoints
+        checkpoint_names = checkpoint_names[-num_latest_checkpoints:]
 
     # Average parameters from checkpoints
     averaged_params = OrderedDict()
