@@ -17,5 +17,5 @@ tokens_in_batch: 2500
 n_steps: 300000
 
 early_stop: true
-early_stop_patience: 7
-early_stop_min_delta: 0.02
+early_stop_patience: 3
+early_stop_min_delta: 0.01

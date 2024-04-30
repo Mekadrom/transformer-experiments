@@ -70,6 +70,6 @@ torch_compile_model: false
 dynamo_cache_size_limit: 16
 
 early_stop: false
-early_stop_patience: 7
+early_stop_patience: 3
 early_stop_min_delta: 0.0
 early_stop_num_latest_checkpoints_to_avg: 3
