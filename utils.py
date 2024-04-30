@@ -93,7 +93,12 @@ def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model,
             args.start_epoch = checkpoint['epoch'] + 1
             print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
 
-        model = checkpoint['model']
+        if vae_model:
+            model = TransformerModelProvider().provide_vae_transformer(args, src_bpe_model.vocab_size())
+        else:
+            model = TransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+
+        model.load_state_dict(checkpoint['model'].state_dict())
 
         if 'optimizer' in checkpoint:
             optimizer = checkpoint['optimizer']
@@ -297,10 +302,9 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
         encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device) # (1)
 
         src_key_padding_mask = (encoder_sequences == 0).to(device) # (1, source_sequence_length)
-
+        
         # Encode
-        encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask) # (1, source_sequence_length, d_model)
-
+        encoder_sequences, (t_mu, t_logvar), (q_mus, q_logvars), (k_mus, k_logvars), (v_mus, v_logvars), gating_variances = model.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask) # (1, source_sequence_length, d_model)
         if args.train_vae:
             # mu and logvar + reparemeterization trick to sample from the latent space, which replaces the encoder's output
             cls_token = encoder_sequences[:, 0, :]
@@ -331,12 +335,12 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
 
             tgt_key_padding_masks = torch.zeros(s, hypotheses.size(1)).to(device).bool()
 
-            decoder_sequences, _ = model.decoder(
+            decoder_sequences, (t_mu, t_logvar), (s_q_mus, s_q_logvars), (s_k_mus, s_k_logvars), (s_v_mus, s_v_logvars), (c_q_mus, c_q_logvars), (c_k_mus, c_k_logvars), (c_v_mus, c_v_logvars), gating_variances = model.decoder(
                 hypotheses,
                 hypotheses_lengths,
                 encoder_sequences.repeat(s, 1, 1),
                 encoder_sequence_lengths.repeat(s).unsqueeze(-1), # (s, step, tgt_vocab_size)
-                torch.zeros([s.size(0), 1]).bool().to(device), # (s, 1)
+                src_key_padding_mask.repeat(s, 1), # (s, 1)
                 tgt_key_padding_masks
             )
 
@@ -445,7 +449,7 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, devic
         target_suffix = "src" if vae_model else "tgt"
         test_loader = SequenceLoader(src_bpe_model=src_bpe_model,
                                     tgt_bpe_model=tgt_bpe_model,
-                                    data_folder=os.path.join('..', "data"),
+                                    data_folder=os.path.join('.', "data"),
                                     source_suffix="src",
                                     target_suffix=target_suffix,
                                     split="test",
@@ -454,7 +458,6 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, devic
 
     # Evaluate
     with torch.no_grad():
-
         hypotheses = list()
         references = list()
         for i, (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in enumerate(tqdm(test_loader, total=test_loader.n_batches)):

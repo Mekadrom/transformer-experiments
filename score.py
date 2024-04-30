@@ -5,22 +5,10 @@ import os
 import torch.backends.cudnn as cudnn
 
 if __name__ == '__main__':
-    argparser = argparse.ArgumentParser()
-
-    argparser.add_argument('--run_name', type=str, required=True)
-    argparser.add_argument('--tokenizer_run_name', type=str, required=True)
-    argparser.add_argument('--sacrebleu_score_model_name', type=str, default='averaged_transformer_checkpoint.pth.tar')
-
-    argparser.add_argument('--device', type=str, default='cuda:0')
-    cudnn.benchmark = False
-
-    args, unk = argparser.parse_known_args()
-
-    if len(unk) > 0:
-        print(f"unknown arguments: {unk}")
+    args, unk = get_args()
+    cudnn.benchmark = bool(args.cudnn_benchmark)
 
     run_dir = os.path.join('runs', args.run_name)
-
     if not os.path.exists(run_dir):
         # exit with error
         print(f"run directory {run_dir} does not exist")

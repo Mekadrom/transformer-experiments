@@ -15,7 +15,7 @@ class EncoderLayer(nn.Module):
         super(EncoderLayer, self).__init__()
 
         self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=False)
-        self.lite_conv_self_attn = LiteConv(args, self_attn=True, in_decoder=False)
+        # self.lite_conv_self_attn = LiteConv(args, self_attn=True, in_decoder=False)
 
         if args.use_admin:
             self.self_attn_residual = admin_torch.as_module(args.n_layers)
@@ -122,11 +122,11 @@ class Encoder(nn.Module):
         return nn.ModuleList(layers)
 
     def perform_embedding_transformation(self, encoder_sequences):
-        embedded = self.embedding(encoder_sequences) * math.sqrt(self.d_model) # (N, pad_length, d_model)
+        embedded = self.embedding(encoder_sequences) * math.sqrt(self.args.d_model) # (N, pad_length, d_model)
 
         # if VAE tokens are used, split the embedding into mu and logvar and sample for forward pass
         # this happens before positional encoding and dropout for a good reason
-        if 't' in self.args.latent_repr_type:
+        if 'latent_repr_type' in self.args and 't' in self.args.latent_repr_type:
             t_mu, t_logvar = torch.chunk(embedded, 2, dim=-1)
             embedded = reparameterize(t_mu, t_logvar)
         else:
