@@ -254,7 +254,7 @@ class ClassicTrainer():
                 # 'epoch' is 0-indexed
                 # early stopping requires the ability to average the last few checkpoints so just save all of them
                 if (epoch in [self.epochs - 1, self.epochs - 2] and self.steps % 1500 == 0) or self.args.early_stop:
-                    save_checkpoint(epoch, model, self.optimizer, prefix=f"runs/{self.run_name}/step{str(self.steps)}_")
+                    save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/step{str(self.steps)}_")
             start_data_time = time.time()
     
     def validate_epoch(self, model):
