@@ -10,15 +10,21 @@ if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
 
     argparser.add_argument("--run_name", type=str, required=True)
-    argparser.add_argument("--tokenizer_run_name", type=str, required=True)
-    argparser.add_argument("--model_checkpoint", type=str, default="averaged_transformer_checkpoint.pth.tar")
-    argparser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    argparser.add_argument("--config_file_path", type=str, required=True)
+    argparser.add_argument("--model_checkpoint", type=str, default="transformer_checkpoint.pth.tar")
     argparser.add_argument("--profile_training", action="store_true")
 
-    args = argparser.parse_args()
+    argparser_args, argparser_unk = argparser.parse_known_args()
+
+    args, unk = utils.get_args()
+
+    args.run_name = argparser_args.run_name
+
+    args.__setattr__('model_checkpoint', argparser_args.model_checkpoint)
+    args.__setattr__('profile_training', argparser_args.profile_training)
 
     src_bpe_model, tgt_bpe_model = utils.load_tokenizers(os.path.join('runs', args.tokenizer_run_name))
-    model, _, _ = utils.load_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name=args.model_checkpoint)
+    model, _ = utils.load_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name=args.model_checkpoint)
 
     model = model.to(args.device)
 

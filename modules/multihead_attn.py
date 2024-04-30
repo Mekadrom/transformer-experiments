@@ -20,9 +20,13 @@ class MultiHeadAttention(nn.Module):
         self.n_heads = args.n_heads
         self.n_gqa_groups = args.n_gqa_groups
 
-        d_queries = args.d_queries * 2 if 'q' in args.latent_repr_type else args.d_queries
-        d_keys = args.d_queries * 2 if 'k' in args.latent_repr_type else args.d_queries
-        d_values = args.d_values * 2 if 'v' in args.latent_repr_type else args.d_values
+        self.vae_q = 'q' in self.args.latent_repr_type
+        self.vae_k = 'k' in self.args.latent_repr_type
+        self.vae_v = 'v' in self.args.latent_repr_type
+
+        d_queries = args.d_queries * 2 if self.vae_q else args.d_queries
+        d_keys = args.d_queries * 2 if self.vae_k else args.d_queries
+        d_values = args.d_values * 2 if self.vae_v else args.d_values
 
         # A linear projection to cast (n_kv_heads sets of) queries from the input query sequences
         self.cast_queries = nn.Linear(args.d_model, self.n_q_heads * d_queries) # (N, query_sequence_pad_length, n_kv_heads * d_queries)
@@ -55,19 +59,19 @@ class MultiHeadAttention(nn.Module):
         k_heads = self.cast_keys(key_sequences)
         v_heads = self.cast_values(value_sequences)
 
-        if 'q' in self.args.latent_repr_type:
+        if self.vae_q:
             q_mu, q_logvar = torch.chunk(q_heads, 2, dim=-1)
             q_heads = reparameterize(q_mu, q_logvar)
         else:
             q_mu, q_logvar = None, None
 
-        if 'k' in self.args.latent_repr_type:
+        if self.vae_k:
             k_mu, k_logvar = torch.chunk(k_heads, 2, dim=-1)
             k_heads = reparameterize(k_mu, k_logvar)
         else:
             k_mu, k_logvar = None, None
 
-        if 'v' in self.args.latent_repr_type:
+        if self.vae_v:
             v_mu, v_logvar = torch.chunk(v_heads, 2, dim=-1)
             v_heads = reparameterize(v_mu, v_logvar)
         else:

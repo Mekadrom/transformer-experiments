@@ -43,7 +43,9 @@ class Encoder(nn.Module):
 
         self.args = args
 
-        self.d_model = args.d_model * 2 if 't' in args.latent_repr_type else args.d_model
+        self.vae_t = 't' in args.latent_repr_type
+
+        self.d_model = args.d_model * 2 if self.vae_t else args.d_model
 
         self.embedding = nn.Embedding(vocab_size, self.d_model)
         self.apply_dropout = nn.Dropout(args.dropout)
@@ -126,7 +128,7 @@ class Encoder(nn.Module):
 
         # if VAE tokens are used, split the embedding into mu and logvar and sample for forward pass
         # this happens before positional encoding and dropout for a good reason
-        if 'latent_repr_type' in self.args and 't' in self.args.latent_repr_type:
+        if self.vae_t:
             t_mu, t_logvar = torch.chunk(embedded, 2, dim=-1)
             embedded = reparameterize(t_mu, t_logvar)
         else:
@@ -223,7 +225,9 @@ class Decoder(nn.Module):
 
         self.args = args
 
-        self.d_model = args.d_model * 2 if 't' in args.latent_repr_type else args.d_model
+        self.vae_t = 't' in args.latent_repr_type
+
+        self.d_model = args.d_model * 2 if self.vae_t else args.d_model
 
         self.embedding = nn.Embedding(vocab_size, self.d_model)
         self.apply_dropout = nn.Dropout(args.dropout)
@@ -313,7 +317,7 @@ class Decoder(nn.Module):
 
         # if VAE tokens are used, split the embedding into mu and logvar and sample for forward pass
         # this happens before positional encoding and dropout for a good reason
-        if 't' in self.args.latent_repr_type:
+        if self.vae_t:
             t_mu, t_logvar = torch.chunk(embedded, 2, dim=-1)
             embedded = reparameterize(t_mu, t_logvar)
         else:

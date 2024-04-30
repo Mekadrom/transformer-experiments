@@ -188,29 +188,29 @@ class ClassicTrainer():
 
             kl_loss = 0.0
 
-            if e_t_vars is not None and e_t_vars[0] is not None and e_t_vars[1] is not None:
-                kl_loss += calc_kl_loss(e_t_vars[0], e_t_vars[1])
-            if e_q_vars is not None and e_q_vars[0] is not None and e_q_vars[1] is not None:
-                kl_loss += calc_kl_loss(e_q_vars[0], e_q_vars[1])
-            if e_k_vars is not None and e_k_vars[0] is not None and e_k_vars[1] is not None:
-                kl_loss += calc_kl_loss(e_k_vars[0], e_k_vars[1])
-            if e_v_vars is not None and e_v_vars[0] is not None and e_v_vars[1] is not None:
-                kl_loss += calc_kl_loss(e_v_vars[0], e_v_vars[1])
+            # if e_t_vars is not None and e_t_vars[0] is not None and e_t_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(e_t_vars[0], e_t_vars[1])
+            # if e_q_vars is not None and e_q_vars[0] is not None and e_q_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(e_q_vars[0], e_q_vars[1])
+            # if e_k_vars is not None and e_k_vars[0] is not None and e_k_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(e_k_vars[0], e_k_vars[1])
+            # if e_v_vars is not None and e_v_vars[0] is not None and e_v_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(e_v_vars[0], e_v_vars[1])
 
-            if d_t_vars is not None and d_t_vars[0] is not None and d_t_vars[1] is not None:
-                kl_loss += calc_kl_loss(d_t_vars[0], d_t_vars[1])
-            if d_s_q_vars is not None and d_s_q_vars[0] is not None and d_s_q_vars[1] is not None:
-                kl_loss += calc_kl_loss(d_s_q_vars[0], d_s_q_vars[1])
-            if d_s_k_vars is not None and d_s_k_vars[0] is not None and d_s_k_vars[1] is not None:
-                kl_loss += calc_kl_loss(d_s_k_vars[0], d_s_k_vars[1])
-            if d_s_v_vars is not None and d_s_v_vars[0] is not None and d_s_v_vars[1] is not None:
-                kl_loss += calc_kl_loss(d_s_v_vars[0], d_s_v_vars[1])
-            if d_c_q_vars is not None and d_c_q_vars[0] is not None and d_c_q_vars[1] is not None:
-                kl_loss += calc_kl_loss(d_c_q_vars[0], d_c_q_vars[1])
-            if d_c_k_vars is not None and d_c_k_vars[0] is not None and d_c_k_vars[1] is not None:
-                kl_loss += calc_kl_loss(d_c_k_vars[0], d_c_k_vars[1])
-            if d_c_v_vars is not None and d_c_v_vars[0] is not None and d_c_v_vars[1] is not None:
-                kl_loss += calc_kl_loss(d_c_v_vars[0], d_c_v_vars[1])
+            # if d_t_vars is not None and d_t_vars[0] is not None and d_t_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(d_t_vars[0], d_t_vars[1])
+            # if d_s_q_vars is not None and d_s_q_vars[0] is not None and d_s_q_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(d_s_q_vars[0], d_s_q_vars[1])
+            # if d_s_k_vars is not None and d_s_k_vars[0] is not None and d_s_k_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(d_s_k_vars[0], d_s_k_vars[1])
+            # if d_s_v_vars is not None and d_s_v_vars[0] is not None and d_s_v_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(d_s_v_vars[0], d_s_v_vars[1])
+            # if d_c_q_vars is not None and d_c_q_vars[0] is not None and d_c_q_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(d_c_q_vars[0], d_c_q_vars[1])
+            # if d_c_k_vars is not None and d_c_k_vars[0] is not None and d_c_k_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(d_c_k_vars[0], d_c_k_vars[1])
+            # if d_c_v_vars is not None and d_c_v_vars[0] is not None and d_c_v_vars[1] is not None:
+            #     kl_loss += calc_kl_loss(d_c_v_vars[0], d_c_v_vars[1])
 
             loss = translation_loss + moe_diversity_loss + kl_loss
 
@@ -253,7 +253,7 @@ class ClassicTrainer():
 
                 # 'epoch' is 0-indexed
                 # early stopping requires the ability to average the last few checkpoints so just save all of them
-                if (epoch in [self.epochs - 1, self.epochs - 2] and self.steps % 1500 == 0) or self.args.early_stop:
+                if (epoch in [self.epochs - 1, self.epochs - 2] or self.args.early_stop) and self.steps % 1500 == 0:
                     save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/step{str(self.steps)}_")
             start_data_time = time.time()
     
@@ -271,12 +271,12 @@ class ClassicTrainer():
                 src_key_padding_mask = src_seqs == 0 # (N, max_source_sequence_pad_length_this_batch)
                 tgt_key_padding_mask = tgt_seqs == 0 # (N, max_target_sequence_pad_length_this_batch)
 
-                predicted_sequence, _, _ = model(src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths, src_key_padding_mask, tgt_key_padding_mask) # (1, target_sequence_length, vocab_size)
+                predicted_sequences, e_t_vars, e_q_vars, e_k_vars, e_v_vars, encoder_moe_gating_variances, d_t_vars, d_s_q_vars, d_s_k_vars, d_s_v_vars, d_c_q_vars, d_c_k_vars, d_c_v_vars, decoder_moe_gating_variances = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
                 # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
                 # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
                 # Therefore, pads start after (length - 1) positions
-                loss = self.criterion(inputs=predicted_sequence, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
+                loss = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
 
                 losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
 
