@@ -234,7 +234,7 @@ class ClassicTrainer():
 
                 if self.steps % self.print_frequency == 0:
                     print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
-                          'Loss {total_losses.val:.4f} ({total_losses.avg:.4f})'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, total_losses=total_losses))
+                          'Loss {total_losses.val:.4f} ({total_losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, total_losses=total_losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
                     if self.args.train_vae:
                         self.evaluate(src='In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.', tgt='In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.')
                     else:
