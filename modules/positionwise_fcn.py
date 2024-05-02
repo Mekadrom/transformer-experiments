@@ -55,7 +55,7 @@ class PositionWiseFCNetwork(nn.Module):
         self.args = args
 
         self.layer_norm = nn.LayerNorm(args.d_model)
-        self.activation = utils.create_activation_function(args.activation_function)
+        self.activation = utils.create_activation_function(args.d_inner, args.activation_function)
         self.dropout = nn.Dropout(args.dropout)
         
         if args.use_moe:

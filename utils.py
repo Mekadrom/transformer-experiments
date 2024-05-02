@@ -550,7 +550,7 @@ def prune_model(model, prune_heads_amount, prune_heads_norm, prune_ffn_amount, p
         else:
             prune_unstructured(decoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
 
-def create_activation_function(activation_function_name):
+def create_activation_function(d_in, activation_function_name):
     if activation_function_name == 'relu':
         return nn.ReLU()
     elif activation_function_name == 'gelu':
@@ -564,7 +564,7 @@ def create_activation_function(activation_function_name):
     elif activation_function_name == 'leaky_relu':
         return nn.LeakyReLU()
     elif activation_function_name == 'swiglu':
-        return swiglu.SwiGLU()
+        return swiglu.SwiGLU(d_in)
     else:
         raise Exception(f"Unknown activation function {activation_function_name}")
 
