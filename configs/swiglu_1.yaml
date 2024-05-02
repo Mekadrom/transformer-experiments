@@ -1,3 +1,4 @@
 tokenizer_run_name: BPE_SEPARATE
 
 activation_function: swiglu
+d_inner: 1280
