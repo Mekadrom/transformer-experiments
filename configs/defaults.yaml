@@ -3,7 +3,7 @@ n_gqa_groups: 1
 n_heads: 8
 d_queries: 64
 d_values: 64
-d_inner: 2048
+d_inner: 1280
 use_moe: false
 n_experts: 0
 moe_top_k: 0
@@ -27,7 +27,7 @@ encoder_param_sharing_type: none
 decoder_param_sharing_type: none
 m_encoder_independent_layers: 0
 m_decoder_independent_layers: 0
-activation_function: relu
+activation_function: swiglu
 latent_repr_type: none
 
 tokens_in_batch: 5000
