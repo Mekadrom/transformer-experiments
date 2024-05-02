@@ -188,29 +188,29 @@ class ClassicTrainer():
 
             kl_loss = 0.0
 
-            # if e_t_vars is not None and e_t_vars[0] is not None and e_t_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(e_t_vars[0], e_t_vars[1])
-            # if e_q_vars is not None and e_q_vars[0] is not None and e_q_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(e_q_vars[0], e_q_vars[1])
-            # if e_k_vars is not None and e_k_vars[0] is not None and e_k_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(e_k_vars[0], e_k_vars[1])
-            # if e_v_vars is not None and e_v_vars[0] is not None and e_v_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(e_v_vars[0], e_v_vars[1])
+            if e_t_vars is not None and e_t_vars[0] is not None and e_t_vars[1] is not None:
+                kl_loss += calc_kl_loss(e_t_vars[0], e_t_vars[1])
+            if e_q_vars is not None and e_q_vars[0] is not None and e_q_vars[1] is not None:
+                kl_loss += calc_kl_loss(e_q_vars[0], e_q_vars[1])
+            if e_k_vars is not None and e_k_vars[0] is not None and e_k_vars[1] is not None:
+                kl_loss += calc_kl_loss(e_k_vars[0], e_k_vars[1])
+            if e_v_vars is not None and e_v_vars[0] is not None and e_v_vars[1] is not None:
+                kl_loss += calc_kl_loss(e_v_vars[0], e_v_vars[1])
 
-            # if d_t_vars is not None and d_t_vars[0] is not None and d_t_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(d_t_vars[0], d_t_vars[1])
-            # if d_s_q_vars is not None and d_s_q_vars[0] is not None and d_s_q_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(d_s_q_vars[0], d_s_q_vars[1])
-            # if d_s_k_vars is not None and d_s_k_vars[0] is not None and d_s_k_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(d_s_k_vars[0], d_s_k_vars[1])
-            # if d_s_v_vars is not None and d_s_v_vars[0] is not None and d_s_v_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(d_s_v_vars[0], d_s_v_vars[1])
-            # if d_c_q_vars is not None and d_c_q_vars[0] is not None and d_c_q_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(d_c_q_vars[0], d_c_q_vars[1])
-            # if d_c_k_vars is not None and d_c_k_vars[0] is not None and d_c_k_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(d_c_k_vars[0], d_c_k_vars[1])
-            # if d_c_v_vars is not None and d_c_v_vars[0] is not None and d_c_v_vars[1] is not None:
-            #     kl_loss += calc_kl_loss(d_c_v_vars[0], d_c_v_vars[1])
+            if d_t_vars is not None and d_t_vars[0] is not None and d_t_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_t_vars[0], d_t_vars[1])
+            if d_s_q_vars is not None and d_s_q_vars[0] is not None and d_s_q_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_s_q_vars[0], d_s_q_vars[1])
+            if d_s_k_vars is not None and d_s_k_vars[0] is not None and d_s_k_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_s_k_vars[0], d_s_k_vars[1])
+            if d_s_v_vars is not None and d_s_v_vars[0] is not None and d_s_v_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_s_v_vars[0], d_s_v_vars[1])
+            if d_c_q_vars is not None and d_c_q_vars[0] is not None and d_c_q_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_c_q_vars[0], d_c_q_vars[1])
+            if d_c_k_vars is not None and d_c_k_vars[0] is not None and d_c_k_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_c_k_vars[0], d_c_k_vars[1])
+            if d_c_v_vars is not None and d_c_v_vars[0] is not None and d_c_v_vars[1] is not None:
+                kl_loss += calc_kl_loss(d_c_v_vars[0], d_c_v_vars[1])
 
             loss = translation_loss + moe_diversity_loss + kl_loss
 
