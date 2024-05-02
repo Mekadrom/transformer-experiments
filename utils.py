@@ -401,7 +401,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
 
         return best_hypothesis, all_hypotheses
 
-def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=None, model_name_prefix='step', model_name_suffix='.pth.tar'):
+def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=None, model_name_prefix='step', model_name_suffix='_transformer_checkpoint.pth.tar'):
     source_folder = f"runs/{source_folder}" if not source_folder.startswith('runs/') else source_folder
     
     # Get list of checkpoint names
