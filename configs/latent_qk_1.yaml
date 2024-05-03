@@ -1,3 +1,5 @@
 tokenizer_run_name: BPE_SEPARATE
 
 latent_repr_type: qk
+warmup_steps: 10000
+n_steps: 300000
