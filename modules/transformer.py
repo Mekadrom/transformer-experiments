@@ -145,8 +145,8 @@ class Encoder(nn.Module):
         return encoder_layer(encoder_sequences, encoder_sequence_lengths, key_padding_mask)
 
     def forward(self, encoder_sequences, encoder_sequence_lengths, key_padding_mask):
-        encoder_sequences = self.perform_embedding_transformation(encoder_sequences) # (N, pad_length, d_model)
-        encoder_sequences, t_mu, t_logvar = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
+        encoder_sequences, t_mu, t_logvar = self.perform_embedding_transformation(encoder_sequences) # (N, pad_length, d_model)
+        encoder_sequences = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_dropout(encoder_sequences) # (N, pad_length, d_model)
 
         q_mus = []
