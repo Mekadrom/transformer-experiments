@@ -1,10 +1,10 @@
 from collections import OrderedDict
-from dataloader import SequenceLoader
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
-from tqdm import tqdm
-from model_provider import TransformerModelProvider
 from modules import swiglu
+from tqdm import tqdm
+from translation.dataloader import SequenceLoader
+from translation.model_provider import TransformerModelProvider
 
 import argparse
 import codecs
@@ -13,6 +13,7 @@ import os
 import sacrebleu
 import time
 import torch
+import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.prune as prune
@@ -84,7 +85,7 @@ def get_positional_encoding(args):
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
 
-def load_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar', vae_model=False):
+def load_translation_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar', vae_model=False):
     print('Initializing model...')
 
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
@@ -577,7 +578,8 @@ class YamlDict(dict):
         return self.__getitem__(name) if name in self else super().__getattribute__(name)
 
 def load_yaml(file_path, ovr_args):
-    with open(os.path.join('configs', 'defaults.yaml'), 'r') as default_config:
+    file_path_dir = os.path.dirname(file_path)
+    with open(os.path.join(file_path_dir, 'defaults.yaml'), 'r') as default_config:
         with open(file_path, 'r') as f:
             y = yaml.safe_load(default_config)
             y.update(yaml.safe_load(f))
@@ -613,5 +615,6 @@ def get_args():
     torch.set_printoptions(profile='full')
 
     torch.autograd.set_detect_anomaly(args.detect_nans)
+    cudnn.benchmark = bool(args.cudnn_benchmark)
 
     return args, unk
