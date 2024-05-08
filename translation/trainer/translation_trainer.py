@@ -5,18 +5,22 @@ from utils import *
 from modules import calc_kl_loss
 
 import base_trainer
-import io
-import matplotlib.pyplot as plt
 import os
-import seaborn as sns
 import time
+import utils
 
 class TranslationTrainer(base_trainer.BaseTrainer):
     def __init__(self, args):
         super(TranslationTrainer, self).__init__(args, 'translation')
 
+    def load_model_and_optimizer(self):
+        return utils.load_translation_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model, vae_model=self.args.train_vae)
+
     def get_criteria(self):
         return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing).to(self.device)
+
+    def load_data(self):
+        return utils.load_translation_data(self.args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=self.args.train_vae)
 
     def train_epoch(self, model, epoch):
         # training mode enables dropout
@@ -66,7 +70,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
             translation_losses.update(translation_loss.item(), (tgt_seq_lengths - 1).sum().item())
 
-            kl_loss = 0.0
+            kl_loss = torch.FloatTensor([0.0], device=translation_loss.device)
 
             if e_t_vars is not None and e_t_vars[0] is not None and e_t_vars[1] is not None:
                 kl_loss += calc_kl_loss(e_t_vars[0], e_t_vars[1])
@@ -91,6 +95,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 kl_loss += calc_kl_loss(d_c_k_vars[0], d_c_k_vars[1])
             if d_c_v_vars is not None and d_c_v_vars[0] is not None and d_c_v_vars[1] is not None:
                 kl_loss += calc_kl_loss(d_c_v_vars[0], d_c_v_vars[1])
+
+            kl_losses.update(kl_loss.item(), (tgt_seq_lengths - 1).sum().item())
 
             loss = translation_loss + moe_diversity_loss + kl_loss
 
@@ -151,7 +157,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 src_key_padding_mask = src_seqs == 0 # (N, max_source_sequence_pad_length_this_batch)
                 tgt_key_padding_mask = tgt_seqs == 0 # (N, max_target_sequence_pad_length_this_batch)
 
-                predicted_sequences, e_t_vars, e_q_vars, e_k_vars, e_v_vars, encoder_moe_gating_variances, d_t_vars, d_s_q_vars, d_s_k_vars, d_s_v_vars, d_c_q_vars, d_c_k_vars, d_c_v_vars, decoder_moe_gating_variances = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+                predicted_sequences = model(src_seqs, tgt_seqs, src_seq_lengths.unsqueeze(-1), tgt_seq_lengths.unsqueeze(-1), src_key_padding_mask, tgt_key_padding_mask)[0] # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
                 # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
                 # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
@@ -268,15 +274,3 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             target_sequence, _ = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
-
-    def viz_attn_weights(self, stack_name, layer_num, n_head, activation_weights, attendee_tokens, attending_tokens):
-        fig, ax = plt.subplots(figsize=(10, 10))
-        s = sns.heatmap(activation_weights, square=True, annot=True, annot_kws={"fontsize":6}, fmt=".4f", xticklabels=attendee_tokens, yticklabels=attending_tokens, ax=ax)
-        s.set(xlabel="Input Sequence", ylabel="Output Sequence", title=f"{stack_name}-Attn Layer {layer_num} Head {n_head} Weights")
-
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png')
-        plt.close(fig)
-        buf.seek(0)
-
-        return buf

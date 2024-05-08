@@ -1,8 +1,11 @@
 from torch.utils.tensorboard import SummaryWriter
 
+import io
+import matplotlib.pyplot as plt
 import os
-import utils
+import seaborn as sns
 import torch
+import utils
 
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0):
@@ -33,7 +36,8 @@ class BaseTrainer:
         self.warmup_steps = args.warmup_steps
         self.device = args.device
         self.print_frequency = args.print_frequency
-        self.batches_per_step = args.batches_per_step
+        if hasattr(args, 'batches_per_step'):
+            self.batches_per_step = args.batches_per_step
 
         self.run_dir = os.path.join(base_run_dir, 'runs', self.run_name)
         if not os.path.exists(self.run_dir):
@@ -82,7 +86,7 @@ class BaseTrainer:
                 else:
                     self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
-        self.train_loader, self.val_loader, self.test_loader = utils.load_data(args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=args.train_vae)
+        self.train_loader, self.val_loader, self.test_loader = self.load_data()
 
         self.steps = 0
         self.start_epoch = args.start_epoch
@@ -95,7 +99,10 @@ class BaseTrainer:
         raise NotImplementedError
 
     def load_model_and_optimizer(self):
-        return utils.load_translation_checkpoint_or_generate_new(self.args, self.run_dir, src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model, vae_model=self.args.train_vae)
+        raise NotImplementedError
+    
+    def load_data(self):
+        raise NotImplementedError
 
     def train(self, model_name_prefix=''):
         print(f"Training for {self.epochs} epochs...")
@@ -145,3 +152,14 @@ class BaseTrainer:
     def viz_model(self, step, model, src, tgt=None):
         raise NotImplementedError
     
+    def viz_attn_weights(self, stack_name, layer_num, n_head, activation_weights, attendee_tokens, attending_tokens):
+        fig, ax = plt.subplots(figsize=(10, 10))
+        s = sns.heatmap(activation_weights, square=True, annot=True, annot_kws={"fontsize":6}, fmt=".4f", xticklabels=attendee_tokens, yticklabels=attending_tokens, ax=ax)
+        s.set(xlabel="Input Sequence", ylabel="Output Sequence", title=f"{stack_name}-Attn Layer {layer_num} Head {n_head} Weights")
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close(fig)
+        buf.seek(0)
+
+        return buf

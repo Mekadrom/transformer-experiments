@@ -1,0 +1,75 @@
+tokenizer_run_name: BPE
+
+d_model: 512
+n_gqa_groups: 4
+n_heads: 4
+d_queries: 128
+d_values: 128
+d_inner: 2048
+use_moe: false
+n_experts: 0
+moe_top_k: 0
+moe_diversity_loss_coefficient: 0.0
+moe_diversity_inclusion_epoch: 0
+n_decoder_layers: 24
+dropout: 0.1
+
+maxlen: 4096
+train_dataset: bigcode/the-stack-dedup
+tie_embeddings: true
+
+init_weights_from: glorot_uniform
+init_weights_gain: 1.0
+use_admin: false
+
+positional_encoding_type: rotary
+positional_encoding_dim: 64
+learnable_positional_encoding: false
+
+decoder_param_sharing_type: cycle-rev
+m_decoder_independent_layers: 12
+activation_function: swiglu
+latent_repr_type: none
+
+batch_size: 4
+n_steps: 100000
+warmup_steps: 8000
+beta1: 0.9
+beta2: 0.98
+epsilon: 1.e-9
+label_smoothing: 0.1
+clip_grad_norm: 0.0
+
+prune_mode: none
+prune_type: all
+prune_structured: false
+prune_heads_amount: 0.0
+prunt_heads_norm: 2
+prune_ffn_amount: 0.0
+prune_ffn_norm: 2
+n_prune_retrains: 2
+prune_retrain_n_steps: 10000
+prune_retrain_warmup_steps: 800
+
+distillation_teacher_run_name:
+
+train_vae: false
+latent_size: 512
+latent_seq_len: 16
+kl_loss_coefficient: 1.0
+vae_tie_embeddings: false
+
+start_epoch: 0
+print_frequency: 20
+device: cuda
+save_initial_checkpoint: false
+cudnn_benchmark: false
+detect_nans: false
+
+torch_compile_model: false
+dynamo_cache_size_limit: 16
+
+early_stop: false
+early_stop_patience: 3
+early_stop_min_delta: 0.0
+early_stop_num_latest_checkpoints_to_avg: 3

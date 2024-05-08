@@ -1,5 +1,5 @@
 from utils import *
-from trainer.llm_trainer import LLMTrainer
+from llm.trainer.llm_trainer import LLMTrainer
 
 def train():
     args, unk = get_args()

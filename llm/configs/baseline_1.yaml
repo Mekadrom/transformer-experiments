@@ -1,0 +1,4 @@
+d_inner: 2048
+
+positional_encoding_type: sinusoidal
+activation_function: relu

@@ -1,10 +1,14 @@
 from collections import OrderedDict
+from datasets import load_dataset
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
+from llm.model_provider import LLMTransformerModelProvider
 from modules import swiglu
+from modules.transformer import Decoder, Transformer
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from translation.dataloader import SequenceLoader
-from translation.model_provider import TransformerModelProvider
+from translation.model_provider import TranslationTransformerModelProvider
 
 import argparse
 import codecs
@@ -19,6 +23,38 @@ import torch.nn.functional as F
 import torch.nn.utils.prune as prune
 import yaml
 import youtokentome
+
+def init_transformer_weights(args, model, tie_embeddings=True):
+    # Glorot uniform initialization with a gain of self.args.init_weights_gain
+    for p in model.parameters():
+        # Glorot initialization needs at least two dimensions on the tensor
+        if p.dim() > 1:
+            if args.init_weights_from in ['glorot_uniform', 'xavier_uniform']:
+                nn.init.xavier_uniform_(p, gain=args.init_weights_gain)
+            elif args.init_weights_from in ['glorot_normal', 'xavier_normal']:
+                nn.init.xavier_normal_(p, gain=args.init_weights_gain)
+            elif args.init_weights_from == 'kaiming_uniform':
+                nn.init.kaiming_uniform_(p)
+            elif args.init_weights_from == 'kaiming_normal':
+                nn.init.kaiming_normal_(p)
+            elif args.init_weights_from == 'orthogonal':
+                nn.init.orthogonal_(p)
+            else:
+                raise Exception(f"Unknown weight initialization method: {args.init_weights_from}")
+
+    # Share weights between the embedding layers and the logit layer
+    nn.init.normal_(model.encoder.embedding.weight, mean=0., std=args.d_model**-0.5)
+
+    if isinstance(model, Transformer):
+        model.decoder.embedding.weight = model.encoder.embedding.weight
+
+        if tie_embeddings:
+            model.decoder.classifier.weight = model.decoder.embedding.weight
+    elif isinstance(model, Decoder):
+        if tie_embeddings:
+            model.classifier.weight = model.embedding.weight
+
+    print("Model initialized.")
 
 def get_lr(step, d_model, warmup_steps):
     """
@@ -95,9 +131,9 @@ def load_translation_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tg
             print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
 
         if vae_model:
-            model = TransformerModelProvider().provide_vae_transformer(args, src_bpe_model.vocab_size())
+            model = TranslationTransformerModelProvider().provide_vae_transformer(args, src_bpe_model.vocab_size())
         else:
-            model = TransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+            model = TranslationTransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
 
         model.load_state_dict(checkpoint['model'].state_dict())
 
@@ -108,9 +144,32 @@ def load_translation_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tg
     else:
         print("Starting from scratch...")
         if vae_model:
-            model = TransformerModelProvider().provide_vae_transformer(args, src_bpe_model.vocab_size())
+            model = TranslationTransformerModelProvider().provide_vae_transformer(args, src_bpe_model.vocab_size())
         else:
-            model = TransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+            model = TranslationTransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+
+        optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
+
+    return model, optimizer
+
+def load_llm_checkpoint_or_generate_new(args, run_dir, bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar'):
+    if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
+        checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
+        if hasattr(args, 'start_epoch') and args.start_epoch == 0:
+            args.start_epoch = checkpoint['epoch'] + 1
+            print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
+
+        model = LLMTransformerModelProvider().provide_transformer(args, bpe_model.vocab_size(), tie_embeddings=args.tie_embeddings)
+
+        model.load_state_dict(checkpoint['model'].state_dict())
+
+        if 'optimizer' in checkpoint:
+            optimizer = checkpoint['optimizer']
+        else:
+            optimizer = None
+    else:
+        print("Starting from scratch...")
+        model = LLMTransformerModelProvider().provide_transformer(args, bpe_model.vocab_size(), tie_embeddings=args.tie_embeddings)
 
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
@@ -137,7 +196,7 @@ def print_model(model):
 
     print(f'The model has {total_params:,} trainable parameters')
 
-def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, vae_model=False):
+def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, vae_model=False):
     target_suffix = 'src' if vae_model else 'tgt'
 
     print('Loading training data SequenceLoader...')
@@ -172,6 +231,41 @@ def load_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, vae_model=
         split="test",
         tokens_in_batch=tokens_in_batch
     )
+    return train_loader, val_loader, test_loader
+
+def load_llm_dataset(dataset_name, splits=('train', 'validate', 'test')):
+    print('Loading training data...')
+    if 'train' in splits:
+        train_dataset = load_dataset(dataset_name, split="train")
+    else:
+        train_dataset = None
+    print('Lazy loading validation data...')
+    if 'validate' in splits:
+        val_dataset = load_dataset(dataset_name, streaming=True, split="validate")
+    else:
+        val_dataset = None
+    print('Lazy loading test data...')
+    if 'test' in splits:
+        test_dataset = load_dataset(dataset_name, streaming=True, split="test")
+    else:
+        test_dataset = None
+    return train_dataset, val_dataset, test_dataset
+
+def load_llm_data(dataset_name, tokenizer, max_length, batch_size=4):
+    train_dataset, val_dataset, test_dataset = load_llm_dataset(dataset_name)
+
+    def tokenize(example):
+        encoded = tokenizer.encode(example["content"], output_type=youtokentome.OutputType.ID, bos=True, eos=True)
+        return {"input_ids": encoded[:max_length] if len(encoded) > max_length else encoded + [0] * (max_length - len(encoded))}
+
+    train_dataset = train_dataset.map(tokenize, batched=False, remove_columns=["content"])
+    val_dataset = val_dataset.map(tokenize, batched=False, remove_columns=["content"])
+    test_dataset = test_dataset.map(tokenize, batched=False, remove_columns=["content"])
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
     return train_loader, val_loader, test_loader
 
 def save_checkpoint(epoch, model, optimizer, prefix=''):
@@ -579,7 +673,7 @@ class YamlDict(dict):
 
 def load_yaml(file_path, ovr_args):
     file_path_dir = os.path.dirname(file_path)
-    with open(os.path.join(file_path_dir, 'defaults.yaml'), 'r') as default_config:
+    with open(os.path.join(file_path_dir, 'default.yaml'), 'r') as default_config:
         with open(file_path, 'r') as f:
             y = yaml.safe_load(default_config)
             y.update(yaml.safe_load(f))
@@ -609,7 +703,8 @@ def get_args():
         print("it is not recommended to not have any multi-head attention layers")
         exit(1)
 
-    args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
+    if hasattr(args, 'tokens_in_batch'):
+        args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
     args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))
 
     torch.set_printoptions(profile='full')
