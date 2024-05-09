@@ -183,13 +183,17 @@ class Encoder(nn.Module):
         return encoder_sequences, (t_mu, t_logvar), (q_mus, q_logvars), (k_mus, k_logvars), (v_mus, v_logvars), gating_variances
 
 class DecoderLayer(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, use_cross_attn=True):
         super(DecoderLayer, self).__init__()
 
         self.args = args
 
         self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True)
-        self.cross_attn = MultiHeadAttention(args, self_attn=False, in_decoder=True)
+
+        if use_cross_attn:
+            self.cross_attn = MultiHeadAttention(args, self_attn=False, in_decoder=True)
+        else:
+            self.cross_attn = None
 
         if args.use_admin:
             self.self_attn_residual = admin_torch.as_module(args.n_layers)
@@ -210,8 +214,11 @@ class DecoderLayer(nn.Module):
         self_attn, _, s_q_mu, s_q_logvar, s_k_mu, s_k_logvar, s_v_mu, s_v_logvar = self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, decoder_sequence_lengths, tgt_key_padding_mask, attn_mask)
         decoder_sequences = self.self_attn_residual(decoder_sequences, self_attn)
 
-        cross_attn, _, c_q_mu, c_q_logvar, c_k_mu, c_k_logvar, c_v_mu, c_v_logvar = self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask)
-        decoder_sequences = self.cross_attn_residual(decoder_sequences, cross_attn)
+        if self.cross_attn is not None:
+            cross_attn, _, c_q_mu, c_q_logvar, c_k_mu, c_k_logvar, c_v_mu, c_v_logvar = self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask)
+            decoder_sequences = self.cross_attn_residual(decoder_sequences, cross_attn)
+        else:
+            c_q_mu, c_q_logvar, c_k_mu, c_k_logvar, c_v_mu, c_v_logvar = None, None, None, None, None, None
 
         fcn, gating_variances = self.fcn(decoder_sequences)
         
@@ -220,10 +227,11 @@ class DecoderLayer(nn.Module):
         return decoder_sequences, s_q_mu, s_q_logvar, s_k_mu, s_k_logvar, s_v_mu, s_v_logvar, c_q_mu, c_q_logvar, c_k_mu, c_k_logvar, c_v_mu, c_v_logvar, gating_variances
 
 class Decoder(nn.Module):
-    def __init__(self, args, vocab_size):
+    def __init__(self, args, vocab_size, use_cross_attn=True):
         super(Decoder, self).__init__()
 
         self.args = args
+        self.use_cross_attn = use_cross_attn
 
         self.vae_t = 't' in args.latent_repr_type
 
@@ -240,7 +248,7 @@ class Decoder(nn.Module):
 
     def make_decoder_layers(self, n_layers, param_sharing_type, m_independent_layers):
         def new_decoder_layer():
-            return DecoderLayer(self.args)
+            return DecoderLayer(self.args, use_cross_attn=self.use_cross_attn)
         
         layers = []
         for i in range(n_layers):

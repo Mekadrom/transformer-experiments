@@ -76,16 +76,6 @@ class BaseTrainer:
         if args.save_initial_checkpoint:
             utils.save_checkpoint(-1, self.model, self.optimizer, f"runs/{args.run_name}/")
 
-        if args.start_epoch == 0:
-            print("Visualizing attention weights before training...")
-            # get attention weight visualization before any updates are made to the model
-            with torch.no_grad():
-                self.model.eval()
-                if self.args.train_vae:
-                    self.viz_model(0, self.model, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
-                else:
-                    self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
-
         self.train_loader, self.val_loader, self.test_loader = self.load_data()
 
         self.steps = 0

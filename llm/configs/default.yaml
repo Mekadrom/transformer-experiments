@@ -1,20 +1,20 @@
 tokenizer_run_name: BPE
 
-d_model: 512
-n_gqa_groups: 4
-n_heads: 4
+d_model: 6144
+n_gqa_groups: 6
+n_heads: 8
 d_queries: 128
 d_values: 128
-d_inner: 2048
+d_inner: 24576
 use_moe: false
 n_experts: 0
 moe_top_k: 0
 moe_diversity_loss_coefficient: 0.0
 moe_diversity_inclusion_epoch: 0
-n_decoder_layers: 24
-dropout: 0.1
+n_decoder_layers: 64
+dropout: 0.2
 
-maxlen: 4096
+maxlen: 8192
 train_dataset: bigcode/the-stack-dedup
 tie_embeddings: true
 

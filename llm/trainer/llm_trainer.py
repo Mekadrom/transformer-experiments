@@ -11,9 +11,16 @@ import utils
 class LLMTrainer(base_trainer.BaseTrainer):
     def __init__(self, args):
         super(LLMTrainer, self).__init__(args, 'llm')
+        
+        if args.start_epoch == 0:
+            print("Visualizing attention weights before training...")
+            # get attention weight visualization before any updates are made to the model
+            with torch.no_grad():
+                self.model.eval()
+                self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become ", "Anyone who retains the ability to recognise beauty will never become old")
 
     def load_model_and_optimizer(self):
-        return utils.load_llm_checkpoint_or_generate_new(self.args, self.run_dir, bpe_model=self.src_bpe_model)
+        return utils.load_llm_checkpoint_or_generate_new(self.args, self.run_dir, self.src_bpe_model.vocab_size())
 
     def get_criteria(self):
         return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing).to(self.device)
@@ -121,7 +128,7 @@ class LLMTrainer(base_trainer.BaseTrainer):
             self.summary_writer.add_scalar('Validation Loss', losses.avg, self.steps)
             print("\nValidation loss: %.3f\n\n" % losses.avg)
 
-            self.viz_model(self.steps, model, "Anyone who retains the ability to recognise beauty will never become", "Anyone who retains the ability to recognise beauty will never become old")
+            self.viz_model(self.steps, model, "Anyone who retains the ability to recognise beauty will never become ", "Anyone who retains the ability to recognise beauty will never become old")
 
             return losses.avg
         
@@ -146,21 +153,21 @@ class LLMTrainer(base_trainer.BaseTrainer):
 
         return src
 
-    def viz_model(self, step, model, src, tgt=None):
+    def viz_model(self, step, model, src, tgt):
         input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device) # (1, input_sequence_length)
         input_tokens = [self.src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
         input_sequence_length = torch.LongTensor([input_sequence.size(1)]).unsqueeze(0).to(self.device) # (1)
 
         src_key_padding_mask = input_sequence == 0 # (N, pad_length)
 
-        target_sequence, _, _ = model.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
-        target_sequence = model.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
+        input_sequence, _, _ = model.apply_embedding_transformation(input_sequence) # (N, pad_length, d_model)
+        input_sequence = model.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
-        ones = torch.ones(target_sequence.size(1), target_sequence.size(1)).to(target_sequence.device)
+        ones = torch.ones(input_sequence.size(1), input_sequence.size(1)).to(input_sequence.device)
         attn_mask = torch.triu(ones, diagonal=1).bool()
 
         for d, decoder_layer in enumerate(model.decoder_layers):
-            target_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, input_sequence, src_key_padding_mask, attn_mask) # (N, pad_length, d_model)
+            input_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence, src_key_padding_mask, attn_mask) # (N, pad_length, d_model)
             
             attention_weights = attention_weights.cpu().detach().contiguous()
 
@@ -169,7 +176,7 @@ class LLMTrainer(base_trainer.BaseTrainer):
                 image_data = self.viz_attn_weights('Decoder-Self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, input_tokens)
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask) # (N, pad_length, d_model)
+            input_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.cross_attn(input_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask) # (N, pad_length, d_model)
 
             attention_weights = attention_weights.cpu().detach().contiguous()
 
@@ -178,4 +185,4 @@ class LLMTrainer(base_trainer.BaseTrainer):
                 image_data = self.viz_attn_weights('Decoder-Cross', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, input_tokens)
                 self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-            target_sequence, _ = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
+            input_sequence, _ = decoder_layer.fcn(input_sequence) # (N, pad_length, d_model)

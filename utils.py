@@ -43,9 +43,9 @@ def init_transformer_weights(args, model, tie_embeddings=True):
                 raise Exception(f"Unknown weight initialization method: {args.init_weights_from}")
 
     # Share weights between the embedding layers and the logit layer
-    nn.init.normal_(model.encoder.embedding.weight, mean=0., std=args.d_model**-0.5)
 
     if isinstance(model, Transformer):
+        nn.init.normal_(model.encoder.embedding.weight, mean=0., std=args.d_model**-0.5)
         model.decoder.embedding.weight = model.encoder.embedding.weight
 
         if tie_embeddings:
@@ -121,7 +121,7 @@ def get_positional_encoding(args):
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
 
-def load_translation_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tgt_bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar', vae_model=False):
+def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, tgt_vocab_size, tie_embeddings, checkpoint_model_name='transformer_checkpoint.pth.tar', vae_model=False):
     print('Initializing model...')
 
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
@@ -131,9 +131,9 @@ def load_translation_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tg
             print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
 
         if vae_model:
-            model = TranslationTransformerModelProvider().provide_vae_transformer(args, src_bpe_model.vocab_size())
+            model = TranslationTransformerModelProvider().provide_vae_transformer(args, src_vocab_size)
         else:
-            model = TranslationTransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+            model = TranslationTransformerModelProvider().provide_transformer(args, src_vocab_size, tgt_vocab_size, tie_embeddings=tie_embeddings)
 
         model.load_state_dict(checkpoint['model'].state_dict())
 
@@ -144,22 +144,22 @@ def load_translation_checkpoint_or_generate_new(args, run_dir, src_bpe_model, tg
     else:
         print("Starting from scratch...")
         if vae_model:
-            model = TranslationTransformerModelProvider().provide_vae_transformer(args, src_bpe_model.vocab_size())
+            model = TranslationTransformerModelProvider().provide_vae_transformer(args, src_vocab_size)
         else:
-            model = TranslationTransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+            model = TranslationTransformerModelProvider().provide_transformer(args, src_vocab_size, tgt_vocab_size, tie_embeddings=tie_embeddings)
 
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
     return model, optimizer
 
-def load_llm_checkpoint_or_generate_new(args, run_dir, bpe_model, checkpoint_model_name='transformer_checkpoint.pth.tar'):
+def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_model_name='transformer_checkpoint.pth.tar'):
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
         checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
         if hasattr(args, 'start_epoch') and args.start_epoch == 0:
             args.start_epoch = checkpoint['epoch'] + 1
             print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
 
-        model = LLMTransformerModelProvider().provide_transformer(args, bpe_model.vocab_size(), tie_embeddings=args.tie_embeddings)
+        model = LLMTransformerModelProvider().provide_transformer(args, vocab_size, tie_embeddings=args.tie_embeddings)
 
         model.load_state_dict(checkpoint['model'].state_dict())
 
@@ -169,7 +169,7 @@ def load_llm_checkpoint_or_generate_new(args, run_dir, bpe_model, checkpoint_mod
             optimizer = None
     else:
         print("Starting from scratch...")
-        model = LLMTransformerModelProvider().provide_transformer(args, bpe_model.vocab_size(), tie_embeddings=args.tie_embeddings)
+        model = LLMTransformerModelProvider().provide_transformer(args, vocab_size, tie_embeddings=args.tie_embeddings)
 
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
