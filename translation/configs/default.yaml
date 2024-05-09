@@ -12,6 +12,8 @@ moe_diversity_inclusion_epoch: 0
 n_encoder_layers: 6
 n_decoder_layers: 6
 dropout: 0.1
+norm_type: layer
+norm_eps: 0.00001
 
 maxlen: 150
 

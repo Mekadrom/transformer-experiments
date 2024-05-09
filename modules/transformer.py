@@ -11,10 +11,10 @@ import torch.nn as nn
 import utils
 
 class EncoderLayer(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, norm=nn.LayerNorm):
         super(EncoderLayer, self).__init__()
 
-        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=False)
+        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=False, norm=norm)
         # self.lite_conv_self_attn = LiteConv(args, self_attn=True, in_decoder=False)
 
         if args.use_admin:
@@ -24,7 +24,7 @@ class EncoderLayer(nn.Module):
             self.self_attn_residual = Sum()
             self.fcn_residual = Sum()
 
-        self.fcn = PositionWiseFCNetwork(args)
+        self.fcn = PositionWiseFCNetwork(args, norm=norm)
 
     def forward(self, encoder_sequences, encoder_sequence_lengths, key_padding_mask):
         self_attn, _, q_mu, q_logvar, k_mu, k_logvar, v_mu, v_logvar = self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, encoder_sequence_lengths, key_padding_mask)
@@ -38,7 +38,7 @@ class EncoderLayer(nn.Module):
         return encoder_sequences, q_mu, q_logvar, k_mu, k_logvar, v_mu, v_logvar, gating_variances
 
 class Encoder(nn.Module):
-    def __init__(self, args, vocab_size):
+    def __init__(self, args, vocab_size, norm=nn.LayerNorm):
         super(Encoder, self).__init__()
 
         self.args = args
@@ -49,15 +49,15 @@ class Encoder(nn.Module):
 
         self.embedding = nn.Embedding(vocab_size, self.d_model)
         self.apply_dropout = nn.Dropout(args.dropout)
-        self.layer_norm = nn.LayerNorm(args.d_model)
-        self.encoder_layers = self.make_encoder_layers(args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers)
+        self.norm = norm(args.d_model, args.norm_eps)
+        self.encoder_layers = self.make_encoder_layers(args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers, norm=norm)
 
         if args.positional_encoding_type != 'rotary':
             self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args))
 
-    def make_encoder_layers(self, n_layers, param_sharing_type, m_independent_layers):
+    def make_encoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm):
         def new_encoder_layer():
-            return EncoderLayer(self.args)
+            return EncoderLayer(self.args, norm=norm)
 
         layers = []
         for i in range(n_layers):
@@ -171,7 +171,7 @@ class Encoder(nn.Module):
                 v_logvars.append(v_logvar)
 
         # post-LN
-        encoder_sequences = self.layer_norm(encoder_sequences) # (N, pad_length, d_model)
+        encoder_sequences = self.norm(encoder_sequences) # (N, pad_length, d_model)
 
         q_mus = torch.stack(q_mus, dim=0) if len(q_mus) > 0 else None
         q_logvars = torch.stack(q_logvars, dim=0) if len(q_logvars) > 0 else None
@@ -183,15 +183,15 @@ class Encoder(nn.Module):
         return encoder_sequences, (t_mu, t_logvar), (q_mus, q_logvars), (k_mus, k_logvars), (v_mus, v_logvars), gating_variances
 
 class DecoderLayer(nn.Module):
-    def __init__(self, args, use_cross_attn=True):
+    def __init__(self, args, use_cross_attn=True, norm=nn.LayerNorm):
         super(DecoderLayer, self).__init__()
 
         self.args = args
 
-        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True)
+        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True, norm=norm)
 
         if use_cross_attn:
-            self.cross_attn = MultiHeadAttention(args, self_attn=False, in_decoder=True)
+            self.cross_attn = MultiHeadAttention(args, self_attn=False, in_decoder=True, norm=norm)
         else:
             self.cross_attn = None
 
@@ -204,7 +204,7 @@ class DecoderLayer(nn.Module):
             self.cross_attn_residual = Sum()
             self.fcn_residual = Sum()
 
-        self.fcn = PositionWiseFCNetwork(args)
+        self.fcn = PositionWiseFCNetwork(args, norm=norm)
 
     def forward(self, decoder_sequences, decoder_sequence_lengths, encoder_sequences, encoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask=None):
         if attn_mask is None:
@@ -227,7 +227,7 @@ class DecoderLayer(nn.Module):
         return decoder_sequences, s_q_mu, s_q_logvar, s_k_mu, s_k_logvar, s_v_mu, s_v_logvar, c_q_mu, c_q_logvar, c_k_mu, c_k_logvar, c_v_mu, c_v_logvar, gating_variances
 
 class Decoder(nn.Module):
-    def __init__(self, args, vocab_size, use_cross_attn=True):
+    def __init__(self, args, vocab_size, use_cross_attn=True, norm=nn.LayerNorm):
         super(Decoder, self).__init__()
 
         self.args = args
@@ -239,16 +239,16 @@ class Decoder(nn.Module):
 
         self.embedding = nn.Embedding(vocab_size, self.d_model)
         self.apply_dropout = nn.Dropout(args.dropout)
-        self.layer_norm = nn.LayerNorm(args.d_model)
-        self.decoder_layers = self.make_decoder_layers(args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers)
+        self.layer_norm = norm(args.d_model, args.norm_eps)
+        self.decoder_layers = self.make_decoder_layers(args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers, norm=norm)
         self.classifier = nn.Linear(args.d_model, vocab_size)
 
         if args.positional_encoding_type != 'rotary':
             self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args))
 
-    def make_decoder_layers(self, n_layers, param_sharing_type, m_independent_layers):
+    def make_decoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm):
         def new_decoder_layer():
-            return DecoderLayer(self.args, use_cross_attn=self.use_cross_attn)
+            return DecoderLayer(self.args, use_cross_attn=self.use_cross_attn, norm=norm)
         
         layers = []
         for i in range(n_layers):
@@ -401,12 +401,12 @@ class Decoder(nn.Module):
         return decoder_sequences, (t_mu, t_logvar), (s_q_mus, s_q_logvars), (s_k_mus, s_k_logvars), (s_v_mus, s_v_logvars), (c_q_mus, c_q_logvars), (c_k_mus, c_k_logvars), (c_v_mus, c_v_logvars), gating_variances
 
 class Transformer(nn.Module):
-    def __init__(self, args, src_vocab_size, tgt_vocab_size):
+    def __init__(self, args, src_vocab_size, tgt_vocab_size, norm=nn.LayerNorm):
         super(Transformer, self).__init__()
         self.args = args
 
-        self.encoder = Encoder(args, src_vocab_size)
-        self.decoder = Decoder(args, tgt_vocab_size)
+        self.encoder = Encoder(args, src_vocab_size, norm=norm)
+        self.decoder = Decoder(args, tgt_vocab_size, norm=norm)
 
     def forward(self, encoder_sequences, decoder_sequences, encoder_sequence_lengths, decoder_sequence_lengths, src_key_padding_mask, tgt_key_padding_mask, attn_mask=None):
         encoder_sequences, e_t_vars, e_q_vars, e_k_vars, e_v_vars, encoder_gating_variances = self.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask) # (N, encoder_sequence_pad_length, d_model)

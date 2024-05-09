@@ -13,6 +13,8 @@ moe_diversity_loss_coefficient: 0.0
 moe_diversity_inclusion_epoch: 0
 n_decoder_layers: 64
 dropout: 0.2
+norm_type: layer
+norm_eps: 0.00001
 
 maxlen: 8192
 train_dataset: bigcode/the-stack-dedup

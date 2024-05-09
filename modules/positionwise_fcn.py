@@ -49,12 +49,12 @@ class SparseMoE(nn.Module):
         return output.view(N, P, -1), gating_variances
     
 class PositionWiseFCNetwork(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, norm=nn.LayerNorm):
         super(PositionWiseFCNetwork, self).__init__()
 
         self.args = args
 
-        self.layer_norm = nn.LayerNorm(args.d_model)
+        self.layer_norm = norm(args.d_model, args.norm_eps)
         self.activation = utils.create_activation_function(args.d_inner, args.activation_function)
         self.dropout = nn.Dropout(args.dropout)
         

@@ -6,7 +6,7 @@ import torch.nn as nn
 import utils
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, args, self_attn, in_decoder=False):
+    def __init__(self, args, self_attn, in_decoder=False, norm=nn.LayerNorm):
         super(MultiHeadAttention, self).__init__()
 
         self.args = args
@@ -43,7 +43,7 @@ class MultiHeadAttention(nn.Module):
 
         self.softmax = nn.Softmax(dim=-1)
 
-        self.layer_norm = nn.LayerNorm(args.d_model)
+        self.layer_norm = norm(args.d_model, args.norm_eps)
 
         self.dropout = nn.Dropout(args.dropout)
 
