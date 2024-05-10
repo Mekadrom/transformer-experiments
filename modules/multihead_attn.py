@@ -3,6 +3,7 @@ from modules import reparameterize
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import utils
 
 class MultiHeadAttention(nn.Module):
@@ -43,21 +44,58 @@ class MultiHeadAttention(nn.Module):
 
         self.softmax = nn.Softmax(dim=-1)
 
-        self.layer_norm = norm(args.d_model, args.norm_eps)
+        self.norm = norm(args.d_model, args.norm_eps)
 
         self.dropout = nn.Dropout(args.dropout)
 
-    def forward(self, query_sequences, key_sequences, value_sequences, key_value_sequence_lengths, key_padding_mask=None, attn_mask=None):
-        query_sequences = self.layer_norm(query_sequences)
+        if 'heads_activation' in args:
+            self.heads_activation = utils.create_activation_function(args.d_model, args.heads_activation)
+        else:
+            self.heads_activation = None
+
+        if args.use_infinite_attention:
+            assert args.maxlen % args.infinite_attention_n_segments == 0, "maxlen must be divisible by infinite_attention_n_segments"
+
+            self.beta = nn.Parameter(torch.ones((1,)))
+            self.elu = nn.ELU()
+            self.register_buffer('causal_mask', torch.tril(torch.ones((args.maxlen // args.infinite_attention_n_segments) + 1, (args.maxlen // args.infinite_attention_n_segments) + 1).to(args.device)))
+        else:
+            self.beta = None
+            self.elu = None
+            self.register_buffer('causal_mask', torch.tril(torch.ones(args.maxlen + 1, args.maxlen + 1).to(args.device)))
+
+    def mask_attention(self, attention_weights, key_padding_mask):
+        # mask away tokens by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
+
+        if key_padding_mask is not None:
+            assert key_padding_mask.shape[0] == attention_weights.shape[0], f"batch dimension for padding is wrong: {key_padding_mask.shape[0]} != {attention_weights.shape[0]}. overall shape: {key_padding_mask.shape} != {attention_weights.shape}"
+            assert key_padding_mask.shape[1] == attention_weights.shape[3], f"padding mask length is wrong: {key_padding_mask.shape[1]} != {attention_weights.shape[3]}. overall shape: {key_padding_mask.shape} != {attention_weights.shape}"
+
+            key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1)
+
+            attention_weights = attention_weights.masked_fill_(key_padding_mask, -float('inf'))
+
+        if self.self_attn:
+            attention_weights = attention_weights.masked_fill_(self.causal_mask[:attention_weights.shape[-2], :attention_weights.shape[-1]] == 0, -float('inf'))
+
+        return attention_weights
+
+    def forward(self, query_sequences, key_sequences, value_sequences, key_padding_mask=None):
+        query_sequences = self.norm(query_sequences)
 
         # if this isn't self-attention, they will already have been normed in the last layer of the Encoder (from whence they came)
         if self.self_attn:
-            key_sequences = self.layer_norm(key_sequences)
-            value_sequences = self.layer_norm(value_sequences)
+            key_sequences = self.norm(key_sequences)
+            value_sequences = self.norm(value_sequences)
 
         q_heads = self.cast_queries(query_sequences)
         k_heads = self.cast_keys(key_sequences)
         v_heads = self.cast_values(value_sequences)
+
+        if self.heads_activation is not None:
+            q_heads = self.heads_activation(q_heads)
+            k_heads = self.heads_activation(k_heads)
+            v_heads = self.heads_activation(v_heads)
 
         if self.vae_q:
             q_mu, q_logvar = torch.chunk(q_heads, 2, dim=-1)
@@ -94,50 +132,77 @@ class MultiHeadAttention(nn.Module):
             q_heads = self.rotary_embedding.rotate_queries_or_keys(q_heads, seq_dim=-2)
             k_heads = self.rotary_embedding.rotate_queries_or_keys(k_heads.unsqueeze(0), seq_dim=-2).squeeze(0) # adds a singleton dimension for the rotation operation and then removes it for the torch compiler
 
-        # generate attention weights by taking the dot product of queries and keys
-        attention_weights = torch.einsum('...ghnd,...hsd->...hns', q_heads, k_heads) # (N, n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
-        attention_weights = (1.0 / (self.d_queries ** 0.5)) * attention_weights
-        attention_weights = 30.0 * torch.tanh(attention_weights / 30.0)
+        attention_weights_for_visualization = []
+        if self.args.use_infinite_attention:
+            # infinite attention
+            memory = torch.zeros((self.n_head, self.d_queries, self.d_queries)).to(self.device)
+            z = torch.zeros((self.n_head, self.d_queries, 1)).to(self.device)
 
-        if key_padding_mask is not None:
-            assert key_padding_mask.shape[0] == attention_weights.shape[0], f"batch dimension for padding is wrong: {key_padding_mask.shape[0]} != {attention_weights.shape[0]}. overall shape: {key_padding_mask.shape} != {attention_weights.shape}"
-            assert key_padding_mask.shape[1] == attention_weights.shape[3], f"padding mask length is wrong: {key_padding_mask.shape[1]} != {attention_weights.shape[3]}. overall shape: {key_padding_mask.shape} != {attention_weights.shape}"
+            q_heads = q_heads.view(N, self.n_gqa_groups, self.n_heads, self.args.infinite_attention_n_segments, t // self.args.infinite_attention_n_segments, self.d_queries) # Nghitq
+            k_heads = k_heads.view(N, self.n_heads, self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments, self.d_keys) # NhiTq
+            v_heads = v_heads.view(N, self.n_heads, self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments, self.d_values) # NhiTv
 
-            key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1)
+            output = []
+            for idx in range(self.args.infinite_attention_n_segments):
+                sigma_q = self.elu(q_heads[:, :, :, idx, :, :]) + 1.0
+                sigma_k = self.elu(k_heads[:, :, idx, :, :]) + 1.0
 
-            # print(f"key_padding_mask: {key_padding_mask.shape}, attention_weights: {attention_weights.shape}")
+                A_mem = (sigma_q @ memory) / ((sigma_q @ z) + (1e-6))
 
-            # mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
-            # print(f"key_padding_mask: {key_padding_mask}")
-            attention_weights = attention_weights.masked_fill(key_padding_mask, -float('inf'))
-            # print(f"attention_weights: {attention_weights == -float('inf')}")
+                attention_weights = q_heads[:, :, idx, :, :] @ k_heads[:, :, idx, :, :].transpose(-2, -1)
 
-        if self.self_attn and self.in_decoder:
-            assert attn_mask is not None, "attn_mask must be provided for decoder self-attention"
+                # scaled attention
+                attention_weights = (1.0 / (self.d_queries ** 0.5)) * attention_weights
+                # attention_weights = 30.0 * torch.tanh(attention_weights / 30.0) # grok version of scaled attention
 
-        if attn_mask is not None:
-            assert attn_mask.shape[0] == attention_weights.shape[2], f"attn_mask length is wrong: {attn_mask.shape[0]} != {attention_weights.shape[2]}. overall shape: {attn_mask.shape} != {attention_weights.shape}"
-            assert attn_mask.shape[1] == attention_weights.shape[3], f"attn_mask length is wrong: {attn_mask.shape[1]} != {attention_weights.shape[3]}. overall shape: {attn_mask.shape} != {attention_weights.shape}"
+                attention_weights = self.mask_attention(attention_weights, key_padding_mask)
 
-            attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)
+                attention_weights = self.softmax(attention_weights)
 
-            # mask away by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
-            attention_weights = attention_weights.masked_fill(attn_mask, -float('inf'))
+                attention_weights_for_visualization.append(attention_weights.clone().detach().contiguous().view(N, self.n_gqa_groups, self.n_heads, t // self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments))
 
-        attention_weights = self.softmax(attention_weights)
+                # not included in paper for some reason? experiment
+                # attention_weights = self.dropout(attention_weights)
+                attention_weights = attention_weights @ v_heads[:, :, idx, :, :]
 
-        # for visualization, switch the kv_heads and q_per_kv_heads dimensions
-        attention_weights_for_visualization = attention_weights.clone().detach() # (N, n_heads, query_sequence_pad_length, key_value_sequence_pad_length)
+                attention_weights = (F.sigmoid(self.beta) * A_mem) + ((1 - F.sigmoid(self.beta)) * attention_weights)
 
-        attention_weights = self.dropout(attention_weights)
+                if self.infinite_attention_update == 'linear':
+                    memory = memory + (sigma_k.transpose(-2, -1) @ v_heads[:, :, idx, :, :])
+                else:
+                    delta = (sigma_k @ memory) / ((sigma_k @ z) + 1e-6)
+                    memory = memory + (sigma_k.transpose(-2, -1) @ (v_heads[:, :, idx, :, :] - delta))
 
-        # Calculate sequences as the weighted sums of values based on these softmax weights
-        sequences = torch.einsum('...hns,...hsv->...hnv', attention_weights, v_heads) # (N, n_heads, query_sequence_pad_length, d_values)
+                z = z + sigma_k.sum(dim=-2, keepdim=True)
 
-        sequences = sequences.permute(0, 2, 1, 3) # (N, query_sequence_pad_length, n_heads, d_values
+                output.append(attention_weights)
+
+            sequences = torch.concat(output, dim = 2) # NhiTv
+        else:
+            # regular attention
+            # generate attention weights by taking the dot product of queries and keys
+            attention_weights = torch.einsum('...ghtq,...hTq->...htT', q_heads, k_heads)
+
+            # scaled attention
+            attention_weights = (1.0 / (self.d_queries ** 0.5)) * attention_weights
+            attention_weights = 30.0 * torch.tanh(attention_weights / 30.0) # grok version of scaled attention
+
+            attention_weights = self.mask_attention(attention_weights, key_padding_mask)
+
+            attention_weights = self.softmax(attention_weights)
+
+            # for visualization, switch the kv_heads and q_per_kv_heads dimensions
+            attention_weights_for_visualization.append(attention_weights.clone().detach())
+
+            attention_weights = self.dropout(attention_weights)
+
+            # Calculate sequences as the weighted sums of values based on these softmax weights
+            sequences = torch.einsum('...htT,...hTv->...htv', attention_weights, v_heads)
+
+            sequences = sequences.permute(0, 2, 1, 3)
 
         # Concatenate the n_heads subspaces (each with an output of size d_values)
-        sequences = sequences.contiguous().view(N, t, -1) # (N, query_sequence_pad_length, n_q_heads * d_values)
+        sequences = sequences.contiguous().view(N, t, -1)
 
         sequences = self.dropout(sequences)
 

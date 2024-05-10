@@ -49,7 +49,7 @@ class BaseTrainer:
 
         self.src_bpe_model, self.tgt_bpe_model = utils.load_tokenizers(self.bpe_run_dir)
 
-        if args.train_vae:
+        if 'train_vae' in args and args.train_vae:
             self.tgt_bpe_model = self.src_bpe_model
 
         self.model, self.optimizer = self.load_model_and_optimizer()
@@ -105,7 +105,7 @@ class BaseTrainer:
             self.val_loader.create_batches()
             val_loss_avg = self.validate_epoch(self.model)
 
-            utils.save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/{model_name_prefix}")
+            utils.save_checkpoint(epoch, self.model, self.optimizer, prefix=f"{self.run_dir}/{model_name_prefix}")
 
             if self.early_stopping is not None:
                 if self.early_stopping(val_loss_avg):
@@ -145,7 +145,7 @@ class BaseTrainer:
     def viz_attn_weights(self, stack_name, layer_num, n_head, activation_weights, attendee_tokens, attending_tokens):
         fig, ax = plt.subplots(figsize=(10, 10))
         s = sns.heatmap(activation_weights, square=True, annot=True, annot_kws={"fontsize":6}, fmt=".4f", xticklabels=attendee_tokens, yticklabels=attending_tokens, ax=ax)
-        s.set(xlabel="Input Sequence", ylabel="Output Sequence", title=f"{stack_name}-Attn Layer {layer_num} Head {n_head} Weights")
+        s.set(xlabel="Attending Tokens", ylabel="Attended Tokens", title=f"{stack_name}-Attn Layer {layer_num} Head {n_head} Weights")
 
         buf = io.BytesIO()
         plt.savefig(buf, format='png')

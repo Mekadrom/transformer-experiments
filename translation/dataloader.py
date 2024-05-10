@@ -23,7 +23,7 @@ class SequenceLoader(object):
 
         Each batch contains just a single source-target pair, in the same order as in the files from which they were read.
     """
-    def __init__(self, src_bpe_model, tgt_bpe_model, data_folder, source_suffix, target_suffix, split, tokens_in_batch):
+    def __init__(self, src_bpe_model, tgt_bpe_model, data_folder, source_suffix, target_suffix, split, tokens_in_batch, pad_to_length=None):
         """
         :param data_folder: folder containing the source and target language data files
         :param source_suffix: the filename suffix for the source language files
@@ -31,11 +31,12 @@ class SequenceLoader(object):
         :param split: train, or val, or test?
         :param tokens_in_batch: the number of target language tokens in each batch
         """
-        self.tokens_in_batch = tokens_in_batch
         self.source_suffix = source_suffix
         self.target_suffix = target_suffix
-        assert split.lower() in {"train", "val",
-                                 "test"}, "'split' must be one of 'train', 'val', 'test'! (case-insensitive)"
+        self.tokens_in_batch = tokens_in_batch
+        self.pad_to_length = pad_to_length
+
+        assert split.lower() in {"train", "val", "test"}, "'split' must be one of 'train', 'val', 'test'! (case-insensitive)"
         self.split = split.lower()
 
         # Is this for training?
@@ -123,6 +124,10 @@ class SequenceLoader(object):
         # Convert source and target sequences as padded tensors
         source_data = pad_sequence(sequences=[torch.LongTensor(s) for s in source_data], batch_first=True, padding_value=self.src_bpe_model.subword_to_id('<PAD>'))
         target_data = pad_sequence(sequences=[torch.LongTensor(t) for t in target_data], batch_first=True, padding_value=self.tgt_bpe_model.subword_to_id('<PAD>'))
+
+        if self.pad_to_length is not None:
+            source_data = torch.cat([source_data, torch.zeros(source_data.size(0), self.pad_to_length - source_data.size(1), dtype=source_data.dtype)], dim=1)
+            target_data = torch.cat([target_data, torch.zeros(target_data.size(0), self.pad_to_length - target_data.size(1), dtype=target_data.dtype)], dim=1)
 
         # Convert lengths to tensors
         source_lengths = torch.LongTensor(source_lengths)

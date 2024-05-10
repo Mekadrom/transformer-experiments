@@ -134,12 +134,11 @@ class LLMTrainer(base_trainer.BaseTrainer):
         
     def evaluate(self, src, tgt):
         src_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device)
-        src_sequence_length = torch.LongTensor([src_sequence.size(1)]).unsqueeze(0).to(self.device)
         for _ in range(self.args.maxlen - src_sequence.size(1)):
 
             src_key_padding_mask = src_sequence == 0
 
-            predicted_sequences = self.model(src_sequence, src_sequence, src_sequence_length, src_sequence_length, src_key_padding_mask, src_key_padding_mask)[0] # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+            predicted_sequences = self.model(src_sequence, src_sequence, src_key_padding_mask, src_key_padding_mask)[0] # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
             predicted_token = self.src_bpe_model.decode([torch.argmax(predicted_sequences[0, -1]).item()])[0]
 
@@ -149,40 +148,29 @@ class LLMTrainer(base_trainer.BaseTrainer):
             src += predicted_token
 
             src_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device)
-            src_sequence_length = torch.LongTensor([src_sequence.size(1)]).unsqueeze(0).to(self.device)
 
         return src
 
     def viz_model(self, step, model, src, tgt):
         input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device) # (1, input_sequence_length)
         input_tokens = [self.src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
-        input_sequence_length = torch.LongTensor([input_sequence.size(1)]).unsqueeze(0).to(self.device) # (1)
+        # pad input sequence to args.maxlen
+        input_sequence = torch.cat((input_sequence, torch.zeros(1, self.args.maxlen - input_sequence.size(1), dtype=torch.long).to(self.device)), dim=1) # (1, args.maxlen)
 
         src_key_padding_mask = input_sequence == 0 # (N, pad_length)
 
         input_sequence, _, _ = model.apply_embedding_transformation(input_sequence) # (N, pad_length, d_model)
         input_sequence = model.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
-        ones = torch.ones(input_sequence.size(1), input_sequence.size(1)).to(input_sequence.device)
-        attn_mask = torch.triu(ones, diagonal=1).bool()
-
         for d, decoder_layer in enumerate(model.decoder_layers):
-            input_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence, src_key_padding_mask, attn_mask) # (N, pad_length, d_model)
+            input_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.self_attn(input_sequence, input_sequence, input_sequence, input_sequence, src_key_padding_mask) # (N, pad_length, d_model)
             
-            attention_weights = attention_weights.cpu().detach().contiguous()
+            for a, attention_weight_grid in enumerate(attention_weights):
+                attention_weight_grid = attention_weight_grid.cpu().detach().contiguous()
 
-            # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
-            for i in range(attention_weights.size(1)):
-                image_data = self.viz_attn_weights('Decoder-Self', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, input_tokens)
-                self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
-
-            input_sequence, attention_weights, _, _, _, _, _, _ = decoder_layer.cross_attn(input_sequence, input_sequence, input_sequence, input_sequence_length, src_key_padding_mask) # (N, pad_length, d_model)
-
-            attention_weights = attention_weights.cpu().detach().contiguous()
-
-            # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
-            for i in range(attention_weights.size(1)):
-                image_data = self.viz_attn_weights('Decoder-Cross', d, i, attention_weights[:, i, :, :].squeeze(0).numpy(), input_tokens, input_tokens)
-                self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights", plt.imread(image_data), global_step=step, dataformats='HWC')
+                # shape of attention_weights will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
+                for i in range(attention_weight_grid.size(1)):
+                    image_data = self.viz_attn_weights('LLM', d, i, attention_weight_grid[:, i, :, :].transpose(-2, -1).squeeze(0).numpy(), input_tokens, input_tokens)
+                    self.summary_writer.add_image(f"LLM Layer {d} Head {i} Attn Weights for Segment {a}", plt.imread(image_data), global_step=step, dataformats='HWC')
 
             input_sequence, _ = decoder_layer.fcn(input_sequence) # (N, pad_length, d_model)

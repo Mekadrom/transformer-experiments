@@ -196,7 +196,7 @@ def print_model(model):
 
     print(f'The model has {total_params:,} trainable parameters')
 
-def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, vae_model=False):
+def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, pad_to_length=None, vae_model=False):
     target_suffix = 'src' if vae_model else 'tgt'
 
     print('Loading training data SequenceLoader...')
@@ -207,7 +207,8 @@ def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model
         source_suffix="src",
         target_suffix=target_suffix,
         split="train",
-        tokens_in_batch=tokens_in_batch
+        tokens_in_batch=tokens_in_batch,
+        pad_to_length=pad_to_length
     )
 
     print('Loading validation data SequenceLoader...')
@@ -218,7 +219,8 @@ def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model
         source_suffix="src",
         target_suffix=target_suffix,
         split="val",
-        tokens_in_batch=tokens_in_batch
+        tokens_in_batch=tokens_in_batch,
+        pad_to_length=pad_to_length
     )
 
     print('Loading test data SequenceLoader...')
@@ -229,24 +231,25 @@ def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model
         source_suffix="src",
         target_suffix=target_suffix,
         split="test",
-        tokens_in_batch=tokens_in_batch
+        tokens_in_batch=tokens_in_batch,
+        pad_to_length=pad_to_length
     )
     return train_loader, val_loader, test_loader
 
 def load_llm_dataset(dataset_name, splits=('train', 'validate', 'test')):
     print('Loading training data...')
     if 'train' in splits:
-        train_dataset = load_dataset(dataset_name, split="train")
+        train_dataset = load_dataset(dataset_name, num_proc=12, split="train")
     else:
         train_dataset = None
     print('Lazy loading validation data...')
     if 'validate' in splits:
-        val_dataset = load_dataset(dataset_name, streaming=True, split="validate")
+        val_dataset = load_dataset(dataset_name, num_proc=12, streaming=True, split="validate")
     else:
         val_dataset = None
     print('Lazy loading test data...')
     if 'test' in splits:
-        test_dataset = load_dataset(dataset_name, streaming=True, split="test")
+        test_dataset = load_dataset(dataset_name, num_proc=12, streaming=True, split="test")
     else:
         test_dataset = None
     return train_dataset, val_dataset, test_dataset
@@ -256,7 +259,8 @@ def load_llm_data(dataset_name, tokenizer, max_length, batch_size=4):
 
     def tokenize(example):
         encoded = tokenizer.encode(example["content"], output_type=youtokentome.OutputType.ID, bos=True, eos=True)
-        return {"input_ids": encoded[:max_length] if len(encoded) > max_length else encoded + [0] * (max_length - len(encoded))}
+        trunc_pad = encoded[:max_length] if len(encoded) > max_length else encoded + [0] * (max_length - len(encoded))
+        return {"input_ids": trunc_pad}
 
     train_dataset = train_dataset.map(tokenize, batched=False, remove_columns=["content"])
     val_dataset = val_dataset.map(tokenize, batched=False, remove_columns=["content"])
@@ -399,7 +403,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
         src_key_padding_mask = (encoder_sequences == 0).to(device) # (1, source_sequence_length)
         
         # Encode
-        encoder_sequences, (t_mu, t_logvar), (q_mus, q_logvars), (k_mus, k_logvars), (v_mus, v_logvars), gating_variances = model.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask) # (1, source_sequence_length, d_model)
+        encoder_sequences, (t_mu, t_logvar), (q_mus, q_logvars), (k_mus, k_logvars), (v_mus, v_logvars), gating_variances = model.encoder(encoder_sequences, src_key_padding_mask) # (1, source_sequence_length, d_model)
         if args.train_vae:
             # mu and logvar + reparemeterization trick to sample from the latent space, which replaces the encoder's output
             cls_token = encoder_sequences[:, 0, :]
@@ -407,11 +411,9 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
             logvar = model.logvar(cls_token)
 
             encoder_sequences = model.reparameterize(mu, logvar)
-            encoder_sequence_lengths = torch.ones(encoder_sequences.size(0), dtype=torch.long, device=encoder_sequences.device)
 
         # Our hypothesis to begin with is just <BOS>
         hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device) # (1, 1)
-        hypotheses_lengths = torch.LongTensor([hypotheses.size(1)]).to(device).unsqueeze(-1) # (1)
 
         # Tensor to store hypotheses' scores; now it's just 0
         hypotheses_scores = torch.zeros(1).to(device) # (1)
@@ -432,9 +434,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
 
             decoder_sequences, (t_mu, t_logvar), (s_q_mus, s_q_logvars), (s_k_mus, s_k_logvars), (s_v_mus, s_v_logvars), (c_q_mus, c_q_logvars), (c_k_mus, c_k_logvars), (c_v_mus, c_v_logvars), gating_variances = model.decoder(
                 hypotheses,
-                hypotheses_lengths,
                 encoder_sequences.repeat(s, 1, 1),
-                encoder_sequence_lengths.repeat(s).unsqueeze(-1), # (s, step, tgt_vocab_size)
                 src_key_padding_mask.repeat(s, 1), # (s, 1)
                 tgt_key_padding_masks
             )
@@ -473,7 +473,6 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
             # Else, continue with incomplete hypotheses
             hypotheses = top_k_hypotheses[~complete] # (s, step + 1)
             hypotheses_scores = top_k_hypotheses_scores[~complete] # (s)
-            hypotheses_lengths = torch.LongTensor(hypotheses.size(0) * [hypotheses.size(1)]).to(device).unsqueeze(-1) # (s)
 
             # Stop if things have been going on for too long
             if step > args.maxlen:
