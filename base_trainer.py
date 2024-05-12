@@ -110,7 +110,7 @@ class BaseTrainer:
             if self.early_stopping is not None:
                 if self.early_stopping(val_loss_avg):
                     print("Early stopping")
-                    utils.average_checkpoints(self.epochs, self.optimizer, self.run_name, self.args.early_stop_num_latest_checkpoints_to_avg, model_name_prefix='step')
+                    utils.average_checkpoints(self.epochs, self.optimizer, self.run_dir, self.args.early_stop_num_latest_checkpoints_to_avg, model_name_prefix='step')
 
                     print(f"Training complete. Evaluating one last time...")
                     self.val_loader.create_batches()
@@ -121,7 +121,7 @@ class BaseTrainer:
         self.steps = (self.epochs * self.train_loader.n_batches // self.batches_per_step)
 
         print(f"Training complete. Averaging checkpoints...")
-        utils.average_checkpoints(self.epochs, self.optimizer, self.run_name, model_name_prefix='step')
+        utils.average_checkpoints(self.epochs, self.optimizer, self.run_dir, model_name_prefix='step')
 
         print(f"Training complete. Evaluating one last time...")
         self.val_loader.create_batches()

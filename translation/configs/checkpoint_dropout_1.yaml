@@ -22,4 +22,4 @@ n_steps: 300000
 
 early_stop: true
 early_stop_patience: 3
-early_stop_min_delta: 0.01
+early_stop_min_delta: 0.0
