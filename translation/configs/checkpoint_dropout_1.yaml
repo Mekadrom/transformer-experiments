@@ -9,7 +9,7 @@ d_inner: 4096
 n_encoder_layers: 12
 n_decoder_layers: 12
 
-dropout: 0.2
+dropout: 0.3
 
 encoder_param_sharing_type: cycle-rev
 decoder_param_sharing_type: cycle-rev
