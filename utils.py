@@ -116,7 +116,7 @@ def get_positional_encoding(args):
             d_model=args.d_model,
             maxlen=args.maxlen+1,
         ).to(args.device)
-        positional_encoding.requires_grad = args.learnable_positional_encoding
+        positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
     elif args.positional_encoding_type == 'rotary':
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
@@ -177,7 +177,7 @@ def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_mo
 
 def print_model(model):
     print(f"Model structure: \n {model}")
-    print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} total parameters')
+    print(f'The model has {count_parameters(model):,} total parameters')
     print(f'The model has {sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad):,} non-zero total parameters')
 
     def tensor_in(tensor, tensor_list):
@@ -195,6 +195,9 @@ def print_model(model):
             already_counted.append(param)
 
     print(f'The model has {total_params:,} trainable parameters')
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, pad_to_length=None, vae_model=False):
     target_suffix = 'src' if vae_model else 'tgt'
@@ -657,6 +660,8 @@ def create_activation_function(d_in, activation_function_name):
         return nn.LeakyReLU()
     elif activation_function_name == 'swiglu':
         return swiglu.SwiGLU(d_in)
+    elif activation_function_name == 'none':
+        return nn.Identity()
     else:
         raise Exception(f"Unknown activation function {activation_function_name}")
 
@@ -674,7 +679,8 @@ def load_yaml(file_path, ovr_args):
         with open(file_path, 'r') as f:
             y = yaml.safe_load(default_config)
             y.update(yaml.safe_load(f))
-            y.update(ovr_args)
+            if ovr_args is not None:
+                y.update(ovr_args)
             return YamlDict(y)
 
 def get_args():

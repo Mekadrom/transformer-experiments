@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import seaborn as sns
 import torch
+import time
 import utils
 
 class EarlyStopping:
@@ -76,12 +77,6 @@ class BaseTrainer:
         if args.save_initial_checkpoint:
             utils.save_checkpoint(-1, self.model, self.optimizer, f"runs/{args.run_name}/")
 
-        self.train_loader, self.val_loader, self.test_loader = self.load_data()
-
-        self.steps = 0
-        self.start_epoch = args.start_epoch
-        self.epochs = (args.n_steps // (self.train_loader.n_batches // args.batches_per_step)) + 1
-
         self.sacrebleu_epochs = []
         self.target_sequence_transform = lambda source_sequences, source_sequence_lengths, target_sequences, target_sequence_lengths: (target_sequences, target_sequence_lengths)
 
@@ -95,7 +90,14 @@ class BaseTrainer:
         raise NotImplementedError
 
     def train(self, model_name_prefix=''):
+        self.train_loader, self.val_loader, self.test_loader = self.load_data()
+
+        self.steps = 0
+        self.start_epoch = self.args.start_epoch
+        self.epochs = (self.args.n_steps // (self.train_loader.n_batches // self.args.batches_per_step)) + 1
+
         print(f"Training for {self.epochs} epochs...")
+        start = time.time()
         for epoch in range(self.start_epoch, self.epochs):
             self.steps = (epoch * self.train_loader.n_batches // self.batches_per_step)
 
@@ -117,6 +119,8 @@ class BaseTrainer:
                     self.validate_epoch(self.model)
                     break
 
+        time_taken = time.time() - start
+
         # recalculate steps to make sure validation data is updated with correct steps
         self.steps = (self.epochs * self.train_loader.n_batches // self.batches_per_step)
 
@@ -128,7 +132,7 @@ class BaseTrainer:
         self.validate_epoch(self.model)
 
         print(f"Training complete. Scoring with sacrebleu...")
-        utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, device=self.device, sacrebleu_in_python=True, test_loader=self.test_loader)
+        return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, device=self.device, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
 
     def train_epoch(self, model, epoch):
         raise NotImplementedError

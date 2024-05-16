@@ -18,8 +18,8 @@ class EncoderLayer(nn.Module):
         # self.lite_conv_self_attn = LiteConv(args, self_attn=True, in_decoder=False)
 
         if args.use_admin:
-            self.self_attn_residual = admin_torch.as_module(args.n_layers)
-            self.fcn_residual = admin_torch.as_module(args.n_layers)
+            self.self_attn_residual = admin_torch.as_module(args.n_encoder_layers)
+            self.fcn_residual = admin_torch.as_module(args.n_encoder_layers)
         else:
             self.self_attn_residual = Sum()
             self.fcn_residual = Sum()
@@ -196,9 +196,9 @@ class DecoderLayer(nn.Module):
             self.cross_attn = None
 
         if args.use_admin:
-            self.self_attn_residual = admin_torch.as_module(args.n_layers)
-            self.cross_attn_residual = admin_torch.as_module(args.n_layers)
-            self.fcn_residual = admin_torch.as_module(args.n_layers)
+            self.self_attn_residual = admin_torch.as_module(args.n_decoder_layers)
+            self.cross_attn_residual = admin_torch.as_module(args.n_decoder_layers)
+            self.fcn_residual = admin_torch.as_module(args.n_decoder_layers)
         else:
             self.self_attn_residual = Sum()
             self.cross_attn_residual = Sum()

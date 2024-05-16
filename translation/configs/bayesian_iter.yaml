@@ -1,0 +1,165 @@
+tokenizer_run_name: BPE_SEPARATE
+
+bayesian_iter: true
+bayesian_iter_count: 200
+bayesian_param_count_limit: 450000000 # 450M, a run will automatically fail if over this count
+
+initial_run_metrics:
+  sacrebleu: 24.74
+  time_taken: 56000.0
+  param_count: 77000000
+
+initial_run_args:
+  d_model: 512
+  n_gqa_groups: 1
+  n_head: 8
+  d_queries: 64
+  d_values: 64
+  heads_activation: 'none'
+  d_inner: 2048
+  n_experts: 1
+  moe_top_k: 1
+  moe_diversity_loss_coefficient: 0.0
+  moe_diversity_inclusion_epoch: 0
+  n_encoder_layers: 6
+  n_decoder_layers: 6
+  dropout: 0.1
+  norm_type: 'layer'
+  use_admin: false
+  positional_encoding_type: 'sinusoidal'
+  positional_encoding_dim: 64
+  learnable_positional_encoding: false
+  m_encoder_independent_layers: 0
+  m_decoder_independent_layers: 0
+  activation_function: 'relu'
+  n_steps: 100000
+
+bayesian_metrics:
+  - name: sacrebleu
+    goal: maximize
+    weight: 1.0
+    normalize: 24.74 # sacrebleu score of baseline run
+
+  - name: time_taken
+    goal: minimize
+    weight: 1.0
+    normalize: 56000.0 # seconds taken to train baseline run (15.5 hours)
+
+  - name: param_count
+    goal: minimize
+    weight: 1.0
+    normalize: 77000000 # param count of baseline run (77M)
+
+  - name: invalid_run
+    goal: minimize
+    weight: 10000000.0 # this is a very high weight to ensure that invalid runs are never selected
+    normalize: 1.0
+
+bayesian_arg_ranges:
+  - name: d_model
+    type: int
+    min: 256
+    max: 2048
+
+  - name: n_gqa_groups
+    type: int
+    min: 1
+    max: 4
+
+  - name: n_head
+    type: int
+    min: 1
+    max: 16
+
+  - name: d_queries
+    type: int
+    min: 32
+    max: 256
+
+  - name: d_values
+    type: int
+    min: 32
+    max: 256
+
+  - name: heads_activation
+    type: categorical
+    values: ['none', 'relu', 'gelu', 'elu', 'selu', 'prelu', 'leaky_relu', 'swiglu']
+
+  - name: d_inner
+    type: int
+    min: 256
+    max: 4096
+
+  - name: n_experts
+    type: int
+    min: 1
+    max: 8
+
+  - name: moe_top_k
+    type: int
+    min: 1
+    max: 4
+
+  - name: moe_diversity_loss_coefficient
+    type: float
+    min: 0.0
+    max: 1.0
+
+  - name: moe_diversity_inclusion_epoch
+    type: int
+    min: 0
+    max: 65
+
+  - name: n_encoder_layers
+    type: int
+    min: 2
+    max: 16
+
+  - name: n_decoder_layers
+    type: int
+    min: 2
+    max: 16
+
+  - name: dropout
+    type: float
+    min: 0.0
+    max: 0.5
+
+  - name: norm_type
+    type: categorical
+    values: ['layer', 'rms']
+
+  - name: use_admin
+    type: categorical
+    values: [true, false]
+
+  - name: positional_encoding_type
+    type: categorical
+    values: ['rotary', 'sinusoidal']
+
+  - name: positional_encoding_dim
+    type: int
+    min: 32
+    max: 256
+
+  - name: learnable_positional_encoding
+    type: categorical
+    values: [true, false]
+
+  - name: m_encoder_independent_layers
+    type: int
+    min: 0
+    max: 16
+
+  - name: m_decoder_independent_layers
+    type: int
+    min: 0
+    max: 16
+
+  - name: activation_function
+    type: categorical
+    values: ['relu', 'gelu', 'elu', 'selu', 'prelu', 'leaky_relu', 'swiglu']
+
+  - name: n_steps
+    type: categorical
+    values: [100000, 200000, 300000]

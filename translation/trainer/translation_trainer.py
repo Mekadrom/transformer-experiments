@@ -14,16 +14,6 @@ class TranslationTrainer(base_trainer.BaseTrainer):
     def __init__(self, args):
         super(TranslationTrainer, self).__init__(args, 'translation')
 
-        if args.start_epoch == 0:
-            print("Visualizing attention weights before training...")
-            # get attention weight visualization before any updates are made to the model
-            with torch.no_grad():
-                self.model.eval()
-                if self.args.train_vae:
-                    self.viz_model(0, self.model, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
-                else:
-                    self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
-
     def load_model_and_optimizer(self):
         return utils.load_translation_checkpoint_or_generate_new(self.args, self.run_dir, self.src_bpe_model.vocab_size(), self.tgt_bpe_model.vocab_size(), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model, vae_model=self.args.train_vae)
 
@@ -32,6 +22,19 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
     def load_data(self):
         return utils.load_translation_data(self.args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=self.args.train_vae)
+    
+    def train(self, model_name_prefix=''):
+        super().train()
+
+        if self.args.start_epoch == 0:
+            print("Visualizing attention weights before training...")
+            # get attention weight visualization before any updates are made to the model
+            with torch.no_grad():
+                self.model.eval()
+                if self.args.train_vae:
+                    self.viz_model(0, self.model, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
+                else:
+                    self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
     def train_epoch(self, model, epoch):
         # training mode enables dropout
