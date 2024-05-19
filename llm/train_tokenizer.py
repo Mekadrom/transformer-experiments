@@ -1,27 +1,36 @@
+from tokenizers import trainers, Tokenizer, normalizers, ByteLevelBPETokenizer
+from tokenizers.pre_tokenizers import Whitespace
+
 import os
 import utils
-import youtokentome as yttm
 
 def train_tokenizer():
     args, unk = utils.get_args()
 
     train_dataset, _, _ = utils.load_llm_dataset(args.train_dataset, splits=('train'))
 
-    # Extract the text data from the train dataset
-    train_texts = train_dataset["content"]
+    print(f"Training LLM tokenizer on dataset: {type(train_dataset)}")
 
-    # Save the train texts to a file
-    with open("train_data.txt", "w", encoding="utf-8") as file:
-        file.write("\n".join(train_texts))
+    def batch_iterator(batch_size=512):
+        for i in range(0, len(train_dataset), batch_size):
+            yield train_dataset[i: i + batch_size]["content"]
 
-    model_path = os.path.join('llm', 'runs', args.run_name, 'bpe.model')
+    tokenizer = ByteLevelBPETokenizer()
+    normalizer = normalizers.Sequence([normalizers.NFKC(), normalizers.Strip()])
+    pre_tokenizer = Whitespace()
 
-    yttm.BPE.train(data="train_data.txt", vocab_size=args.vocab_size, model=model_path)
+    tokenizer.normalizer = normalizer
+    tokenizer.pre_tokenizer = pre_tokenizer
 
-    bpe_model = yttm.BPE(model=model_path)
+    tokenizer.train_from_iterator(batch_iterator(), vocab_size=args.vocab_size, min_frequency=args.min_frequency, special_tokens=[
+        "<s>",
+        "<pad>",
+        "</s>",
+        "<unk>",
+        "<mask>",
+    ])
 
-    print(bpe_model.vocab())
-    print(bpe_model.encode("Hello, how are you?"))
+    tokenizer.save(os.path.join('llm', 'runs', args.run_name, 'bpe.json'))
 
 if __name__ == '__main__':
     train_tokenizer()

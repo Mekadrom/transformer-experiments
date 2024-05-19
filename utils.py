@@ -240,19 +240,19 @@ def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model
     return train_loader, val_loader, test_loader
 
 def load_llm_dataset(dataset_name, splits=('train', 'validate', 'test')):
-    print('Loading training data...')
     if 'train' in splits:
+        print('Loading training data...')
         train_dataset = load_dataset(dataset_name, num_proc=12, split="train")
     else:
         train_dataset = None
-    print('Lazy loading validation data...')
     if 'validate' in splits:
-        val_dataset = load_dataset(dataset_name, num_proc=12, streaming=True, split="validate")
+        print('Lazy loading validation data...')
+        val_dataset = load_dataset(dataset_name, streaming=True, split="validate")
     else:
         val_dataset = None
-    print('Lazy loading test data...')
     if 'test' in splits:
-        test_dataset = load_dataset(dataset_name, num_proc=12, streaming=True, split="test")
+        print('Lazy loading test data...')
+        test_dataset = load_dataset(dataset_name, streaming=True, split="test")
     else:
         test_dataset = None
     return train_dataset, val_dataset, test_dataset

@@ -1,1 +1,2 @@
 vocab_size: 50000
+min_frequency: 2
