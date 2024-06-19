@@ -76,3 +76,5 @@ early_stop: false
 early_stop_patience: 3
 early_stop_min_delta: 0.0
 early_stop_num_latest_checkpoints_to_avg: 3
+
+bayesian_iter: false
