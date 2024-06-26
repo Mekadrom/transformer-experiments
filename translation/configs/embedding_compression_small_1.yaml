@@ -1,0 +1,3 @@
+tokenizer_run_name: BPE_SEPARATE
+
+embedding_compression_dim: 64

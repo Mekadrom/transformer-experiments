@@ -24,8 +24,6 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         return utils.load_translation_data(self.args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=self.args.train_vae)
     
     def train(self, model_name_prefix=''):
-        super().train()
-
         if self.args.start_epoch == 0:
             print("Visualizing attention weights before training...")
             # get attention weight visualization before any updates are made to the model
@@ -35,6 +33,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                     self.viz_model(0, self.model, "In protest against the planned tax on the rich, the French Football Association is set to actually go through with the first strike since 1972.")
                 else:
                     self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+
+        super().train()
 
     def train_epoch(self, model, epoch):
         # training mode enables dropout

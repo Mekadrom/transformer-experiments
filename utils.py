@@ -4,7 +4,7 @@ from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
 from llm.model_provider import LLMTransformerModelProvider
 from modules import swiglu
-from modules.transformer import Decoder, Transformer
+from modules.transformer import Decoder, Transformer, EmbeddingMLP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from translation.dataloader import SequenceLoader
@@ -45,11 +45,18 @@ def init_transformer_weights(args, model, tie_embeddings=True):
     # Share weights between the embedding layers and the logit layer
 
     if isinstance(model, Transformer):
-        nn.init.normal_(model.encoder.embedding.weight, mean=0., std=args.d_model**-0.5)
-        model.decoder.embedding.weight = model.encoder.embedding.weight
+        if isinstance(model.encoder.embedding, nn.Embedding):
+            nn.init.normal_(model.encoder.embedding.weight, mean=0., std=args.d_model**-0.5)
+            model.decoder.embedding.weight = model.encoder.embedding.weight
 
-        if tie_embeddings:
-            model.decoder.classifier.weight = model.decoder.embedding.weight
+            if tie_embeddings:
+                model.decoder.classifier.weight = model.decoder.embedding.weight
+        elif isinstance(model.encoder.embedding, EmbeddingMLP):
+            nn.init.normal_(model.encoder.embedding.embedding.weight, mean=0., std=args.d_model**-0.5)
+            model.decoder.embedding.embedding.weight = model.encoder.embedding.embedding.weight
+
+            if tie_embeddings:
+                model.decoder.classifier.weight = model.decoder.embedding.embedding.weight
     elif isinstance(model, Decoder):
         if tie_embeddings:
             model.classifier.weight = model.embedding.weight

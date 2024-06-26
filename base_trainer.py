@@ -90,14 +90,15 @@ class BaseTrainer:
         raise NotImplementedError
 
     def train(self, model_name_prefix=''):
-        self.train_loader, self.val_loader, self.test_loader = self.load_data()
-
         self.steps = 0
         self.start_epoch = self.args.start_epoch
+
+        self.train_loader, self.val_loader, self.test_loader = self.load_data()
         self.epochs = (self.args.n_steps // (self.train_loader.n_batches // self.args.batches_per_step)) + 1
 
         print(f"Training for {self.epochs} epochs...")
         start = time.time()
+        
         for epoch in range(self.start_epoch, self.epochs):
             self.steps = (epoch * self.train_loader.n_batches // self.batches_per_step)
 

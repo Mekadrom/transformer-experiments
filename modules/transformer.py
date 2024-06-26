@@ -10,6 +10,18 @@ import torch
 import torch.nn as nn
 import utils
 
+class EmbeddingMLP(nn.Module):
+    def __init__(self, vocab_size, compress_dim, emb_dim):
+        super(EmbeddingMLP, self).__init__()
+
+        self.embedding = nn.Embedding(vocab_size, compress_dim)
+        self.compress = nn.Linear(compress_dim, emb_dim)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.compress(x)
+        return x
+
 class EncoderLayer(nn.Module):
     def __init__(self, args, norm=nn.LayerNorm):
         super(EncoderLayer, self).__init__()
@@ -47,7 +59,11 @@ class Encoder(nn.Module):
 
         self.d_model = args.d_model * 2 if self.vae_t else args.d_model
 
-        self.embedding = nn.Embedding(vocab_size, self.d_model)
+        if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
+            self.embedding = EmbeddingMLP(vocab_size, args.embedding_compression_dim, self.d_model)
+        else:
+            self.embedding = nn.Embedding(vocab_size, self.d_model)
+
         self.apply_dropout = nn.Dropout(args.dropout)
         self.norm = norm(args.d_model, args.norm_eps)
         self.encoder_layers = self.make_encoder_layers(args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers, norm=norm)
@@ -233,7 +249,11 @@ class Decoder(nn.Module):
 
         self.d_model = args.d_model * 2 if self.vae_t else args.d_model
 
-        self.embedding = nn.Embedding(vocab_size, self.d_model)
+        if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
+            self.embedding = EmbeddingMLP(vocab_size, args.embedding_compression_dim, self.d_model)
+        else:
+            self.embedding = nn.Embedding(vocab_size, self.d_model)
+            
         self.apply_dropout = nn.Dropout(args.dropout)
         self.layer_norm = norm(args.d_model, args.norm_eps)
         self.decoder_layers = self.make_decoder_layers(args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers, norm=norm)
