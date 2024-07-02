@@ -11,14 +11,16 @@ import torch.nn as nn
 import utils
 
 class EmbeddingMLP(nn.Module):
-    def __init__(self, vocab_size, compress_dim, emb_dim):
+    def __init__(self, vocab_size, compress_dim, emb_dim, activate=nn.Identity):
         super(EmbeddingMLP, self).__init__()
 
         self.embedding = nn.Embedding(vocab_size, compress_dim)
+        self.activate = activate()
         self.compress = nn.Linear(compress_dim, emb_dim)
 
     def forward(self, x):
         x = self.embedding(x)
+        x = self.activate(x)
         x = self.compress(x)
         return x
 
@@ -60,7 +62,7 @@ class Encoder(nn.Module):
         self.d_model = args.d_model * 2 if self.vae_t else args.d_model
 
         if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
-            self.embedding = EmbeddingMLP(vocab_size, args.embedding_compression_dim, self.d_model)
+            self.embedding = EmbeddingMLP(vocab_size, args.embedding_compression_dim, self.d_model, utils.create_activation_function(args.activation_function) if 'embedding_compression_activation' in args and args.embedding_compression_activation else nn.Identity)
         else:
             self.embedding = nn.Embedding(vocab_size, self.d_model)
 
@@ -250,7 +252,7 @@ class Decoder(nn.Module):
         self.d_model = args.d_model * 2 if self.vae_t else args.d_model
 
         if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
-            self.embedding = EmbeddingMLP(vocab_size, args.embedding_compression_dim, self.d_model)
+            self.embedding = EmbeddingMLP(vocab_size, args.embedding_compression_dim, self.d_model, 'embedding_compression_activation' in args and args.embedding_compression_activation)
         else:
             self.embedding = nn.Embedding(vocab_size, self.d_model)
             

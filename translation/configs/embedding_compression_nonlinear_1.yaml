@@ -1,0 +1,2 @@
+embedding_compression_dim: 256
+embedding_compression_activation: relu
