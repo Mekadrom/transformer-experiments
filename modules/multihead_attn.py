@@ -135,8 +135,8 @@ class MultiHeadAttention(nn.Module):
         attention_weights_for_visualization = []
         if self.args.use_infinite_attention:
             # infinite attention
-            memory = torch.zeros((self.n_head, self.d_queries, self.d_queries)).to(self.device)
-            z = torch.zeros((self.n_head, self.d_queries, 1)).to(self.device)
+            memory = torch.zeros((self.n_heads, self.d_queries, self.d_queries)).to(query_sequences.device)
+            z = torch.zeros((self.n_heads, self.d_queries, 1)).to(query_sequences.device)
 
             q_heads = q_heads.view(N, self.n_gqa_groups, self.n_heads, self.args.infinite_attention_n_segments, t // self.args.infinite_attention_n_segments, self.d_queries) # Nghitq
             k_heads = k_heads.view(N, self.n_heads, self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments, self.d_keys) # NhiTq

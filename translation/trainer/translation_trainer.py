@@ -21,7 +21,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing).to(self.device)
 
     def load_data(self):
-        return utils.load_translation_data(self.args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=self.args.train_vae)
+        return utils.load_translation_data(self.args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=self.args.train_vae, pad_to_length=self.args.maxlen if self.args.use_infinite_attention else None)
     
     def train(self, model_name_prefix=''):
         if self.args.start_epoch == 0:
@@ -227,6 +227,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device) # (1, input_sequence_length)
             input_tokens = [self.src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
             input_sequence_length = input_sequence.size(1)
+            input_zeros = torch.zeros([1, self.args.maxlen - input_sequence.size(1)], dtype=torch.long, device=input_sequence.device)
+            input_sequence = torch.cat([input_sequence, input_zeros], dim=1)
 
             # pad input sequence to args.maxlen
             if self.args.use_infinite_attention or True:
@@ -235,6 +237,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             target_sequence = torch.LongTensor(self.tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0).to(self.device) # (1, target_sequence_length)
             target_tokens = [self.tgt_bpe_model.decode([id.item()])[0] for id in target_sequence.squeeze(0)]
             target_sequence_length = target_sequence.size(1)
+            target_zeros = torch.zeros([1, self.args.maxlen - target_sequence.size(1)], dtype=torch.long, device=target_sequence.device)
+            target_sequence = torch.cat([target_sequence, target_zeros], dim=1)
 
             # pad target sequence to args.maxlen
             if self.args.use_infinite_attention or True:

@@ -1,3 +1,4 @@
 tokenizer_run_name: BPE_SEPARATE
 
 use_infinite_attention: true
+infinite_attention_n_segments: 6
