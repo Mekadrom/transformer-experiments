@@ -74,7 +74,7 @@ def get_lr(step, d_model, warmup_steps):
     """
     return 2. * math.pow(d_model, -0.5) * min(math.pow(step, -0.5), step * math.pow(warmup_steps, -1.5))
 
-def get_buffered_positional_encoding(args, d_model, maxlen=100, num_dims=1):
+def get_buffered_positional_encoding(args, d_model, device, maxlen=100, num_dims=1):
     """
     Computes positional encoding as defined in the paper.
 
@@ -92,9 +92,9 @@ def get_buffered_positional_encoding(args, d_model, maxlen=100, num_dims=1):
                     positional_encoding[i, k] = math.cos(i / math.pow(10000, (k - 1) / d_model))
         positional_encoding = positional_encoding.unsqueeze(0) # (1, max_length, d_model)
     elif num_dims == 2:
-        positional_encoding_2d = PositionalEncoding2D(args.positional_encoding_dim).to(args.device)
+        positional_encoding_2d = PositionalEncoding2D(args.positional_encoding_dim).to(device)
         positional_encoding = torch.zeros((1, maxlen, maxlen, args.positional_encoding_dim))
-        positional_encoding = positional_encoding_2d(positional_encoding.to(args.device))
+        positional_encoding = positional_encoding_2d(positional_encoding.to(device))
     return positional_encoding  # (1, max_length, d_model) or (1, max_length, max_length, d_model)
 
 def load_tokenizers(run_dir):
@@ -116,13 +116,14 @@ def load_tokenizers(run_dir):
 
     return src_bpe_model, tgt_bpe_model
 
-def get_positional_encoding(args):
+def get_positional_encoding(args, device):
     if args.positional_encoding_type == 'sinusoidal' or args.positional_encoding_type == 'buffer':
         positional_encoding = get_buffered_positional_encoding(
             args,
+            device,
             d_model=args.d_model,
             maxlen=args.maxlen+1,
-        ).to(args.device)
+        ).to(device)
         positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
     elif args.positional_encoding_type == 'rotary':
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
@@ -325,7 +326,7 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model, device):
+def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model):
     with torch.no_grad():
         # If the source sequence is a string, convert to a tensor of IDs
         if isinstance(src, str):
@@ -339,10 +340,10 @@ def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model, device):
 
         else:
             encoder_sequences = src
-        encoder_sequences = encoder_sequences.to(device)
-        encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device)
+        encoder_sequences = encoder_sequences.to(args.encoder_device)
+        encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(args.encoder_device)
 
-        src_key_padding_mask = (encoder_sequences == 0).to(device)
+        src_key_padding_mask = (encoder_sequences == 0).to(args.encoder_device)
 
         encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask)
 
@@ -356,9 +357,9 @@ def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model, device):
             encoder_sequence_lengths = torch.ones(encoder_sequences.shape[:-1], dtype=torch.long, device=encoder_sequences.device)
 
         steps = 0
-        decoded = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device)
+        decoded = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(args.decoder_device)
         while True:
-            decoder_sequences, _ = model.decoder(decoded, torch.LongTensor([decoded.size(1)]).to(device), encoder_sequences, encoder_sequence_lengths)
+            decoder_sequences, _ = model.decoder(decoded, torch.LongTensor([decoded.size(1)]).to(args.decoder_device), encoder_sequences, encoder_sequence_lengths)
 
             next_word_scores = decoder_sequences[:, -1, :]
             next_word_scores = F.log_softmax(next_word_scores, dim=-1)
@@ -377,7 +378,7 @@ def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model, device):
 
         return ' '.join(tgt_bpe_model.decode(decoded.tolist(), ignore_ids=[0, 2, 3]))
 
-def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device, beam_size=4, length_norm_coefficient=0.6):
+def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6):
     """
     Translates a source language sequence to the target language, with beam search decoding.
 
@@ -407,10 +408,10 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
             encoder_sequences = torch.LongTensor(encoder_sequences).unsqueeze(0) # (1, source_sequence_length)
         else:
             encoder_sequences = src
-        encoder_sequences = encoder_sequences.to(device) # (1, source_sequence_length)
-        encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(device) # (1)
+        encoder_sequences = encoder_sequences.to(args.encoder_device) # (1, source_sequence_length)
+        encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(args.encoder_device) # (1)
 
-        src_key_padding_mask = (encoder_sequences == 0).to(device) # (1, source_sequence_length)
+        src_key_padding_mask = (encoder_sequences == 0).to(args.encoder_device) # (1, source_sequence_length)
         
         # Encode
         encoder_sequences, (t_mu, t_logvar), (q_mus, q_logvars), (k_mus, k_logvars), (v_mus, v_logvars), gating_variances = model.encoder(encoder_sequences, src_key_padding_mask) # (1, source_sequence_length, d_model)
@@ -423,10 +424,10 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
             encoder_sequences = model.reparameterize(mu, logvar)
 
         # Our hypothesis to begin with is just <BOS>
-        hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(device) # (1, 1)
+        hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]) # (1, 1)
 
         # Tensor to store hypotheses' scores; now it's just 0
-        hypotheses_scores = torch.zeros(1).to(device) # (1)
+        hypotheses_scores = torch.zeros(1).to(args.decoder_device) # (1)
 
         # Lists to store completed hypotheses and their scores
         completed_hypotheses = list()
@@ -439,8 +440,9 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
         # At this point, s is 1, because we only have 1 hypothesis to work with, i.e. "<BOS>"
         while True:
             s = hypotheses.size(0)
+            hypotheses = hypotheses.to(args.encoder_device)
 
-            tgt_key_padding_masks = torch.zeros(s, hypotheses.size(1)).to(device).bool()
+            tgt_key_padding_masks = torch.zeros(s, hypotheses.size(1)).to(args.decoder_device).bool()
 
             decoder_sequences, (t_mu, t_logvar), (s_q_mus, s_q_logvars), (s_k_mus, s_k_logvars), (s_v_mus, s_v_logvars), (c_q_mus, c_q_logvars), (c_k_mus, c_k_logvars), (c_v_mus, c_v_logvars), gating_variances = model.decoder(
                 hypotheses,
@@ -448,6 +450,8 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, device
                 src_key_padding_mask.repeat(s, 1), # (s, 1)
                 tgt_key_padding_masks
             )
+
+            hypotheses = hypotheses.to(args.decoder_device)
 
             # Scores at this step
             scores = decoder_sequences[:, -1, :] # (s, tgt_vocab_size)
@@ -538,7 +542,7 @@ def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=
     # Save averaged checkpoint
     torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, device, sacrebleu_in_python, test_loader=None, vae_model=False):
+def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python, test_loader=None, vae_model=False):
     """
     Returns None when command line sacrebleu is used
     """
@@ -563,7 +567,7 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, devic
         hypotheses = list()
         references = list()
         for i, (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in enumerate(tqdm(test_loader, total=test_loader.n_batches)):
-            hypotheses.append(beam_search_translate(args, src=source_sequence, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, device=device, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
+            hypotheses.append(beam_search_translate(args, src=source_sequence, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
             references.extend(tgt_bpe_model.decode(target_sequence.tolist(), ignore_ids=[0, 2, 3]))
 
         if sacrebleu_in_python:

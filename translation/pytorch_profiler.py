@@ -26,7 +26,8 @@ if __name__ == '__main__':
     src_bpe_model, tgt_bpe_model = utils.load_tokenizers(os.path.join('runs', args.tokenizer_run_name))
     model, _ = utils.load_translation_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name=args.model_checkpoint)
 
-    model = model.to(args.device)
+    model.encoder = model.encoder.to(args.encoder_device)
+    model.decoder = model.decoder.to(args.decoder_device)
 
     TRANSLATE_STRINGS = [
         "The quick brown fox jumps over the lazy dog.",
@@ -51,7 +52,7 @@ if __name__ == '__main__':
         else:
             for s in TRANSLATE_STRINGS:
                 with record_function("model_inference"):
-                    best, all = utils.beam_search_translate(args, s, model, src_bpe_model, tgt_bpe_model, device=args.device)
+                    best, all = utils.beam_search_translate(args, s, model, src_bpe_model, tgt_bpe_model)
                     print(f'"{s}" -> "{best}"')
                 prof.step()  # Next step in profiling
 

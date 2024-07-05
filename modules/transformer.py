@@ -28,7 +28,7 @@ class EncoderLayer(nn.Module):
     def __init__(self, args, norm=nn.LayerNorm):
         super(EncoderLayer, self).__init__()
 
-        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=False, norm=norm)
+        self.self_attn = MultiHeadAttention(args, device=args.encoder_device, self_attn=True, in_decoder=False, norm=norm)
         # self.lite_conv_self_attn = LiteConv(args, self_attn=True, in_decoder=False)
 
         if args.use_admin:
@@ -71,7 +71,7 @@ class Encoder(nn.Module):
         self.encoder_layers = self.make_encoder_layers(args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers, norm=norm)
 
         if args.positional_encoding_type != 'rotary':
-            self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args))
+            self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args, args.encoder_device))
 
     def make_encoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm):
         def new_encoder_layer():
@@ -163,6 +163,9 @@ class Encoder(nn.Module):
         return encoder_layer(encoder_sequences, key_padding_mask)
 
     def forward(self, encoder_sequences, key_padding_mask):
+        encoder_sequences = encoder_sequences.to(self.args.encoder_device)
+        key_padding_mask = key_padding_mask.to(self.args.encoder_device)
+
         encoder_sequences, t_mu, t_logvar = self.perform_embedding_transformation(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
         encoder_sequences = self.apply_dropout(encoder_sequences) # (N, pad_length, d_model)
@@ -206,10 +209,10 @@ class DecoderLayer(nn.Module):
 
         self.args = args
 
-        self.self_attn = MultiHeadAttention(args, self_attn=True, in_decoder=True, norm=norm)
+        self.self_attn = MultiHeadAttention(args, device=args.decoder_device, self_attn=True, in_decoder=True, norm=norm)
 
         if use_cross_attn:
-            self.cross_attn = MultiHeadAttention(args, self_attn=False, in_decoder=True, norm=norm)
+            self.cross_attn = MultiHeadAttention(args, device=args.decoder_device, self_attn=False, in_decoder=True, norm=norm)
         else:
             self.cross_attn = None
 
@@ -262,7 +265,7 @@ class Decoder(nn.Module):
         self.classifier = nn.Linear(args.d_model, vocab_size)
 
         if args.positional_encoding_type != 'rotary':
-            self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args))
+            self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args, args.decoder_device))
 
     def make_decoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm):
         def new_decoder_layer():
@@ -361,6 +364,12 @@ class Decoder(nn.Module):
 
     def forward(self, decoder_sequences, encoder_sequences, src_key_padding_mask, tgt_key_padding_mask):
         decoder_sequences, t_mu, t_logvar = self.apply_embedding_transformation(decoder_sequences) # (N, pad_length, d_model)
+
+        decoder_sequences = decoder_sequences.to(self.args.decoder_device)
+        encoder_sequences = encoder_sequences.to(self.args.decoder_device)
+        src_key_padding_mask = src_key_padding_mask.to(self.args.decoder_device)
+        tgt_key_padding_mask = tgt_key_padding_mask.to(self.args.decoder_device)
+
         decoder_sequences = self.apply_positional_embedding(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_dropout(decoder_sequences)
 

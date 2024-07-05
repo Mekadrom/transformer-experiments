@@ -7,15 +7,16 @@ import torch.nn.functional as F
 import utils
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, args, self_attn, in_decoder=False, norm=nn.LayerNorm):
+    def __init__(self, args, device, self_attn, in_decoder=False, norm=nn.LayerNorm):
         super(MultiHeadAttention, self).__init__()
 
         self.args = args
+        self.device = device
         self.self_attn = self_attn
         self.in_decoder = in_decoder
 
         if args.positional_encoding_type == 'rotary':
-            self.rotary_embedding = utils.get_positional_encoding(args)
+            self.rotary_embedding = utils.get_positional_encoding(args, device)
 
         self.n_q_heads = args.n_gqa_groups * args.n_heads
         self.n_heads = args.n_heads
@@ -58,11 +59,11 @@ class MultiHeadAttention(nn.Module):
 
             self.beta = nn.Parameter(torch.ones((1,)))
             self.elu = nn.ELU()
-            self.register_buffer('causal_mask', torch.tril(torch.ones((args.maxlen // args.infinite_attention_n_segments) + 1, (args.maxlen // args.infinite_attention_n_segments) + 1).to(args.device)))
+            self.register_buffer('causal_mask', torch.tril(torch.ones((args.maxlen // args.infinite_attention_n_segments) + 1, (args.maxlen // args.infinite_attention_n_segments) + 1).to(self.device)))
         else:
             self.beta = None
             self.elu = None
-            self.register_buffer('causal_mask', torch.tril(torch.ones(args.maxlen + 1, args.maxlen + 1).to(args.device)))
+            self.register_buffer('causal_mask', torch.tril(torch.ones(args.maxlen + 1, args.maxlen + 1).to(self.device)))
 
     def mask_attention(self, attention_weights, key_padding_mask):
         # mask away tokens by setting such weights to a large negative number, so that they evaluate to 0 under the softmax
@@ -149,14 +150,17 @@ class MultiHeadAttention(nn.Module):
 
                 A_mem = (sigma_q @ memory) / ((sigma_q @ z) + (1e-6))
 
-                attention_weights = q_heads[:, :, idx, :, :] @ k_heads[:, :, idx, :, :].transpose(-2, -1)
+                print(f"q_heads: {q_heads[:, :, :, idx, :, :].shape}")
+                print(f"k_heads: {k_heads[:, :, idx, :, :].transpose(-2, -1).shape}")
+
+                attention_weights = q_heads[:, :, :, idx, :, :] @ k_heads[:, :, idx, :, :].transpose(-2, -1)
 
                 # scaled attention
                 attention_weights = (1.0 / (self.d_queries ** 0.5)) * attention_weights
                 # attention_weights = 30.0 * torch.tanh(attention_weights / 30.0) # grok version of scaled attention
 
-                attention_weights = self.mask_attention(attention_weights, key_padding_mask)
 
+                attention_weights = self.mask_attention(attention_weights, None)
                 attention_weights = self.softmax(attention_weights)
 
                 attention_weights_for_visualization.append(attention_weights.clone().detach().contiguous().view(N, self.n_gqa_groups, self.n_heads, t // self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments))
@@ -167,7 +171,7 @@ class MultiHeadAttention(nn.Module):
 
                 attention_weights = (F.sigmoid(self.beta) * A_mem) + ((1 - F.sigmoid(self.beta)) * attention_weights)
 
-                if self.infinite_attention_update == 'linear':
+                if self.args.infinite_attention_update == 'linear':
                     memory = memory + (sigma_k.transpose(-2, -1) @ v_heads[:, :, idx, :, :])
                 else:
                     delta = (sigma_k @ memory) / ((sigma_k @ z) + 1e-6)

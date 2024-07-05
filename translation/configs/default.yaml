@@ -66,7 +66,8 @@ vae_tie_embeddings: false
 
 start_epoch: 0
 print_frequency: 20
-device: cuda
+encoder_device: cuda:0
+decoder_device: cuda:0
 save_initial_checkpoint: false
 cudnn_benchmark: false
 detect_nans: false

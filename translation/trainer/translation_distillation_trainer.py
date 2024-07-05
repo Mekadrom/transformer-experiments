@@ -12,7 +12,8 @@ class DistillationTrainer(TranslationTrainer):
     def load_model_and_optimizer(self):
         # load teacher model as well
         self.teacher_model, _ = load_translation_checkpoint_or_generate_new(self.args, os.path.join('runs', self.args.distillation_teacher_run_name), src_bpe_model=self.src_bpe_model, tgt_bpe_model=self.tgt_bpe_model, checkpoint_model_name='averaged_transformer_checkpoint.pth.tar')
-        self.teacher_model = self.teacher_model.to(self.args.device)
+        self.teacher_model.encoder = self.teacher_model.encoder.to(self.args.encoder_device)
+        self.teacher_model.decoder = self.teacher_model.decoder.to(self.args.decoder_device)
         self.teacher_model.eval()
         return super().load_model_and_optimizer()
 

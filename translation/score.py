@@ -20,8 +20,9 @@ if __name__ == '__main__':
 
     utils.print_model(model)
 
-    model.to(args.device)
+    model.encoder = model.encoder.to(args.encoder_device)
+    model.decoder = model.decoder.to(args.decoder_device)
 
-    bleu_score = utils.sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=True)
+    bleu_score = utils.sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=True)
 
     print(f"BLEU 13a tokenization, cased score: {bleu_score.score}")

@@ -33,6 +33,6 @@ class VAETransformer(nn.Module):
         z_length = torch.ones(z.size(0), dtype=torch.long, device=z.device).unsqueeze(1) # shape: (batch_size, 1)
 
         z = self.decoder_extrapolator(z).view(z.size(0), -1, self.args.d_model) # shape: (batch_size, latent_seq_len, d_model)
-        decoder_sequences, _ = self.decoder(decoder_sequences, decoder_sequence_lengths, z, z_length, torch.zeros([src_key_padding_mask.size(0), self.args.latent_seq_len]).bool().to(self.args.device), tgt_key_padding_mask, attn_mask)
+        decoder_sequences, _ = self.decoder(decoder_sequences, decoder_sequence_lengths, z, z_length, torch.zeros([src_key_padding_mask.size(0), self.args.latent_seq_len]).bool().to(self.args.decoder_device), tgt_key_padding_mask, attn_mask)
 
         return decoder_sequences, mu, logvar

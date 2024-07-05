@@ -5,7 +5,7 @@ import utils
 class LLMTransformerModelProvider:
     def provide_transformer(self, args, vocab_size, tie_embeddings):
         model = Decoder(args, vocab_size, use_cross_attn=False)
-        model = model.to(args.device)
+        model = model.to(args.decoder_device)
 
         utils.init_transformer_weights(args, model, tie_embeddings=tie_embeddings)
 

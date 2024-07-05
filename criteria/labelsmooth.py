@@ -53,7 +53,7 @@ class LabelSmoothedCE(nn.Module):
             return loss
         else:
             # "Smoothed" one-hot vectors for the gold sequences
-            target_vector = torch.zeros_like(inputs).scatter(dim=1, index=targets.unsqueeze(1), value=1.).to(self.args.device) # (sum(lengths), n_classes), one-hot
+            target_vector = torch.zeros_like(inputs).scatter(dim=1, index=targets.unsqueeze(1), value=1.).to(self.args.decoder_device) # (sum(lengths), n_classes), one-hot
             target_vector = target_vector * (1. - self.eps) + self.eps / target_vector.size(1) # (sum(lengths), n_classes), "smoothed" one-hot
 
             # Compute smoothed cross-entropy loss

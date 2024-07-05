@@ -11,7 +11,9 @@ class TranslationTransformerModelProvider:
 
         model = Transformer(args=args, src_vocab_size=src_vocab_size, tgt_vocab_size=tgt_vocab_size, norm=norm)
 
-        model = model.to(args.device)
+        model.encoder = model.encoder.to(args.encoder_device)
+        model.decoder = model.decoder.to(args.decoder_device)
+        
         utils.init_transformer_weights(args, model, tie_embeddings=tie_embeddings)
 
         return model
@@ -19,7 +21,7 @@ class TranslationTransformerModelProvider:
     def provide_vae_transformer(self, args, vocab_size):
         model = VAETransformer(args=args, vocab_size=vocab_size)
 
-        model = model.to(args.device)
+        model = model.to(args.decoder_device)
         utils.init_transformer_weights(args, model, args.vae_tie_embeddings)
 
         return model

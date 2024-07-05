@@ -35,7 +35,8 @@ class BaseTrainer:
         self.d_model = args.d_model
         self.n_steps = args.n_steps
         self.warmup_steps = args.warmup_steps
-        self.device = args.device
+        self.encoder_device = args.encoder_device
+        self.decoder_device = args.decoder_device
         self.print_frequency = args.print_frequency
         if hasattr(args, 'batches_per_step'):
             self.batches_per_step = args.batches_per_step
@@ -54,7 +55,9 @@ class BaseTrainer:
             self.tgt_bpe_model = self.src_bpe_model
 
         self.model, self.optimizer = self.load_model_and_optimizer()
-        self.model = self.model.to(args.device)
+
+        print(self.model.encoder.embedding.weight.device)
+        print(self.model.decoder.embedding.weight.device)
 
         if args.torch_compile_model:
             torch.set_float32_matmul_precision('high')
@@ -133,7 +136,7 @@ class BaseTrainer:
         self.validate_epoch(self.model)
 
         print(f"Training complete. Scoring with sacrebleu...")
-        return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, device=self.device, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
+        return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
 
     def train_epoch(self, model, epoch):
         raise NotImplementedError

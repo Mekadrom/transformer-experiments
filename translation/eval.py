@@ -25,7 +25,9 @@ else:
     tgt_bpe_model = src_bpe_model
 
 checkpoint = torch.load(os.path.join(run_dir, args.model_checkpoint))
-model = checkpoint['model'].to(args.device)
+model = checkpoint['model']
+model.encoder = model.encoder.to(args.encoder_device)
+model.decoder = model.decoder.to(args.decoder_device)
 model.eval()
 
 # Use sacreBLEU in Python or in the command-line?
@@ -35,4 +37,4 @@ model.eval()
 sacrebleu_in_python = args.sacrebleu_in_python
 
 if __name__ == '__main__':
-    sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, device=args.device, sacrebleu_in_python=sacrebleu_in_python)
+    sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python=sacrebleu_in_python)

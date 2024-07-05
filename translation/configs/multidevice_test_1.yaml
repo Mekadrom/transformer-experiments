@@ -1,0 +1,4 @@
+tokenizer_run_name: BPE_SEPARATE
+
+encoder_device: cuda:0
+decoder_device: cuda:1

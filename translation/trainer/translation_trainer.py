@@ -18,7 +18,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         return utils.load_translation_checkpoint_or_generate_new(self.args, self.run_dir, self.src_bpe_model.vocab_size(), self.tgt_bpe_model.vocab_size(), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model, vae_model=self.args.train_vae)
 
     def get_criteria(self):
-        return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing).to(self.device)
+        return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing)
 
     def load_data(self):
         return utils.load_translation_data(self.args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, vae_model=self.args.train_vae, pad_to_length=self.args.maxlen if self.args.use_infinite_attention else None)
@@ -52,10 +52,10 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         start_step_time = time.time()
 
         for i, (src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) in enumerate(self.train_loader):
-            src_seqs = src_seqs.to(self.device) # (N, max_source_sequence_pad_length_this_batch)
-            tgt_seqs = tgt_seqs.to(self.device) # (N, max_target_sequence_pad_length_this_batch)
-            src_seq_lengths = src_seq_lengths.to(self.device) # (N)
-            tgt_seq_lengths = tgt_seq_lengths.to(self.device) # (N)
+            src_seqs = src_seqs.to(self.encoder_device)
+            tgt_seqs = tgt_seqs.to(self.encoder_device)
+            src_seq_lengths = src_seq_lengths.to(self.encoder_device)
+            tgt_seq_lengths = tgt_seq_lengths.to(self.decoder_device)
 
             tgt_seqs, tgt_seq_lengths = self.target_sequence_transform(src_seqs, src_seq_lengths, tgt_seqs, tgt_seq_lengths)
 
@@ -77,6 +77,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             else:
                 moe_diversity_loss = 0
 
+            tgt_seqs = tgt_seqs.to(self.decoder_device)
+
             # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
             # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
             # Therefore, pads start after (length - 1) positions
@@ -84,7 +86,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
             translation_losses.update(translation_loss.item(), (tgt_seq_lengths - 1).sum().item())
 
-            kl_loss = torch.FloatTensor([0]).to(self.device)
+            kl_loss = torch.FloatTensor([0]).to(self.decoder_device)
 
             if e_t_vars is not None and e_t_vars[0] is not None and e_t_vars[1] is not None:
                 kl_loss += calc_kl_loss(e_t_vars[0], e_t_vars[1])
@@ -162,16 +164,17 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
         with torch.no_grad():
             losses = AverageMeter()
-            for (src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) in tqdm(self.val_loader, total=self.val_loader.n_batches):
-                src_seqs = src_seqs.to(self.device) # (1, max_source_sequence_pad_length_this_batch)
-                tgt_seqs = tgt_seqs.to(self.device) # (1, max_target_sequence_pad_length_this_batch)
-                src_seq_lengths = src_seq_lengths.to(self.device) # (1)
-                tgt_seq_lengths = tgt_seq_lengths.to(self.device) # (1)
+            for (src_seqs, tgt_seqs, _, tgt_seq_lengths) in tqdm(self.val_loader, total=self.val_loader.n_batches):
+                src_seqs = src_seqs.to(self.encoder_device)
+                tgt_seqs = tgt_seqs.to(self.encoder_device)
+                tgt_seq_lengths = tgt_seq_lengths.to(self.decoder_device)
 
                 src_key_padding_mask = src_seqs == 0 # (N, max_source_sequence_pad_length_this_batch)
-                tgt_key_padding_mask = tgt_seqs == 0 # (N, max_target_sequence_pad_length_this_batch)
+                tgt_key_padding_mask = (tgt_seqs == 0).to(self.decoder_device) # (N, max_target_sequence_pad_length_this_batch)
 
                 predicted_sequences = model(src_seqs, tgt_seqs, src_key_padding_mask, tgt_key_padding_mask)[0] # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+
+                tgt_seqs = tgt_seqs.to(self.decoder_device)
 
                 # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
                 # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
@@ -192,7 +195,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
     def evaluate(self, src, tgt):
         if self.args.train_vae:
-            translation = greedy_translate(self.args, src, self.model, self.src_bpe_model, self.tgt_bpe_model, device=self.device)
+            translation = greedy_translate(self.args, src, self.model, self.src_bpe_model, self.tgt_bpe_model)
 
             debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
             debug_validate_table.add_row([src, translation, tgt])
@@ -204,7 +207,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             # print(f"src: {src} | prediction: {translation} | actual: {tgt}")
             print(debug_validate_table)
         else:
-            best, _ = beam_search_translate(self.args, src, self.model, self.src_bpe_model, self.tgt_bpe_model, device=self.device, beam_size=4, length_norm_coefficient=0.6)
+            best, _ = beam_search_translate(self.args, src, self.model, self.src_bpe_model, self.tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
 
             debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
             debug_validate_table.add_row([src, best, tgt])
@@ -217,6 +220,9 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             print(debug_validate_table)
 
     def viz_model(self, step, model, src, tgt=None):
+        if self.args.use_infinite_attention:
+            return # temporary; would like to visualize memory block attention weights in the future
+
         with torch.no_grad():
             model.eval()
             is_vae = False
@@ -224,28 +230,29 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 is_vae = True
                 tgt = src
 
-            input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device) # (1, input_sequence_length)
+            input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.encoder_device) # (1, input_sequence_length)
             input_tokens = [self.src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
             input_sequence_length = input_sequence.size(1)
-            input_zeros = torch.zeros([1, self.args.maxlen - input_sequence.size(1)], dtype=torch.long, device=input_sequence.device)
-            input_sequence = torch.cat([input_sequence, input_zeros], dim=1)
 
             # pad input sequence to args.maxlen
             if self.args.use_infinite_attention or True:
                 input_sequence = torch.cat([input_sequence, torch.zeros([1, self.args.maxlen - input_sequence.size(1)], dtype=torch.long, device=input_sequence.device)], dim=1)
 
-            target_sequence = torch.LongTensor(self.tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0).to(self.device) # (1, target_sequence_length)
+            target_sequence = torch.LongTensor(self.tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0).to(self.encoder_device) # (1, target_sequence_length)
             target_tokens = [self.tgt_bpe_model.decode([id.item()])[0] for id in target_sequence.squeeze(0)]
             target_sequence_length = target_sequence.size(1)
-            target_zeros = torch.zeros([1, self.args.maxlen - target_sequence.size(1)], dtype=torch.long, device=target_sequence.device)
-            target_sequence = torch.cat([target_sequence, target_zeros], dim=1)
 
             # pad target sequence to args.maxlen
             if self.args.use_infinite_attention or True:
                 target_sequence = torch.cat([target_sequence, torch.zeros([1, self.args.maxlen - target_sequence.size(1)], dtype=torch.long, device=target_sequence.device)], dim=1)
 
             src_key_padding_mask = input_sequence == 0 # (N, pad_length)
-            tgt_key_padding_mask = target_sequence == 0 # (N, pad_length)
+            tgt_key_padding_mask = (target_sequence == 0).to(self.decoder_device) # (N, pad_length)
+
+            print(f"input_sequence: {input_sequence.shape}")
+            print(f"target_sequence: {target_sequence.shape}")
+            print(f"src_key_padding_mask: {src_key_padding_mask.shape}")
+            print(f"tgt_key_padding_mask: {tgt_key_padding_mask.shape}")
 
             input_sequence, _, _ = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
             input_sequence = model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
@@ -276,8 +283,14 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 input_sequence = model.decoder_extrapolator(z).view(z.size(0), -1, self.args.d_model)
 
                 input_tokens = [f"latent_{i}" for i in range(self.args.latent_seq_len)]
+
+            input_sequence = input_sequence.to(self.decoder_device)
+            src_key_padding_mask = src_key_padding_mask.to(self.decoder_device)
                 
             target_sequence, _, _ = model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
+            
+            target_sequence = target_sequence.to(self.decoder_device)
+            
             target_sequence = model.decoder.apply_positional_embedding(target_sequence) # (N, pad_length, d_model)
 
             for d, decoder_layer in enumerate(model.decoder.decoder_layers):

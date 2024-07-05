@@ -23,7 +23,7 @@ class LLMTrainer(base_trainer.BaseTrainer):
         return utils.load_llm_checkpoint_or_generate_new(self.args, self.run_dir, self.src_bpe_model.vocab_size())
 
     def get_criteria(self):
-        return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing).to(self.device)
+        return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing)
 
     def load_data(self):
         return utils.load_llm_data(self.args.train_dataset, self.src_bpe_model, self.args.maxlen, batch_size=self.args.batch_size)
@@ -42,8 +42,8 @@ class LLMTrainer(base_trainer.BaseTrainer):
         start_step_time = time.time()
 
         for i, src_seqs in enumerate(self.train_loader):
-            src_seqs = src_seqs.to(self.device) # (N, max_source_sequence_pad_length_this_batch)
-            src_seq_lengths = src_seq_lengths.to(self.device) # (N)
+            src_seqs = src_seqs.to(self.decoder_device) # (N, max_source_sequence_pad_length_this_batch)
+            src_seq_lengths = src_seq_lengths.to(self.decoder_device) # (N)
 
             src_key_padding_mask = src_seqs == 0 # (N, max_source_sequence_pad_length_this_batch)
 
@@ -111,8 +111,8 @@ class LLMTrainer(base_trainer.BaseTrainer):
 
         with torch.no_grad():
             for src_seqs in tqdm(self.val_loader, total=self.val_loader.n_batches):
-                src_seqs = src_seqs.to(self.device) # (1, max_source_sequence_pad_length_this_batch)
-                src_seq_lengths = src_seq_lengths.to(self.device) # (1)
+                src_seqs = src_seqs.to(self.decoder_device) # (1, max_source_sequence_pad_length_this_batch)
+                src_seq_lengths = src_seq_lengths.to(self.decoder_device) # (1)
 
                 src_key_padding_mask = src_seqs == 0 # (N, max_source_sequence_pad_length_this_batch)
 
@@ -133,7 +133,7 @@ class LLMTrainer(base_trainer.BaseTrainer):
             return losses.avg
         
     def evaluate(self, src, tgt):
-        src_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device)
+        src_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.decoder_device)
         for _ in range(self.args.maxlen - src_sequence.size(1)):
 
             src_key_padding_mask = src_sequence == 0
@@ -147,15 +147,15 @@ class LLMTrainer(base_trainer.BaseTrainer):
 
             src += predicted_token
 
-            src_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device)
+            src_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.decoder_device)
 
         return src
 
     def viz_model(self, step, model, src, tgt):
-        input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.device) # (1, input_sequence_length)
+        input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.decoder_device) # (1, input_sequence_length)
         input_tokens = [self.src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
         # pad input sequence to args.maxlen
-        input_sequence = torch.cat((input_sequence, torch.zeros(1, self.args.maxlen - input_sequence.size(1), dtype=torch.long).to(self.device)), dim=1) # (1, args.maxlen)
+        input_sequence = torch.cat((input_sequence, torch.zeros(1, self.args.maxlen - input_sequence.size(1), dtype=torch.long).to(self.decoder_device)), dim=1) # (1, args.maxlen)
 
         src_key_padding_mask = input_sequence == 0 # (N, pad_length)
 
