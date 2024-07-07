@@ -150,18 +150,22 @@ class MultiHeadAttention(nn.Module):
 
                 A_mem = (sigma_q @ memory) / ((sigma_q @ z) + (1e-6))
 
-                print(f"q_heads: {q_heads[:, :, :, idx, :, :].shape}")
-                print(f"k_heads: {k_heads[:, :, idx, :, :].transpose(-2, -1).shape}")
+                print(f"q_heads: {q_heads.shape}")
+                print(f"k_heads: {k_heads.shape}")
 
-                attention_weights = q_heads[:, :, :, idx, :, :] @ k_heads[:, :, idx, :, :].transpose(-2, -1)
+                # attention_weights = q_heads[:, :, :, idx, :, :] @ k_heads[:, :, idx, :, :].transpose(-2, -1)
+                attention_weights = torch.einsum('...ghtq,...hTq->...htT', q_heads[:, :, :, idx, :, :], k_heads[:, :, idx, :, :])
+
+                print(f"attention_weights: {attention_weights.shape}")
 
                 # scaled attention
                 attention_weights = (1.0 / (self.d_queries ** 0.5)) * attention_weights
                 # attention_weights = 30.0 * torch.tanh(attention_weights / 30.0) # grok version of scaled attention
 
-
                 attention_weights = self.mask_attention(attention_weights, None)
                 attention_weights = self.softmax(attention_weights)
+
+                print(f"attention_weights: {attention_weights.shape}")
 
                 attention_weights_for_visualization.append(attention_weights.clone().detach().contiguous().view(N, self.n_gqa_groups, self.n_heads, t // self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments))
 

@@ -66,6 +66,9 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
             predicted_sequences, e_t_vars, e_q_vars, e_k_vars, e_v_vars, encoder_moe_gating_variances, d_t_vars, d_s_q_vars, d_s_k_vars, d_s_v_vars, d_c_q_vars, d_c_k_vars, d_c_v_vars, decoder_moe_gating_variances = model(src_seqs, tgt_seqs, src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
+            del src_seqs, src_seq_lengths, src_key_padding_mask
+            del tgt_key_padding_mask
+
             if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
                 encoder_moe_gating_variances = torch.stack(encoder_moe_gating_variances).std(dim=0).mean()
                 decoder_moe_gating_variances = torch.stack(decoder_moe_gating_variances).std(dim=0).mean()
@@ -119,6 +122,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             (loss / self.batches_per_step).backward()
 
             total_losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
+
+            del tgt_seqs, tgt_seq_lengths, predicted_sequences, translation_loss, kl_loss, loss
 
             # Update model (i.e. perform a training step) only after gradients are accumulated from batches_per_step batches
             if (i + 1) % self.batches_per_step == 0:
@@ -248,11 +253,6 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
             src_key_padding_mask = input_sequence == 0 # (N, pad_length)
             tgt_key_padding_mask = (target_sequence == 0).to(self.decoder_device) # (N, pad_length)
-
-            print(f"input_sequence: {input_sequence.shape}")
-            print(f"target_sequence: {target_sequence.shape}")
-            print(f"src_key_padding_mask: {src_key_padding_mask.shape}")
-            print(f"tgt_key_padding_mask: {tgt_key_padding_mask.shape}")
 
             input_sequence, _, _ = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
             input_sequence = model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)

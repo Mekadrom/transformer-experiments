@@ -21,6 +21,7 @@ class EmbeddingMLP(nn.Module):
     def forward(self, x):
         x = self.embedding(x)
         x = self.activate(x)
+        x = x.to(self.compress.weight.device)
         x = self.compress(x)
         return x
 
@@ -255,14 +256,22 @@ class Decoder(nn.Module):
         self.d_model = args.d_model * 2 if self.vae_t else args.d_model
 
         if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
-            self.embedding = EmbeddingMLP(vocab_size, args.embedding_compression_dim, self.d_model, 'embedding_compression_activation' in args and args.embedding_compression_activation)
+            self.embedding = EmbeddingMLP(vocab_size, args.embedding_compression_dim, self.d_model, utils.create_activation_function(args.activation_function) if 'embedding_compression_activation' in args and args.embedding_compression_activation else nn.Identity)
         else:
             self.embedding = nn.Embedding(vocab_size, self.d_model)
             
         self.apply_dropout = nn.Dropout(args.dropout)
         self.layer_norm = norm(args.d_model, args.norm_eps)
         self.decoder_layers = self.make_decoder_layers(args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers, norm=norm)
-        self.classifier = nn.Linear(args.d_model, vocab_size)
+
+        if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
+            self.classifier = nn.Sequential(
+                nn.Linear(args.d_model, args.embedding_compression_dim),
+                utils.create_activation_function(args.activation_function) if 'embedding_compression_activation' in args and args.embedding_compression_activation else nn.Identity(),
+                nn.Linear(args.embedding_compression_dim, vocab_size)
+            )
+        else:
+            self.classifier = nn.Linear(args.d_model, vocab_size)
 
         if args.positional_encoding_type != 'rotary':
             self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args, args.decoder_device))

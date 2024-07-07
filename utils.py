@@ -56,10 +56,14 @@ def init_transformer_weights(args, model, tie_embeddings=True):
             model.decoder.embedding.embedding.weight = model.encoder.embedding.embedding.weight
 
             if tie_embeddings:
-                model.decoder.classifier.weight = model.decoder.embedding.embedding.weight
+                model.decoder.classifier[-1].weight = model.decoder.embedding.embedding.weight
     elif isinstance(model, Decoder):
-        if tie_embeddings:
-            model.classifier.weight = model.embedding.weight
+        if isinstance(model.encoder.embedding, nn.Embedding):
+            if tie_embeddings:
+                model.classifier.weight = model.embedding.weight
+        elif isinstance(model.encoder.embedding, EmbeddingMLP):
+            if tie_embeddings:
+                model.classifier.weight = model.embedding.embedding.weight
 
     print("Model initialized.")
 

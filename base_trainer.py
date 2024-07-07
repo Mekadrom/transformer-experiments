@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import seaborn as sns
 import torch
+import torch.nn as nn
 import time
 import utils
 
@@ -56,8 +57,12 @@ class BaseTrainer:
 
         self.model, self.optimizer = self.load_model_and_optimizer()
 
-        print(self.model.encoder.embedding.weight.device)
-        print(self.model.decoder.embedding.weight.device)
+        if isinstance(self.model.encoder.embedding, nn.Embedding):
+            print(self.model.encoder.embedding.weight.device)
+            print(self.model.decoder.embedding.weight.device)
+        else:
+            print(self.model.encoder.embedding.embedding.weight.device)
+            print(self.model.decoder.embedding.embedding.weight.device)
 
         if args.torch_compile_model:
             torch.set_float32_matmul_precision('high')
