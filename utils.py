@@ -124,8 +124,8 @@ def get_positional_encoding(args, device):
     if args.positional_encoding_type == 'sinusoidal' or args.positional_encoding_type == 'buffer':
         positional_encoding = get_buffered_positional_encoding(
             args,
-            device,
             d_model=args.d_model,
+            device=device,
             maxlen=args.maxlen+1,
         ).to(device)
         positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
