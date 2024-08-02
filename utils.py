@@ -164,6 +164,12 @@ def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, t
 
     return model, optimizer
 
+def get_optimizer(optimizer_name, model, lr, beta1, beta2, epsilon, weight_decay):
+    if optimizer_name == 'adamw':
+        return torch.optim.AdamW(params=[p for p in model.parameters() if p.requires_grad], lr=lr, betas=(beta1, beta2), eps=epsilon, weight_decay=weight_decay)
+    else:
+        return torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=lr, betas=(beta1, beta2), eps=epsilon, weight_decay=weight_decay)
+
 def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_model_name='transformer_checkpoint.pth.tar'):
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
         checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
@@ -175,15 +181,15 @@ def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_mo
 
         model.load_state_dict(checkpoint['model'].state_dict())
 
+        optimizer = get_optimizer(args.optimizer, model, args.lr, args.beta1, args.beta2, args.epsilon, args.weight_decay)
+
         if 'optimizer' in checkpoint:
-            optimizer = checkpoint['optimizer']
-        else:
-            optimizer = None
+            optimizer_state_dict = checkpoint['optimizer']
+            optimizer.load_state_dict(optimizer_state_dict)
     else:
         print("Starting from scratch...")
         model = LLMTransformerModelProvider().provide_transformer(args, vocab_size, tie_embeddings=args.tie_embeddings)
-
-        optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
+        optimizer = get_optimizer(args.optimizer, model, args.lr, args.beta1, args.beta2, args.epsilon, args.weight_decay)
 
     return model, optimizer
 
@@ -287,7 +293,7 @@ def load_llm_data(dataset_name, tokenizer, max_length, batch_size=4):
 
     return train_loader, val_loader, test_loader
 
-def save_checkpoint(epoch, model, optimizer, prefix=''):
+def save_checkpoint(epoch, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
     """
     Checkpoint saver. Each save overwrites previous save.
 
@@ -296,7 +302,7 @@ def save_checkpoint(epoch, model, optimizer, prefix=''):
     :param optimizer: optimized
     :param prefix: checkpoint filename prefix
     """
-    state = {'epoch': epoch, 'model': model, 'optimizer': optimizer}
+    state = {'epoch': epoch, 'model': model.state_dict(), 'optimizer': optimizer.state_dict()}
     filename = prefix + 'transformer_checkpoint.pth.tar'
     torch.save(state, filename)
 

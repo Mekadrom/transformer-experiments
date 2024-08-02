@@ -58,8 +58,10 @@ class PositionWiseFCNetwork(nn.Module):
         self.activation = utils.create_activation_function(args.d_inner, args.activation_function)
         self.dropout = nn.Dropout(args.dropout)
         
-        if args.use_moe:
+        if args.moe_type == 'simple':
             self.expand = SparseMoE(args)
+        elif args.moe_type == 'millions':
+            self.expand = MillionsOfExperts(args)
         else:
             self.expand = nn.Linear(args.d_model, args.d_inner)
 

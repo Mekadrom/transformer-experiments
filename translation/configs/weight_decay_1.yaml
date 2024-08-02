@@ -1,0 +1,4 @@
+tokenizer_run_name: BPE_SEPARATE
+
+optimizer: adamw
+weight_decay: 0.0001

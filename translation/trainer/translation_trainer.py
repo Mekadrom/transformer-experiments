@@ -1,4 +1,5 @@
 from criteria.labelsmooth import LabelSmoothedCE
+from grokfast import gradfilter_ma, gradfilter_ema
 from prettytable import PrettyTable
 from tqdm import tqdm
 from utils import *
@@ -51,6 +52,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         start_data_time = time.time()
         start_step_time = time.time()
 
+        grads = []
         for i, (src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) in enumerate(self.train_loader):
             src_seqs = src_seqs.to(self.encoder_device)
             tgt_seqs = tgt_seqs.to(self.encoder_device)
@@ -130,6 +132,11 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 if self.args.clip_grad_norm is not None and self.args.clip_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.clip_grad_norm)
                 
+                if self.args.use_grokfast == 'ema':
+                    grads = gradfilter_ema(model, grads=grads, alpha=self.args.grokfast_alpha, lamb=self.args.grokfast_lamb)
+                elif self.args.use_grokfast == 'ma':
+                    grads = gradfilter_ma(model, grads=grads, window_size=self.args.grokfast_window_size, lamb=self.args.grokfast_lamb)
+
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 

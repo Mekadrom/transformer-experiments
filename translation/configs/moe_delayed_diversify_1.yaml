@@ -1,6 +1,6 @@
 tokenizer_run_name: BPE_SEPARATE
 
-use_moe: true
+moe_type: simple
 n_experts: 2
 moe_top_k: 1
 moe_diversity_loss_coefficient: 1.0

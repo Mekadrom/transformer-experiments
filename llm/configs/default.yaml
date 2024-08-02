@@ -8,7 +8,7 @@ d_values: 128
 d_inner: 15360
 use_infinite_attention: false
 infinite_attention_n_segments: 1
-use_moe: false
+moe_type: simple
 n_experts: 0
 moe_top_k: 0
 moe_diversity_loss_coefficient: 0.0

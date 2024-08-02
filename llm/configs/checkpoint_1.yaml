@@ -1,4 +1,4 @@
-use_moe: true
+moe_type: simple
 n_experts: 6
 moe_top_k: 2
 moe_diversity_loss_coefficient: 1.0
