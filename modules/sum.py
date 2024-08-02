@@ -1,4 +1,4 @@
-import torch.nn as nn
+from torch import nn
 
 class Sum(nn.Module):
     def __init__(self):

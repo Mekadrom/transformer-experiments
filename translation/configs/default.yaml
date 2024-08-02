@@ -8,6 +8,7 @@ use_infinite_attention: false
 infinite_attention_n_segments: 0
 infinite_attention_update: false
 moe_type: none
+moe_replace: false
 n_experts: 0
 moe_top_k: 0
 moe_diversity_loss_coefficient: 0.0
@@ -48,24 +49,11 @@ epsilon: 1.e-9
 label_smoothing: 0.1
 clip_grad_norm: 0.0
 
-prune_mode: none
-prune_type: all
-prune_structured: false
-prune_heads_amount: 0.0
-prunt_heads_norm: 2
-prune_ffn_amount: 0.0
-prune_ffn_norm: 2
-n_prune_retrains: 2
-prune_retrain_n_steps: 10000
-prune_retrain_warmup_steps: 800
-
 distillation_teacher_run_name:
 
-train_vae: false
 latent_size: 512
 latent_seq_len: 16
 kl_loss_coefficient: 1.0
-vae_tie_embeddings: false
 
 start_epoch: 0
 print_frequency: 20
@@ -75,12 +63,12 @@ save_initial_checkpoint: false
 cudnn_benchmark: false
 detect_nans: false
 
-torch_compile_model: false
+compile_model: False
 dynamo_cache_size_limit: 16
 
 early_stop: false
 early_stop_patience: 3
 early_stop_min_delta: 0.0
-early_stop_num_latest_checkpoints_to_avg: 3
+early_stop_checkpoint_window: 3
 
 bayesian_iter: false

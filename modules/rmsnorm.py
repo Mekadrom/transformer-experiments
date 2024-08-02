@@ -1,5 +1,6 @@
+from torch import nn
+
 import torch
-import torch.nn as nn
 
 class RMSNorm(nn.Module):
     def __init__(self, emb_dim, eps = 1e-5):

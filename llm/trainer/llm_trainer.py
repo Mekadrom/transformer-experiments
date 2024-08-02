@@ -1,6 +1,6 @@
 from criteria.labelsmooth import LabelSmoothedCE
-from modules import calc_kl_loss
 
+import avg_meter
 import base_trainer
 import matplotlib.pyplot as plt
 import time
@@ -32,11 +32,11 @@ class LLMTrainer(base_trainer.BaseTrainer):
         # training mode enables dropout
         model.train()
 
-        data_time = utils.AverageMeter()
-        step_time = utils.AverageMeter()
-        total_losses = utils.AverageMeter()
-        llm_losses = utils.AverageMeter()
-        moe_gating_variance_losses = utils.AverageMeter()
+        data_time = avg_meter.AverageMeter()
+        step_time = avg_meter.AverageMeter()
+        total_losses = avg_meter.AverageMeter()
+        llm_losses = avg_meter.AverageMeter()
+        moe_gating_variance_losses = avg_meter.AverageMeter()
 
         start_data_time = time.time()
         start_step_time = time.time()
@@ -100,14 +100,14 @@ class LLMTrainer(base_trainer.BaseTrainer):
 
                 # 'epoch' is 0-indexed
                 # early stopping requires the ability to average the last few checkpoints so just save all of them
-                if (epoch in [self.epochs - 1, self.epochs - 2] or self.args.early_stop) and self.steps % 1500 == 0:
+                if (epoch in [self.epochs - 1, self.epochs - 2] or bool(self.args.early_stop)) and self.steps % 1500 == 0:
                     utils.save_checkpoint(epoch, self.model, self.optimizer, prefix=f"runs/{self.run_name}/step{str(self.steps)}_")
             start_data_time = time.time()
 
     def validate_epoch(self, model):
         model.eval()
 
-        losses = utils.AverageMeter()
+        losses = avg_meter.AverageMeter()
 
         with torch.no_grad():
             for src_seqs in tqdm(self.val_loader, total=self.val_loader.n_batches):

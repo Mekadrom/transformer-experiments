@@ -20,8 +20,8 @@ if __name__ == '__main__':
 
     args.run_name = argparser_args.run_name
 
-    args.__setattr__('model_checkpoint', argparser_args.model_checkpoint)
-    args.__setattr__('profile_training', argparser_args.profile_training)
+    setattr(args, "model_checkpoint", argparser_args.model_checkpoint)
+    setattr(args, "profile_training", argparser_args.profile_training)
 
     src_bpe_model, tgt_bpe_model = utils.load_tokenizers(os.path.join('runs', args.tokenizer_run_name))
     model, _ = utils.load_translation_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name=args.model_checkpoint)

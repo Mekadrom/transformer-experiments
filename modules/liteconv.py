@@ -1,5 +1,6 @@
+from torch import nn
+
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 class LiteConv(nn.Module):
@@ -9,8 +10,6 @@ class LiteConv(nn.Module):
         self.args = args
 
         self.glu = nn.GLU(dim=-1)
-        # self.depthwise = nn.Conv1d(args.d_model, args.d_model, kernel_size=args.liteconv_kernel_size, groups=args.d_model, padding=args.liteconv_kernel_size // 2)
-        # self.pointwise = nn.Conv1d(args.d_model, args.d_model, kernel_size=1)
 
         self.padding = args.liteconv_kernel_size // 2
 
@@ -29,7 +28,7 @@ class LiteConv(nn.Module):
         if self.bias is not None:
             nn.init.zeros_(self.bias)
 
-    def forward(self, input):
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         B, T, C = input.size()
         H = self.args.n_heads
 

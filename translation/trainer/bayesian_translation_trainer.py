@@ -83,7 +83,7 @@ class BayesianIter:
             next_args['tokenizer_run_name'] = self.args.tokenizer_run_name
             next_args['lr'] = utils.get_lr(step=1, d_model=next_args.d_model, warmup_steps=next_args.warmup_steps)
             if hasattr(next_args, 'tokens_in_batch'):
-                next_args.__setattr__('batches_per_step', next_args.target_tokens_per_batch // next_args.tokens_in_batch)
+                setattr(next_args, 'batches_per_step', next_args.target_tokens_per_batch // next_args.tokens_in_batch)
 
             print(f"next_args: {next_args}")
 
@@ -128,15 +128,15 @@ class BayesianIter:
             return False
 
         if args.m_encoder_independent_layers > 0:
-            args.__setattr__('encoder_param_sharing_type', 'cycle-rev')
+            setattr(args, 'encoder_param_sharing_type', 'cycle-rev')
             print(f"encoder_param_sharing_type: cycle-rev")
 
         if args.m_decoder_independent_layers > 0:
-            args.__setattr__('decoder_param_sharing_type', 'cycle-rev')
+            setattr(args, 'decoder_param_sharing_type', 'cycle-rev')
             print(f"decoder_param_sharing_type: cycle-rev")
 
-        args.__setattr__('use_admin', bool(args.use_admin))
-        args.__setattr__('learnable_positional_encoding', bool(args.use_admin))
+        setattr(args, 'use_admin', bool(args.use_admin))
+        setattr(args, 'learnable_positional_encoding', bool(args.use_admin))
 
         return True
         

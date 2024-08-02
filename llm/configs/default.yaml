@@ -44,17 +44,6 @@ epsilon: 1.e-9
 label_smoothing: 0.1
 clip_grad_norm: 1.0
 
-prune_mode: none
-prune_type: all
-prune_structured: false
-prune_heads_amount: 0.0
-prunt_heads_norm: 2
-prune_ffn_amount: 0.0
-prune_ffn_norm: 2
-n_prune_retrains: 2
-prune_retrain_n_steps: 10000
-prune_retrain_warmup_steps: 800
-
 distillation_teacher_run_name:
 
 start_epoch: 0
@@ -64,10 +53,10 @@ save_initial_checkpoint: false
 cudnn_benchmark: false
 detect_nans: false
 
-torch_compile_model: false
+compile_model: False
 dynamo_cache_size_limit: 16
 
-early_stop: true
+early_stop: True
 early_stop_patience: 3
 early_stop_min_delta: 0.01
-early_stop_num_latest_checkpoints_to_avg: 3
+early_stop_checkpoint_window: 3

@@ -1,27 +1,14 @@
-from modules.rmsnorm import RMSNorm
-from modules.transformer import Transformer
-from modules.vae_transformer import VAETransformer
-
-import torch.nn as nn
-import utils
+from modules import rmsnorm, transformer
+from torch import nn
 
 class TranslationTransformerModelProvider:
-    def provide_transformer(self, args, src_vocab_size, tgt_vocab_size, tie_embeddings):
-        norm = RMSNorm if args.norm_type == 'rms' else nn.LayerNorm
+    def provide_transformer(self, args, src_vocab_size, tgt_vocab_size, tie_embeddings) -> transformer.Transformer:
+        norm = rmsnorm.RMSNorm if args.norm_type == 'rms' else nn.LayerNorm
 
-        model = Transformer(args=args, src_vocab_size=src_vocab_size, tgt_vocab_size=tgt_vocab_size, norm=norm)
+        model = transformer.Transformer(args=args, src_vocab_size=src_vocab_size, tgt_vocab_size=tgt_vocab_size, norm=norm)
 
         model.encoder = model.encoder.to(args.encoder_device)
         model.decoder = model.decoder.to(args.decoder_device)
         
-        utils.init_transformer_weights(args, model, tie_embeddings=tie_embeddings)
-
         return model
     
-    def provide_vae_transformer(self, args, vocab_size):
-        model = VAETransformer(args=args, vocab_size=vocab_size)
-
-        model = model.to(args.decoder_device)
-        utils.init_transformer_weights(args, model, args.vae_tie_embeddings)
-
-        return model

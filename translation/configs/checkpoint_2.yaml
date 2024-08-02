@@ -6,7 +6,6 @@ n_heads: 12
 d_queries: 128
 d_values: 128
 d_inner: 2560
-
 n_encoder_layers: 16
 n_decoder_layers: 16
 dropout: 0.3

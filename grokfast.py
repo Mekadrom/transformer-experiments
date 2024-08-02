@@ -1,7 +1,8 @@
 from collections import deque
+from torch import nn
 from typing import Dict, Optional, Literal
+
 import torch
-import torch.nn as nn
 
 def gradfilter_ma(
     m: nn.Module,

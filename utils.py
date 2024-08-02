@@ -3,12 +3,14 @@ from datasets import load_dataset
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
 from llm.model_provider import LLMTransformerModelProvider
-from modules import swiglu
-from modules.transformer import Decoder, Transformer, EmbeddingMLP
+from modules import swiglu, transformer
+from torch import nn
+from torch.backends import cudnn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from translation.dataloader import SequenceLoader
 from translation.model_provider import TranslationTransformerModelProvider
+from typing import Optional, Tuple
 
 import argparse
 import codecs
@@ -17,75 +19,18 @@ import os
 import sacrebleu
 import time
 import torch
-import torch.backends.cudnn as cudnn
-import torch.nn as nn
 import torch.nn.functional as F
-import torch.nn.utils.prune as prune
-import yaml
+import yaml_dict
 import youtokentome
 
-def init_transformer_weights(args, model, tie_embeddings=True):
-    # Glorot uniform initialization with a gain of self.args.init_weights_gain
-    for p in model.parameters():
-        # Glorot initialization needs at least two dimensions on the tensor
-        if p.dim() > 1:
-            if args.init_weights_from in ['glorot_uniform', 'xavier_uniform']:
-                nn.init.xavier_uniform_(p, gain=args.init_weights_gain)
-            elif args.init_weights_from in ['glorot_normal', 'xavier_normal']:
-                nn.init.xavier_normal_(p, gain=args.init_weights_gain)
-            elif args.init_weights_from == 'kaiming_uniform':
-                nn.init.kaiming_uniform_(p)
-            elif args.init_weights_from == 'kaiming_normal':
-                nn.init.kaiming_normal_(p)
-            elif args.init_weights_from == 'orthogonal':
-                nn.init.orthogonal_(p)
-            else:
-                raise Exception(f"Unknown weight initialization method: {args.init_weights_from}")
-
-    # Share weights between the embedding layers and the logit layer
-
-    if isinstance(model, Transformer):
-        if isinstance(model.encoder.embedding, nn.Embedding):
-            nn.init.normal_(model.encoder.embedding.weight, mean=0., std=args.d_model**-0.5)
-            model.decoder.embedding.weight = model.encoder.embedding.weight
-
-            if tie_embeddings:
-                model.decoder.classifier.weight = model.decoder.embedding.weight
-        elif isinstance(model.encoder.embedding, EmbeddingMLP):
-            nn.init.normal_(model.encoder.embedding.embedding.weight, mean=0., std=args.d_model**-0.5)
-            model.decoder.embedding.embedding.weight = model.encoder.embedding.embedding.weight
-
-            if tie_embeddings:
-                model.decoder.classifier[-1].weight = model.decoder.embedding.embedding.weight
-    elif isinstance(model, Decoder):
-        if isinstance(model.encoder.embedding, nn.Embedding):
-            if tie_embeddings:
-                model.classifier.weight = model.embedding.weight
-        elif isinstance(model.encoder.embedding, EmbeddingMLP):
-            if tie_embeddings:
-                model.classifier.weight = model.embedding.embedding.weight
-
-    print("Model initialized.")
-
 def get_lr(step, d_model, warmup_steps):
-    """
-    The LR schedule. This version below is twice the definition in the paper, as used in the official T2T repository.
-
-    :param step: training step number
-    :param d_model: size of vectors throughout the transformer model
-    :param warmup_steps: number of warmup steps where learning rate is increased linearly; twice the value in the paper, as in the official T2T repo
-    :return: updated learning rate
-    """
     return 2. * math.pow(d_model, -0.5) * min(math.pow(step, -0.5), step * math.pow(warmup_steps, -1.5))
 
-def get_buffered_positional_encoding(args, d_model, device, maxlen=100, num_dims=1):
-    """
-    Computes positional encoding as defined in the paper.
+def change_lr(optimizer: torch.optim.Optimizer, new_lr: float):
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = new_lr
 
-    :param d_model: size of vectors throughout the transformer model
-    :param max_length: maximum sequence length up to which positional encodings must be calculated
-    :return: positional encoding, a tensor of size (1, max_length, d_model)
-    """
+def get_buffered_positional_encoding(args, d_model, device, maxlen=100, num_dims=1):
     if num_dims == 1:
         positional_encoding = torch.zeros((maxlen, d_model)) # (max_length, d_model)
         for i in range(maxlen):
@@ -101,7 +46,7 @@ def get_buffered_positional_encoding(args, d_model, device, maxlen=100, num_dims
         positional_encoding = positional_encoding_2d(positional_encoding.to(device))
     return positional_encoding  # (1, max_length, d_model) or (1, max_length, max_length, d_model)
 
-def load_tokenizers(run_dir):
+def load_tokenizers(run_dir) -> Tuple[youtokentome.BPE, youtokentome.BPE]:
     src_tokenizer_file = os.path.join(run_dir, 'src_tokenizer.model')
     tgt_tokenizer_file = os.path.join(run_dir, 'tgt_tokenizer.model')
 
@@ -126,14 +71,14 @@ def get_positional_encoding(args, device):
             args,
             d_model=args.d_model,
             device=device,
-            maxlen=args.maxlen+1,
+            maxlen=args.maxlen + 1,
         ).to(device)
         positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
     elif args.positional_encoding_type == 'rotary':
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
 
-def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, tgt_vocab_size, tie_embeddings, checkpoint_model_name='transformer_checkpoint.pth.tar', vae_model=False):
+def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, tgt_vocab_size, tie_embeddings, checkpoint_model_name='transformer_checkpoint.pth.tar') -> Tuple[transformer.Transformer, torch.optim.Optimizer]:
     print('Initializing model...')
 
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
@@ -142,10 +87,7 @@ def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, t
             args.start_epoch = checkpoint['epoch'] + 1
             print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
 
-        if vae_model:
-            model = TranslationTransformerModelProvider().provide_vae_transformer(args, src_vocab_size)
-        else:
-            model = TranslationTransformerModelProvider().provide_transformer(args, src_vocab_size, tgt_vocab_size, tie_embeddings=tie_embeddings)
+        model = TranslationTransformerModelProvider().provide_transformer(args, src_vocab_size, tgt_vocab_size, tie_embeddings=tie_embeddings)
 
         model.load_state_dict(checkpoint['model'].state_dict())
 
@@ -155,22 +97,19 @@ def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, t
             optimizer = None
     else:
         print("Starting from scratch...")
-        if vae_model:
-            model = TranslationTransformerModelProvider().provide_vae_transformer(args, src_vocab_size)
-        else:
-            model = TranslationTransformerModelProvider().provide_transformer(args, src_vocab_size, tgt_vocab_size, tie_embeddings=tie_embeddings)
+        model = TranslationTransformerModelProvider().provide_transformer(args, src_vocab_size, tgt_vocab_size, tie_embeddings=tie_embeddings)
 
         optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
 
     return model, optimizer
 
-def get_optimizer(optimizer_name, model, lr, beta1, beta2, epsilon, weight_decay):
+def get_optimizer(optimizer_name, model: nn.Module, lr, beta1, beta2, epsilon, weight_decay):
     if optimizer_name == 'adamw':
         return torch.optim.AdamW(params=[p for p in model.parameters() if p.requires_grad], lr=lr, betas=(beta1, beta2), eps=epsilon, weight_decay=weight_decay)
     else:
         return torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=lr, betas=(beta1, beta2), eps=epsilon, weight_decay=weight_decay)
 
-def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_model_name='transformer_checkpoint.pth.tar'):
+def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_model_name='transformer_checkpoint.pth.tar') -> Tuple[transformer.Decoder, torch.optim.Optimizer]:
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
         checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
         if hasattr(args, 'start_epoch') and args.start_epoch == 0:
@@ -193,7 +132,7 @@ def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_mo
 
     return model, optimizer
 
-def print_model(model):
+def print_model(model: nn.Module):
     print(f"Model structure: \n {model}")
     print(f'The model has {count_parameters(model):,} total parameters')
     print(f'The model has {sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad):,} non-zero total parameters')
@@ -206,7 +145,7 @@ def print_model(model):
 
     already_counted = []
     total_params = 0
-    for name, param in model.named_parameters():
+    for _, param in model.named_parameters():
         if param.requires_grad and not tensor_in(param, already_counted):
             # print(f"Layer {name} has {param.numel():,} parameters and {torch.count_nonzero(param).item():,} non-zero parameters")
             total_params += param.numel()
@@ -214,19 +153,17 @@ def print_model(model):
 
     print(f'The model has {total_params:,} trainable parameters')
 
-def count_parameters(model):
+def count_parameters(model: nn.Module):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, pad_to_length=None, vae_model=False):
-    target_suffix = 'src' if vae_model else 'tgt'
-
+def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, pad_to_length=None) -> Tuple[SequenceLoader, SequenceLoader, SequenceLoader]:
     print('Loading training data SequenceLoader...')
     train_loader = SequenceLoader(
         src_bpe_model=src_bpe_model,
         tgt_bpe_model=tgt_bpe_model,
         data_folder=os.path.join(run_dir),
         source_suffix="src",
-        target_suffix=target_suffix,
+        target_suffix="tgt",
         split="train",
         tokens_in_batch=tokens_in_batch,
         pad_to_length=pad_to_length
@@ -238,7 +175,7 @@ def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model
         tgt_bpe_model=tgt_bpe_model,
         data_folder=os.path.join(run_dir),
         source_suffix="src",
-        target_suffix=target_suffix,
+        target_suffix="tgt",
         split="val",
         tokens_in_batch=tokens_in_batch,
         pad_to_length=pad_to_length
@@ -250,7 +187,7 @@ def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model
         tgt_bpe_model=tgt_bpe_model,
         data_folder=os.path.join(run_dir),
         source_suffix="src",
-        target_suffix=target_suffix,
+        target_suffix="tgt",
         split="test",
         tokens_in_batch=tokens_in_batch,
         pad_to_length=pad_to_length
@@ -275,7 +212,7 @@ def load_llm_dataset(dataset_name, splits=('train', 'validate', 'test')):
         test_dataset = None
     return train_dataset, val_dataset, test_dataset
 
-def load_llm_data(dataset_name, tokenizer, max_length, batch_size=4):
+def load_llm_data(dataset_name, tokenizer: youtokentome.BPE, max_length, batch_size=4):
     train_dataset, val_dataset, test_dataset = load_llm_dataset(dataset_name)
 
     def tokenize(example):
@@ -294,49 +231,44 @@ def load_llm_data(dataset_name, tokenizer, max_length, batch_size=4):
     return train_loader, val_loader, test_loader
 
 def save_checkpoint(epoch, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
-    """
-    Checkpoint saver. Each save overwrites previous save.
-
-    :param epoch: epoch number (0-indexed)
-    :param model: transformer model
-    :param optimizer: optimized
-    :param prefix: checkpoint filename prefix
-    """
     state = {'epoch': epoch, 'model': model.state_dict(), 'optimizer': optimizer.state_dict()}
     filename = prefix + 'transformer_checkpoint.pth.tar'
     torch.save(state, filename)
 
-def change_lr(optimizer, new_lr):
-    """
-    Scale learning rate by a specified factor.
+def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=None, model_name_prefix='step', model_name_suffix='_transformer_checkpoint.pth.tar'):
+    # Get list of checkpoint names
+    checkpoint_names = [f for f in os.listdir(source_folder) if f.startswith(model_name_prefix) and f.endswith(model_name_suffix)]
+    assert len(checkpoint_names) > 0, "Did not find any checkpoints!"
 
-    :param optimizer: optimizer whose learning rate must be changed
-    :param new_lr: new learning rate
-    """
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = new_lr
+    # order the checkpoint names by step number
+    checkpoint_names = sorted(checkpoint_names, key=lambda x: int(x[len(model_name_prefix):-len(model_name_suffix)]))
 
-class AverageMeter(object):
-    """
-    Keeps track of most recent, average, sum, and count of a metric.
-    """
+    if num_latest_checkpoints is not None:
+        # only take X latest checkpoints
+        checkpoint_names = checkpoint_names[-num_latest_checkpoints:]
 
-    def __init__(self):
-        self.reset()
+    # Average parameters from checkpoints
+    averaged_params = OrderedDict()
+    for c in tqdm(checkpoint_names, desc="Averaging checkpoints"):
+        checkpoint = torch.load(os.path.join(source_folder, c))['model']
+        checkpoint_params = checkpoint.state_dict()
+        checkpoint_param_names = checkpoint_params.keys()
+        for param_name in checkpoint_param_names:
+            if param_name not in averaged_params:
+                averaged_params[param_name] = checkpoint_params[param_name].clone() * 1 / len(checkpoint_names)
+            else:
+                averaged_params[param_name] += checkpoint_params[param_name] * 1 / len(checkpoint_names)
 
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
+    # Use one of the checkpoints as a surrogate to load the averaged parameters into
+    averaged_checkpoint = torch.load(os.path.join(source_folder, checkpoint_names[0]))['model']
+    for param_name in averaged_checkpoint.state_dict().keys():
+        assert param_name in averaged_params
+    averaged_checkpoint.load_state_dict(averaged_params)
 
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
+    # Save averaged checkpoint
+    torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model):
+def greedy_translate(args, src, model: transformer.Transformer, src_bpe_model: youtokentome.BPE, tgt_bpe_model: youtokentome.BPE):
     with torch.no_grad():
         # If the source sequence is a string, convert to a tensor of IDs
         if isinstance(src, str):
@@ -356,15 +288,6 @@ def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model):
         src_key_padding_mask = (encoder_sequences == 0).to(args.encoder_device)
 
         encoder_sequences, _ = model.encoder(encoder_sequences, encoder_sequence_lengths, src_key_padding_mask)
-
-        if args.train_vae:
-            # mu and logvar + reparemeterization trick to sample from the latent space, which replaces the encoder's output
-            cls_token = encoder_sequences[:, 0, :]
-            mu = model.mu(cls_token)
-            logvar = model.logvar(cls_token)
-
-            encoder_sequences = model.reparameterize(mu, logvar).unsqueeze(0)
-            encoder_sequence_lengths = torch.ones(encoder_sequences.shape[:-1], dtype=torch.long, device=encoder_sequences.device)
 
         steps = 0
         decoded = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]).to(args.decoder_device)
@@ -388,7 +311,7 @@ def greedy_translate(args, src, model, src_bpe_model, tgt_bpe_model):
 
         return ' '.join(tgt_bpe_model.decode(decoded.tolist(), ignore_ids=[0, 2, 3]))
 
-def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6):
+def beam_search_translate(args, src, model: transformer.Transformer, src_bpe_model: youtokentome.BPE, tgt_bpe_model: youtokentome.BPE, beam_size=4, length_norm_coefficient=0.6):
     """
     Translates a source language sequence to the target language, with beam search decoding.
 
@@ -419,42 +342,32 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_s
         else:
             encoder_sequences = src
         encoder_sequences = encoder_sequences.to(args.encoder_device) # (1, source_sequence_length)
-        encoder_sequence_lengths = torch.LongTensor([encoder_sequences.size(1)]).to(args.encoder_device) # (1)
 
         src_key_padding_mask = (encoder_sequences == 0).to(args.encoder_device) # (1, source_sequence_length)
         
-        # Encode
-        encoder_sequences, (t_mu, t_logvar), (q_mus, q_logvars), (k_mus, k_logvars), (v_mus, v_logvars), gating_variances = model.encoder(encoder_sequences, src_key_padding_mask) # (1, source_sequence_length, d_model)
-        if args.train_vae:
-            # mu and logvar + reparemeterization trick to sample from the latent space, which replaces the encoder's output
-            cls_token = encoder_sequences[:, 0, :]
-            mu = model.mu(cls_token)
-            logvar = model.logvar(cls_token)
+        encoder_sequences: Optional[torch.Tensor] = None
+        encoder_sequences, _ = model.encoder(encoder_sequences, src_key_padding_mask) # (1, source_sequence_length, d_model)
 
-            encoder_sequences = model.reparameterize(mu, logvar)
-
-        # Our hypothesis to begin with is just <BOS>
+        # hypotheses begin with just <BOS>
         hypotheses = torch.LongTensor([[tgt_bpe_model.subword_to_id('<BOS>')]]) # (1, 1)
 
-        # Tensor to store hypotheses' scores; now it's just 0
+        # tensor to store hypotheses' scores; now it's just 0
         hypotheses_scores = torch.zeros(1).to(args.decoder_device) # (1)
 
-        # Lists to store completed hypotheses and their scores
-        completed_hypotheses = list()
-        completed_hypotheses_scores = list()
+        # lists to store completed hypotheses and their scores
+        completed_hypotheses = []
+        completed_hypotheses_scores = []
 
-        # Start decoding
         step = 1
-
-        # Assume "s" is the number of incomplete hypotheses currently in the bag; a number less than or equal to "k"
-        # At this point, s is 1, because we only have 1 hypothesis to work with, i.e. "<BOS>"
+        # assume "s" is the number of incomplete hypotheses currently in the bag; a number less than or equal to "k"
+        # at this point, s is 1, because we only have 1 hypothesis to work with, i.e. "<BOS>"
         while True:
             s = hypotheses.size(0)
             hypotheses = hypotheses.to(args.encoder_device)
 
             tgt_key_padding_masks = torch.zeros(s, hypotheses.size(1)).to(args.decoder_device).bool()
 
-            decoder_sequences, (t_mu, t_logvar), (s_q_mus, s_q_logvars), (s_k_mus, s_k_logvars), (s_v_mus, s_v_logvars), (c_q_mus, c_q_logvars), (c_k_mus, c_k_logvars), (c_v_mus, c_v_logvars), gating_variances = model.decoder(
+            decoder_sequences, _ = model.decoder(
                 hypotheses,
                 encoder_sequences.repeat(s, 1, 1),
                 src_key_padding_mask.repeat(s, 1), # (s, 1)
@@ -519,40 +432,7 @@ def beam_search_translate(args, src, model, src_bpe_model, tgt_bpe_model, beam_s
 
         return best_hypothesis, all_hypotheses
 
-def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=None, model_name_prefix='step', model_name_suffix='_transformer_checkpoint.pth.tar'):
-    # Get list of checkpoint names
-    checkpoint_names = [f for f in os.listdir(source_folder) if f.startswith(model_name_prefix) and f.endswith(model_name_suffix)]
-    assert len(checkpoint_names) > 0, "Did not find any checkpoints!"
-
-    # order the checkpoint names by step number
-    checkpoint_names = sorted(checkpoint_names, key=lambda x: int(x[len(model_name_prefix):-len(model_name_suffix)]))
-
-    if num_latest_checkpoints is not None:
-        # only take X latest checkpoints
-        checkpoint_names = checkpoint_names[-num_latest_checkpoints:]
-
-    # Average parameters from checkpoints
-    averaged_params = OrderedDict()
-    for c in tqdm(checkpoint_names, desc="Averaging checkpoints"):
-        checkpoint = torch.load(os.path.join(source_folder, c))['model']
-        checkpoint_params = checkpoint.state_dict()
-        checkpoint_param_names = checkpoint_params.keys()
-        for param_name in checkpoint_param_names:
-            if param_name not in averaged_params:
-                averaged_params[param_name] = checkpoint_params[param_name].clone() * 1 / len(checkpoint_names)
-            else:
-                averaged_params[param_name] += checkpoint_params[param_name] * 1 / len(checkpoint_names)
-
-    # Use one of the checkpoints as a surrogate to load the averaged parameters into
-    averaged_checkpoint = torch.load(os.path.join(source_folder, checkpoint_names[0]))['model']
-    for param_name in averaged_checkpoint.state_dict().keys():
-        assert param_name in averaged_params
-    averaged_checkpoint.load_state_dict(averaged_params)
-
-    # Save averaged checkpoint
-    torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
-
-def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python, test_loader=None, vae_model=False):
+def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacrebleu_in_python, test_loader=None):
     """
     Returns None when command line sacrebleu is used
     """
@@ -562,12 +442,11 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
     bleu_score = None
 
     if test_loader is None:
-        target_suffix = "src" if vae_model else "tgt"
         test_loader = SequenceLoader(src_bpe_model=src_bpe_model,
                                     tgt_bpe_model=tgt_bpe_model,
                                     data_folder=os.path.join('.', "data"),
                                     source_suffix="src",
-                                    target_suffix=target_suffix,
+                                    target_suffix="tgt",
                                     split="test",
                                     tokens_in_batch=None)
         test_loader.create_batches()
@@ -576,7 +455,7 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
     with torch.no_grad():
         hypotheses = list()
         references = list()
-        for i, (source_sequence, target_sequence, source_sequence_length, target_sequence_length) in enumerate(tqdm(test_loader, total=test_loader.n_batches)):
+        for i, (source_sequence, target_sequence, _, _) in enumerate(tqdm(test_loader, total=test_loader.n_batches)):
             hypotheses.append(beam_search_translate(args, src=source_sequence, src_bpe_model=src_bpe_model, tgt_bpe_model=tgt_bpe_model, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
             references.extend(tgt_bpe_model.decode(target_sequence.tolist(), ignore_ids=[0, 2, 3]))
 
@@ -615,57 +494,6 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
 
     return bleu_score
 
-def prune_structured(layer, is_encoder_layer, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type):
-    # todo: implement this
-    print("Pruning structured not supported yet")
-
-    # if prune_type in ['heads', 'all']:
-    #     prune.ln_structured(layer[0], name='weight', amount=prune_heads_amount, n=prune_heads_norm, dim=0)
-
-    # if is_encoder_layer:
-    #     if prune_type in ['ffn', 'all']:
-    #         prune.ln_structured(layer[1], name='weight', amount=prune_ffn_amount, n=prune_ffn_norm, dim=0)
-    # else:
-    #     if prune_type in ['heads', 'all']:
-    #         prune.ln_structured(layer[1], name='weight', amount=prune_heads_amount, n=prune_heads_norm, dim=0)
-
-    #     if prune_type in ['ffn', 'all']:
-    #         prune.ln_structured(layer[2], name='weight', amount=prune_ffn_amount, n=prune_ffn_norm, dim=0)
-
-def prune_unstructured(layer, is_encoder_layer, prune_heads_amount, prune_ffn_amount, prune_type):
-    if prune_type in ['heads', 'all']:
-        prune.l1_unstructured(layer[0], name='weight', amount=prune_heads_amount, dim=0)
-
-    if is_encoder_layer:
-        if prune_type in ['ffn', 'all']:
-            prune.l1_unstructured(layer[1], name='weight', amount=prune_ffn_amount, dim=0)
-    else:
-        if prune_type in ['heads', 'all']:
-            prune.l1_unstructured(layer[1], name='weight', amount=prune_heads_amount, dim=0)
-
-        if prune_type in ['ffn', 'all']:
-            prune.l1_unstructured(layer[2], name='weight', amount=prune_ffn_amount, dim=0)
-
-def prune_model(model, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, is_prune_structured, prune_type):
-    """
-    Prune the model.
-
-    :param args: command-line arguments
-    :param model: transformer model
-    """
-
-    for encoder_layer in model.encoder.encoder_layers:
-        if is_prune_structured:
-            prune_structured(encoder_layer, True, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
-        else:
-            prune_unstructured(encoder_layer, True, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
-
-    for decoder_layer in model.decoder.decoder_layers:
-        if is_prune_structured:
-            prune_structured(decoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
-        else:
-            prune_unstructured(decoder_layer, False, prune_heads_amount, prune_heads_norm, prune_ffn_amount, prune_ffn_norm, prune_type)
-
 def get_activation_function(activation_function_name):
     if activation_function_name == 'relu':
         return nn.ReLU
@@ -689,24 +517,6 @@ def create_activation_function(d_in, activation_function_name):
         return swiglu.SwiGLU(d_in)
     return get_activation_function(activation_function_name)()
 
-class YamlDict(dict):
-    def __init__(self, *args, **kwargs):
-        super(YamlDict, self).__init__(*args, **kwargs)
-        self.__dict__ = self
-
-    def __getattribute__(self, name):
-        return self.__getitem__(name) if name in self else super().__getattribute__(name)
-
-def load_yaml(file_path, ovr_args):
-    file_path_dir = os.path.dirname(file_path)
-    with open(os.path.join(file_path_dir, 'default.yaml'), 'r') as default_config:
-        with open(file_path, 'r') as f:
-            y = yaml.safe_load(default_config)
-            y.update(yaml.safe_load(f))
-            if ovr_args is not None:
-                y.update(ovr_args)
-            return YamlDict(y)
-
 def get_args():
     argparser = argparse.ArgumentParser()
 
@@ -721,8 +531,9 @@ def get_args():
     if len(unk) > 0:
         print(f"unknown arguments: {unk}")
 
-    args = load_yaml(argsparser_args.config_file_path, unk)
-    args.__setattr__('run_name', argsparser_args.run_name)
+    args = yaml_dict.load_yaml(argsparser_args.config_file_path, unk)
+
+    setattr(args, 'run_name', argsparser_args.run_name)
 
     print(f"args: {args}")
 
@@ -731,8 +542,8 @@ def get_args():
         exit(1)
 
     if hasattr(args, 'tokens_in_batch'):
-        args.__setattr__('batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
-    args.__setattr__('lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))
+        setattr(args, 'batches_per_step', args.target_tokens_per_batch // args.tokens_in_batch)
+    setattr(args, 'lr', get_lr(step=1, d_model=args.d_model, warmup_steps=args.warmup_steps))
 
     torch.set_printoptions(profile='full')
 

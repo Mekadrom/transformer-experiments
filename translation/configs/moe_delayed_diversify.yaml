@@ -1,6 +1,8 @@
 tokenizer_run_name: BPE_SEPARATE
 
 moe_type: simple
+moe_replace: true
 n_experts: 2
 moe_top_k: 1
 moe_diversity_loss_coefficient: 1.0
+moe_diversity_inclusion_epoch: 11
