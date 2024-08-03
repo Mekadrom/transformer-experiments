@@ -7,12 +7,6 @@ d_inner: 1280
 use_infinite_attention: false
 infinite_attention_n_segments: 0
 infinite_attention_update: false
-moe_type: none
-moe_replace: false
-n_experts: 0
-moe_top_k: 0
-moe_diversity_loss_coefficient: 0.0
-moe_diversity_inclusion_epoch: 0
 n_encoder_layers: 6
 n_decoder_layers: 6
 dropout: 0.1
@@ -21,6 +15,18 @@ norm_eps: 0.00001
 optimizer: adam
 use_grokfast: none
 weight_decay: 0.0
+
+moe_type: none
+moe_replace: False
+moe_n_experts: 0
+moe_top_k: 0
+moe_diversity_loss_coefficient: 0.0
+moe_diversity_inclusion_epoch: 0
+millions_moe_n_heads: 0
+millions_moe_d_keys: 0
+millions_moe_input_dropout: 0.0
+millions_moe_query_dropout: 0.0
+millions_moe_value_dropout: 0.0
 
 maxlen: 150
 

@@ -1,0 +1,7 @@
+tokenizer_run_name: BPE_SEPARATE
+
+moe_type: millions
+moe_replace: True
+moe_top_k: 32
+millions_moe_n_heads: 4
+millions_moe_d_keys: 128

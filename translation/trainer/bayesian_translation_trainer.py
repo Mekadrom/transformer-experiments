@@ -123,8 +123,8 @@ class BayesianIter:
             print(f"m_decoder_independent_layers > n_decoder_layers {args.m_decoder_independent_layers} > {args.n_decoder_layers}")
             return False
         
-        if args.moe_top_k > args.n_experts:
-            print(f"moe_top_k > n_experts {args.moe_top_k} > {args.n_experts}")
+        if args.moe_top_k > args.moe_n_experts:
+            print(f"moe_top_k > moe_n_experts {args.moe_top_k} > {args.moe_n_experts}")
             return False
 
         if args.m_encoder_independent_layers > 0:

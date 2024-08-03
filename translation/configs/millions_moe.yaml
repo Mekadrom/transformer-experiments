@@ -1,4 +1,0 @@
-tokenizer_run_name: BPE_SEPARATE
-
-moe_type: millions
-moe_replace: true

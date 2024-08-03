@@ -1,6 +1,6 @@
+from modules import sparse_moe
 from torch import nn
 
-import sparse_moe
 import utils
 
 class PositionWiseFCNetwork(nn.Module):

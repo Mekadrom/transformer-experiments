@@ -3,7 +3,7 @@ from datasets import load_dataset
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
 from llm.model_provider import LLMTransformerModelProvider
-from modules import swiglu, transformer
+from modules.swiglu import SwiGLU
 from torch import nn
 from torch.backends import cudnn
 from torch.utils.data import DataLoader
@@ -78,7 +78,7 @@ def get_positional_encoding(args, device):
         positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
     return positional_encoding
 
-def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, tgt_vocab_size, tie_embeddings, checkpoint_model_name='transformer_checkpoint.pth.tar') -> Tuple[transformer.Transformer, torch.optim.Optimizer]:
+def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, tgt_vocab_size, tie_embeddings, checkpoint_model_name='transformer_checkpoint.pth.tar'):
     print('Initializing model...')
 
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
@@ -109,7 +109,7 @@ def get_optimizer(optimizer_name, model: nn.Module, lr, beta1, beta2, epsilon, w
     else:
         return torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=lr, betas=(beta1, beta2), eps=epsilon, weight_decay=weight_decay)
 
-def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_model_name='transformer_checkpoint.pth.tar') -> Tuple[transformer.Decoder, torch.optim.Optimizer]:
+def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_model_name='transformer_checkpoint.pth.tar'):
     if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
         checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
         if hasattr(args, 'start_epoch') and args.start_epoch == 0:
@@ -268,7 +268,7 @@ def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=
     # Save averaged checkpoint
     torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def greedy_translate(args, src, model: transformer.Transformer, src_bpe_model: youtokentome.BPE, tgt_bpe_model: youtokentome.BPE):
+def greedy_translate(args, src, model: nn.Module, src_bpe_model: youtokentome.BPE, tgt_bpe_model: youtokentome.BPE):
     with torch.no_grad():
         # If the source sequence is a string, convert to a tensor of IDs
         if isinstance(src, str):
@@ -311,7 +311,7 @@ def greedy_translate(args, src, model: transformer.Transformer, src_bpe_model: y
 
         return ' '.join(tgt_bpe_model.decode(decoded.tolist(), ignore_ids=[0, 2, 3]))
 
-def beam_search_translate(args, src, model: transformer.Transformer, src_bpe_model: youtokentome.BPE, tgt_bpe_model: youtokentome.BPE, beam_size=4, length_norm_coefficient=0.6):
+def beam_search_translate(args, src, model: nn.Module, src_bpe_model: youtokentome.BPE, tgt_bpe_model: youtokentome.BPE, beam_size=4, length_norm_coefficient=0.6):
     """
     Translates a source language sequence to the target language, with beam search decoding.
 
@@ -514,7 +514,7 @@ def get_activation_function(activation_function_name):
 
 def create_activation_function(d_in, activation_function_name):
     if activation_function_name == 'swiglu':
-        return swiglu.SwiGLU(d_in)
+        return SwiGLU(d_in)
     return get_activation_function(activation_function_name)()
 
 def get_args():

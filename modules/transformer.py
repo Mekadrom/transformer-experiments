@@ -63,10 +63,16 @@ class EncoderLayer(nn.Module):
             self.self_attn_residual = sum.Sum()
             self.fcn_residual = sum.Sum()
 
+        moe = None
         if args.moe_type == 'millions':
-            self.expand = millions_moe.MillionsMOE(args)
+            moe = millions_moe.MillionsMOE(args)
         else:
             self.fcn = positionwise_fcn.PositionWiseFCNetwork(args, norm=norm)
+
+        if moe is not None and bool(args.moe_replace):
+            self.fcn = moe
+        elif moe is not None:
+            self.fcn = nn.Sequential(millions_moe, self.fcn)
 
     def forward(self, encoder_sequences, key_padding_mask):
         self_attn, _ = self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, key_padding_mask)
@@ -216,10 +222,16 @@ class DecoderLayer(nn.Module):
             self.cross_attn_residual = sum.Sum()
             self.fcn_residual = sum.Sum()
 
+        moe = None
         if args.moe_type == 'millions':
-            self.expand = millions_moe.MillionsMOE(args)
+            moe = millions_moe.MillionsMOE(args)
         else:
             self.fcn = positionwise_fcn.PositionWiseFCNetwork(args, norm=norm)
+
+        if moe is not None and bool(args.moe_replace):
+            self.fcn = moe
+        elif moe is not None:
+            self.fcn = nn.Sequential(millions_moe, self.fcn)
 
     def forward(self, decoder_sequences: torch.Tensor, encoder_sequences: torch.Tensor, src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> torch.Tensor:
         self_attn, _ = self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, tgt_key_padding_mask)

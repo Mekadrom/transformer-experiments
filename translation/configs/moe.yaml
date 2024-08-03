@@ -1,6 +1,6 @@
 tokenizer_run_name: BPE_SEPARATE
 
 moe_type: simple
-moe_replace: true
-n_experts: 2
+moe_replace: True
+moe_n_experts: 2
 moe_top_k: 1

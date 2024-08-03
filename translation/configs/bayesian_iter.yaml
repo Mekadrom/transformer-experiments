@@ -17,7 +17,7 @@ initial_run_args:
   d_values: 64
   heads_activation: 'none'
   d_inner: 2048
-  n_experts: 1
+  moe_n_experts: 1
   moe_top_k: 1
   moe_diversity_loss_coefficient: 0.0
   moe_diversity_inclusion_epoch: 0
@@ -90,7 +90,7 @@ bayesian_arg_ranges:
     min: 256
     max: 4096
 
-  - name: n_experts
+  - name: moe_n_experts
     type: int
     min: 1
     max: 8
