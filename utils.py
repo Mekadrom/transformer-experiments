@@ -1,27 +1,32 @@
 from collections import OrderedDict
+from dataloader import SequenceLoader
 from datasets import load_dataset
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from rotary_embedding_torch import RotaryEmbedding
-from llm.model_provider import LLMTransformerModelProvider
 from modules.swiglu import SwiGLU
 from torch import nn
 from torch.backends import cudnn
-from torch.utils.data import DataLoader
 from tqdm import tqdm
-from translation.dataloader import SequenceLoader
-from translation.model_provider import TranslationTransformerModelProvider
 from typing import Optional, Tuple
 
 import argparse
 import codecs
 import math
+import numpy as np
 import os
+import random
 import sacrebleu
 import time
 import torch
 import torch.nn.functional as F
 import yaml_dict
 import youtokentome
+
+def sanitize_model(model):
+    if hasattr(model, '_orig_mod'):
+        return sanitize_model(model._orig_mod)
+    
+    return model
 
 def get_lr(step, d_model, warmup_steps):
     return 2. * math.pow(d_model, -0.5) * min(math.pow(step, -0.5), step * math.pow(warmup_steps, -1.5))
@@ -65,72 +70,21 @@ def load_tokenizers(run_dir) -> Tuple[youtokentome.BPE, youtokentome.BPE]:
 
     return src_bpe_model, tgt_bpe_model
 
-def get_positional_encoding(args, device):
-    if args.positional_encoding_type == 'sinusoidal' or args.positional_encoding_type == 'buffer':
-        positional_encoding = get_buffered_positional_encoding(
-            args,
-            d_model=args.d_model,
-            device=device,
-            maxlen=args.maxlen + 1,
-        ).to(device)
-        positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
-    elif args.positional_encoding_type == 'rotary':
-        positional_encoding = RotaryEmbedding(dim=args.positional_encoding_dim)
+def get_tensor_positional_encoding(args, device):
+    positional_encoding = get_buffered_positional_encoding(
+        args,
+        d_model=args.d_model,
+        device=device,
+        maxlen=args.maxlen + 1,
+    ).to(device)
+    positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
     return positional_encoding
-
-def load_translation_checkpoint_or_generate_new(args, run_dir, src_vocab_size, tgt_vocab_size, tie_embeddings, checkpoint_model_name='transformer_checkpoint.pth.tar'):
-    print('Initializing model...')
-
-    if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
-        checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
-        if hasattr(args, 'start_epoch') and args.start_epoch == 0:
-            args.start_epoch = checkpoint['epoch'] + 1
-            print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
-
-        model = TranslationTransformerModelProvider().provide_transformer(args, src_vocab_size, tgt_vocab_size, tie_embeddings=tie_embeddings)
-
-        model.load_state_dict(checkpoint['model'].state_dict())
-
-        if 'optimizer' in checkpoint:
-            optimizer = checkpoint['optimizer']
-        else:
-            optimizer = None
-    else:
-        print("Starting from scratch...")
-        model = TranslationTransformerModelProvider().provide_transformer(args, src_vocab_size, tgt_vocab_size, tie_embeddings=tie_embeddings)
-
-        optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=args.lr, betas=[args.beta1, args.beta2], eps=args.epsilon)
-
-    return model, optimizer
 
 def get_optimizer(optimizer_name, model: nn.Module, lr, beta1, beta2, epsilon, weight_decay):
     if optimizer_name == 'adamw':
         return torch.optim.AdamW(params=[p for p in model.parameters() if p.requires_grad], lr=lr, betas=(beta1, beta2), eps=epsilon, weight_decay=weight_decay)
     else:
         return torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=lr, betas=(beta1, beta2), eps=epsilon, weight_decay=weight_decay)
-
-def load_llm_checkpoint_or_generate_new(args, run_dir, vocab_size, checkpoint_model_name='transformer_checkpoint.pth.tar'):
-    if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
-        checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
-        if hasattr(args, 'start_epoch') and args.start_epoch == 0:
-            args.start_epoch = checkpoint['epoch'] + 1
-            print('\nLoaded checkpoint from epoch %d.\n' % args.start_epoch)
-
-        model = LLMTransformerModelProvider().provide_transformer(args, vocab_size, tie_embeddings=args.tie_embeddings)
-
-        model.load_state_dict(checkpoint['model'].state_dict())
-
-        optimizer = get_optimizer(args.optimizer, model, args.lr, args.beta1, args.beta2, args.epsilon, args.weight_decay)
-
-        if 'optimizer' in checkpoint:
-            optimizer_state_dict = checkpoint['optimizer']
-            optimizer.load_state_dict(optimizer_state_dict)
-    else:
-        print("Starting from scratch...")
-        model = LLMTransformerModelProvider().provide_transformer(args, vocab_size, tie_embeddings=args.tie_embeddings)
-        optimizer = get_optimizer(args.optimizer, model, args.lr, args.beta1, args.beta2, args.epsilon, args.weight_decay)
-
-    return model, optimizer
 
 def print_model(model: nn.Module):
     print(f"Model structure: \n {model}")
@@ -194,44 +148,8 @@ def load_translation_data(tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model
     )
     return train_loader, val_loader, test_loader
 
-def load_llm_dataset(dataset_name, splits=('train', 'validate', 'test')):
-    if 'train' in splits:
-        print('Loading training data...')
-        train_dataset = load_dataset(dataset_name, num_proc=12, split="train")
-    else:
-        train_dataset = None
-    if 'validate' in splits:
-        print('Lazy loading validation data...')
-        val_dataset = load_dataset(dataset_name, streaming=True, split="validate")
-    else:
-        val_dataset = None
-    if 'test' in splits:
-        print('Lazy loading test data...')
-        test_dataset = load_dataset(dataset_name, streaming=True, split="test")
-    else:
-        test_dataset = None
-    return train_dataset, val_dataset, test_dataset
-
-def load_llm_data(dataset_name, tokenizer: youtokentome.BPE, max_length, batch_size=4):
-    train_dataset, val_dataset, test_dataset = load_llm_dataset(dataset_name)
-
-    def tokenize(example):
-        encoded = tokenizer.encode(example["content"], output_type=youtokentome.OutputType.ID, bos=True, eos=True)
-        trunc_pad = encoded[:max_length] if len(encoded) > max_length else encoded + [0] * (max_length - len(encoded))
-        return {"input_ids": trunc_pad}
-
-    train_dataset = train_dataset.map(tokenize, batched=False, remove_columns=["content"])
-    val_dataset = val_dataset.map(tokenize, batched=False, remove_columns=["content"])
-    test_dataset = test_dataset.map(tokenize, batched=False, remove_columns=["content"])
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader, test_loader
-
 def save_checkpoint(epoch, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
-    state = {'epoch': epoch, 'model': model.state_dict(), 'optimizer': optimizer.state_dict()}
+    state = {'epoch': epoch, 'model': model, 'optimizer': optimizer}
     filename = prefix + 'transformer_checkpoint.pth.tar'
     torch.save(state, filename)
 
@@ -320,6 +238,7 @@ def beam_search_translate(args, src, model: nn.Module, src_bpe_model: youtokento
     :param length_norm_coefficient: co-efficient for normalizing decoded sequences' scores by their lengths
     :return: the best hypothesis, and all candidate hypotheses
     """
+    encoder_sequences: Optional[torch.Tensor] = None
     with torch.no_grad():
         # Beam size
         k = beam_size
@@ -345,7 +264,6 @@ def beam_search_translate(args, src, model: nn.Module, src_bpe_model: youtokento
 
         src_key_padding_mask = (encoder_sequences == 0).to(args.encoder_device) # (1, source_sequence_length)
         
-        encoder_sequences: Optional[torch.Tensor] = None
         encoder_sequences, _ = model.encoder(encoder_sequences, src_key_padding_mask) # (1, source_sequence_length, d_model)
 
         # hypotheses begin with just <BOS>
@@ -549,5 +467,14 @@ def get_args():
 
     torch.autograd.set_detect_anomaly(args.detect_nans)
     cudnn.benchmark = bool(args.cudnn_benchmark)
+
+    if 'seed' in args and args.seed is not None:
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        np.random.seed(args.seed)
+        random.seed(args.seed)
 
     return args, unk

@@ -1,0 +1,6 @@
+tokenizer_run_name: BPE_SEPARATE
+
+use_grokfast: ma
+grokfast_lambda: 5.0
+grokfast_window_size: 50
+tokens_in_batch: 2500

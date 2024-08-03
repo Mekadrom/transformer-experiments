@@ -1,14 +1,10 @@
-from typing import Any
 from skopt import Optimizer
 from skopt.space import Real, Integer, Categorical
 
 import os
-import sys
-
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-
 import trainer.translation_trainer as translation_trainer
 import utils
+import yaml_dict
 
 class MetricDef:
     def __init__(self, name, goal, weight, normalize):
@@ -78,7 +74,7 @@ class BayesianIter:
 
             next_args.update(ask)
 
-            next_args = utils.YamlDict(next_args)
+            next_args = yaml_dict.YamlDict(next_args)
             next_args['run_name'] = f"{self.args.run_name}/bayesian_{bayesian_iter}"
             next_args['tokenizer_run_name'] = self.args.tokenizer_run_name
             next_args['lr'] = utils.get_lr(step=1, d_model=next_args.d_model, warmup_steps=next_args.warmup_steps)

@@ -1,9 +1,12 @@
+seed: 42
+maxlen: 150
+
 d_model: 512
 n_gqa_groups: 1
 n_heads: 8
 d_queries: 64
 d_values: 64
-d_inner: 1280
+d_inner: 2048
 use_infinite_attention: false
 infinite_attention_n_segments: 0
 infinite_attention_update: false
@@ -12,9 +15,10 @@ n_decoder_layers: 6
 dropout: 0.1
 norm_type: layer
 norm_eps: 0.00001
-optimizer: adam
-use_grokfast: none
+optimizer: adamw
 weight_decay: 0.0
+use_grok_scaled_attn: False
+use_grokfast: none
 
 moe_type: none
 moe_replace: False
@@ -28,22 +32,21 @@ millions_moe_input_dropout: 0.0
 millions_moe_query_dropout: 0.0
 millions_moe_value_dropout: 0.0
 
-maxlen: 150
-
 init_weights_from: glorot_uniform
 init_weights_gain: 1.0
 use_admin: false
 
-positional_encoding_type: rotary
-positional_encoding_dim: 64
+positional_encoding_type: sinusoidal
+positional_encoding_dim: 0
 learnable_positional_encoding: false
 
 encoder_param_sharing_type: none
 decoder_param_sharing_type: none
 m_encoder_independent_layers: 0
 m_decoder_independent_layers: 0
-activation_function: swiglu
-latent_repr_type: none
+activation_function: relu
+embedding_compression_dim: 0
+embedding_compression_activation: none
 
 tokens_in_batch: 5000
 target_tokens_per_batch: 25000
@@ -55,11 +58,12 @@ epsilon: 1.e-9
 label_smoothing: 0.1
 clip_grad_norm: 0.0
 
-distillation_teacher_run_name:
+early_stop: false
+early_stop_patience: 3
+early_stop_min_delta: 0.0
+early_stop_checkpoint_window: 3
 
-latent_size: 512
-latent_seq_len: 16
-kl_loss_coefficient: 1.0
+distillation_teacher_run_name:
 
 start_epoch: 0
 print_frequency: 20
@@ -71,10 +75,5 @@ detect_nans: false
 
 compile_model: False
 dynamo_cache_size_limit: 16
-
-early_stop: false
-early_stop_patience: 3
-early_stop_min_delta: 0.0
-early_stop_checkpoint_window: 3
 
 bayesian_iter: false

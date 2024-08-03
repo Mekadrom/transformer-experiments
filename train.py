@@ -1,6 +1,6 @@
-from translation.trainer.bayesian_translation_trainer import BayesianIter
-from translation.trainer.translation_trainer import TranslationTrainer
-from translation.trainer.translation_distillation_trainer import DistillationTrainer
+from trainer.bayesian_translation_trainer import BayesianIter
+from trainer.translation_trainer import TranslationTrainer
+from trainer.translation_distillation_trainer import DistillationTrainer
 
 import os
 import sys

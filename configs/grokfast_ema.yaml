@@ -1,0 +1,5 @@
+tokenizer_run_name: BPE_SEPARATE
+
+use_grokfast: ema
+grokfast_lambda: 2.0
+grokfast_alpha: 0.98

@@ -20,7 +20,7 @@ class PositionWiseFCNetwork(nn.Module):
 
         self.condense = nn.Linear(args.d_inner, args.d_model)
 
-    def forward(self, sequences):
+    def forward(self, sequences, *args):
         sequences = self.layer_norm(sequences)  # (N, pad_length, d_model)
 
         if type(self.expand) == nn.Linear:

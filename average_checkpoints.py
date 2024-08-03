@@ -20,7 +20,7 @@ run_dir = os.path.join('translation', 'runs', args.run_name)
 if not os.path.exists(run_dir):
     os.makedirs(run_dir)
 
-src_bpe_model, tgt_bpe_model = utils.load_tokenizers(os.path.join('translation', 'runs', args.tokenizer_run_name))
+src_bpe_model, tgt_bpe_model = utils.load_tokenizers(os.path.join('runs', args.tokenizer_run_name))
 
 model, optimizer = utils.load_translation_checkpoint_or_generate_new(args, run_dir, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=src_bpe_model==tgt_bpe_model, checkpoint_model_name=args.model_checkpoint)
 

@@ -1,3 +1,4 @@
+from rotary_embedding_torch import RotaryEmbedding
 from torch import nn
 from typing import List, Optional, Tuple
 
@@ -15,7 +16,7 @@ class MultiHeadAttention(nn.Module):
         self.in_decoder = in_decoder
 
         if args.positional_encoding_type == 'rotary':
-            self.rotary_embedding = utils.get_positional_encoding(args, device)
+            self.rotary_embedding = RotaryEmbedding(dim=args.positional_encoding_dim).to(device)
 
         self.n_q_heads = args.n_gqa_groups * args.n_heads
         self.n_heads = args.n_heads
@@ -24,7 +25,7 @@ class MultiHeadAttention(nn.Module):
         # A linear projection to cast (n_kv_heads sets of) queries from the input query sequences
         self.cast_queries = nn.Linear(args.d_model, self.n_q_heads * args.d_queries) # (N, query_sequence_pad_length, n_kv_heads * d_queries)
         # A linear projection to cast (n_kv_heads sets of) keys and values from the input reference sequences
-        self.cast_keys = nn.Linear(args.d_model, args.n_heads * args.d_queries) # (N, key_value_sequence_pad_length, n_kv_heads * d_keys)
+        self.cast_keys = nn.Linear(args.d_model, args.n_heads * args.d_queries) # (N, key_value_sequence_pad_length, n_kv_heads * d_queries)
         self.cast_values = nn.Linear(args.d_model, args.n_heads * args.d_values) # (N, key_value_sequence_pad_length, n_kv_heads * d_values)
 
         # a linear projection to cast (n_q_heads sets of) computed attention-weighted vectors to output vectors
@@ -91,7 +92,7 @@ class MultiHeadAttention(nn.Module):
 
         # Split the last dimension by the n_kv_heads subspaces
         q_heads = q_heads.contiguous().view(N, t, self.n_gqa_groups, self.n_heads, self.args.d_queries) # (N, query_sequence_pad_length, n_gqa_groups, n_heads, d_queries)
-        k_heads = k_heads.contiguous().view(N, T, self.n_heads, self.args.d_keys) # (N, key_value_sequence_pad_length, n_heads, d_keys)
+        k_heads = k_heads.contiguous().view(N, T, self.n_heads, self.args.d_queries) # (N, key_value_sequence_pad_length, n_heads, d_queries)
         v_heads = v_heads.contiguous().view(N, T, self.n_heads, self.args.d_values) # (N, key_value_sequence_pad_length, n_heads, d_values)
 
         q_heads = q_heads.permute(0, 2, 3, 1, 4) # Nghtd
@@ -109,7 +110,7 @@ class MultiHeadAttention(nn.Module):
             z = torch.zeros((self.n_heads, self.args.d_queries, 1)).to(query_sequences.device)
 
             q_heads = q_heads.view(N, self.n_gqa_groups, self.n_heads, self.args.infinite_attention_n_segments, t // self.args.infinite_attention_n_segments, self.args.d_queries) # Nghitq
-            k_heads = k_heads.view(N, self.n_heads, self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments, self.args.d_keys) # NhiTq
+            k_heads = k_heads.view(N, self.n_heads, self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments, self.args.d_queries) # NhiTq
             v_heads = v_heads.view(N, self.n_heads, self.args.infinite_attention_n_segments, T // self.args.infinite_attention_n_segments, self.args.d_values) # NhiTv
 
             output = []
@@ -162,7 +163,8 @@ class MultiHeadAttention(nn.Module):
 
             # scaled attention
             attention_weights = (1.0 / (self.args.d_queries ** 0.5)) * attention_weights
-            attention_weights = 30.0 * torch.tanh(attention_weights / 30.0) # grok version of scaled attention
+            if bool(self.args.use_grok_scaled_attn):
+                attention_weights = 30.0 * torch.tanh(attention_weights / 30.0) # grok version of scaled attention
 
             attention_weights = self.mask_attention(attention_weights, key_padding_mask)
 

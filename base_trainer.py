@@ -31,7 +31,7 @@ class EarlyStopping:
         return False
 
 class BaseTrainer:
-    def __init__(self, args, base_run_dir):
+    def __init__(self, args):
         self.args = args
 
         self.run_name = args.run_name
@@ -44,13 +44,13 @@ class BaseTrainer:
         if hasattr(args, 'batches_per_step'):
             self.batches_per_step: int = args.batches_per_step
 
-        self.run_dir = os.path.join(base_run_dir, 'runs', self.run_name)
+        self.run_dir = os.path.join('runs', self.run_name)
         if not os.path.exists(self.run_dir):
             os.makedirs(self.run_dir)
 
         self.summary_writer = SummaryWriter(log_dir=self.run_dir)
 
-        self.bpe_run_dir = os.path.join(base_run_dir, 'runs', args.tokenizer_run_name)
+        self.bpe_run_dir = os.path.join('runs', args.tokenizer_run_name)
 
         self.src_bpe_model, self.tgt_bpe_model = utils.load_tokenizers(self.bpe_run_dir)
 

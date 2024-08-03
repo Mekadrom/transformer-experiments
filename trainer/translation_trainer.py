@@ -1,6 +1,7 @@
 from dataloader import SequenceLoader
 from criteria.labelsmooth import LabelSmoothedCE
 from grokfast import gradfilter_ma, gradfilter_ema
+from model_provider import TranslationTransformerModelProvider
 from modules.transformer import Transformer
 from prettytable import PrettyTable
 from tqdm import tqdm
@@ -16,14 +17,34 @@ import utils
 
 class TranslationTrainer(base_trainer.BaseTrainer):
     def __init__(self, args):
-        super(TranslationTrainer, self).__init__(args, 'translation')
+        super(TranslationTrainer, self).__init__(args)
 
-        self.train_loader: SequenceLoader = self.train_loader
-        self.val_loader: SequenceLoader = self.val_loader
-        self.test_loader: SequenceLoader = self.test_loader
+        self.grads = None
 
     def load_model_and_optimizer(self):
-        return utils.load_translation_checkpoint_or_generate_new(self.args, self.run_dir, self.src_bpe_model.vocab_size(), self.tgt_bpe_model.vocab_size(), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model)
+        print('Initializing model...')
+
+        if os.path.exists(os.path.join(self.run_dir, 'transformer_checkpoint.pth.tar')):
+            checkpoint = torch.load(os.path.join(self.run_dir, 'transformer_checkpoint.pth.tar'))
+            if hasattr(self.args, 'start_epoch') and self.args.start_epoch == 0:
+                self.args.start_epoch = checkpoint['epoch'] + 1
+                print('\nLoaded checkpoint from epoch %d.\n' % self.args.start_epoch)
+
+            model = TranslationTransformerModelProvider().provide_transformer(self.args, self.src_bpe_model.vocab_size(), self.tgt_bpe_model.vocab_size(), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model)
+
+            model.load_state_dict(checkpoint['model'].state_dict())
+
+            if 'optimizer' in checkpoint:
+                optimizer = checkpoint['optimizer']
+            else:
+                optimizer = None
+        else:
+            print("Starting from scratch...")
+            model = TranslationTransformerModelProvider().provide_transformer(self.args, self.src_bpe_model.vocab_size(), self.tgt_bpe_model.vocab_size(), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model)
+
+            optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=self.args.lr, betas=[self.args.beta1, self.args.beta2], eps=self.args.epsilon)
+
+        return model, optimizer
 
     def get_criteria(self):
         return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing)
@@ -55,7 +76,6 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         start_data_time = time.time()
         start_step_time = time.time()
 
-        grads = []
         for i, (src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) in enumerate(self.train_loader):
             src_seqs = src_seqs.to(self.encoder_device)
             tgt_seqs = tgt_seqs.to(self.encoder_device)
@@ -108,9 +128,9 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.clip_grad_norm)
                 
                 if self.args.use_grokfast == 'ema':
-                    grads = gradfilter_ema(model, grads=grads, alpha=self.args.grokfast_alpha, lamb=self.args.grokfast_lamb)
+                    self.grads = gradfilter_ema(utils.sanitize_model(model), grads=self.grads, alpha=self.args.grokfast_alpha, lamb=self.args.grokfast_lambda)
                 elif self.args.use_grokfast == 'ma':
-                    grads = gradfilter_ma(model, grads=grads, window_size=self.args.grokfast_window_size, lamb=self.args.grokfast_lamb)
+                    self.grads = gradfilter_ma(utils.sanitize_model(model), grads=self.grads, window_size=self.args.grokfast_window_size, lamb=self.args.grokfast_lambda)
 
                 self.optimizer.step()
                 self.optimizer.zero_grad()
@@ -126,8 +146,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                           'Loss {total_losses.val:.4f} ({total_losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, total_losses=total_losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
                     self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
 
-                self.summary_writer.add_scalar('Translation Training Loss', translation_losses.avg, self.steps)
-                self.summary_writer.add_scalar('Training Loss', total_losses.avg, self.steps)
+                self.summary_writer.add_scalar('train/translation_loss', translation_losses.avg, self.steps)
+                self.summary_writer.add_scalar('train/avg_loss', total_losses.avg, self.steps)
                 if moe_diversity_loss > 0:
                     self.summary_writer.add_scalar('Encoder MoE Gating Variances', encoder_moe_gating_variance_losses.avg, self.steps)
                     self.summary_writer.add_scalar('Decoder MoE Gating Variances', decoder_moe_gating_variance_losses.avg, self.steps)
@@ -150,21 +170,18 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 tgt_seqs = tgt_seqs.to(self.encoder_device)
                 tgt_seq_lengths = tgt_seq_lengths.to(self.decoder_device)
 
-                src_key_padding_mask = src_seqs == 0 # (N, max_source_sequence_pad_length_this_batch)
-                tgt_key_padding_mask = (tgt_seqs == 0).to(self.decoder_device) # (N, max_target_sequence_pad_length_this_batch)
+                src_key_padding_mask = src_seqs == 0
+                tgt_key_padding_mask = (tgt_seqs == 0).to(self.decoder_device)
 
-                predicted_sequences = model(src_seqs, tgt_seqs, src_key_padding_mask, tgt_key_padding_mask)[0] # (N, max_target_sequence_pad_length_this_batch, vocab_size)
+                predicted_sequences = model(src_seqs, tgt_seqs, src_key_padding_mask, tgt_key_padding_mask)[0]
 
                 tgt_seqs = tgt_seqs.to(self.decoder_device)
 
-                # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
-                # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
-                # Therefore, pads start after (length - 1) positions
-                loss: torch.Tensor = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1) # scalar
+                loss: torch.Tensor = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1)
 
                 losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
 
-            self.summary_writer.add_scalar('Validation Loss', losses.avg, self.steps)
+            self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.steps)
             print("\nValidation loss: %.3f\n\n" % losses.avg)
 
             self.viz_model(self.steps, model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
@@ -209,7 +226,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             src_key_padding_mask = input_sequence == 0 # (N, pad_length)
             tgt_key_padding_mask = (target_sequence == 0).to(self.decoder_device) # (N, pad_length)
 
-            input_sequence, _, _ = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
+            input_sequence = model.encoder.perform_embedding_transformation(input_sequence) # (N, pad_length, d_model)
             input_sequence = model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
             for e, encoder_layer in enumerate(model.encoder.encoder_layers):
@@ -221,15 +238,18 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                     # shape of attention_weights will be (1, n_heads, input_sequence_length, input_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
                     for i in range(attention_weight_grid.size(1)):
                         image_data = self.viz_attn_weights('Encoder-Self', e, i, attention_weight_grid[:, i, :input_sequence_length, :input_sequence_length].transpose(-2, -1).squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
-                        self.summary_writer.add_image(f"Encoder Layer {e} Head {i} Self-Attn Weights for Segment {a}", plt.imread(image_data), global_step=step, dataformats='HWC')
+                        self.summary_writer.add_image(f"encoder/viz/layer_{e}/segment_{a}/head_{i}/self-attn", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-                input_sequence, _ = encoder_layer.fcn(sequences=input_sequence) # (N, pad_length, d_model)
+                fcn_output = encoder_layer.fcn(input_sequence) # (N, pad_length, d_model)
+
+                if fcn_output is tuple:
+                    fcn_output = fcn_output[0]
 
             input_sequence = model.encoder.norm(input_sequence)
             input_sequence = input_sequence.to(self.decoder_device)
             src_key_padding_mask = src_key_padding_mask.to(self.decoder_device)
                 
-            target_sequence, _, _ = model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
+            target_sequence = model.decoder.apply_embedding_transformation(target_sequence) # (N, pad_length, d_model)
             
             target_sequence = target_sequence.to(self.decoder_device)
             
@@ -245,7 +265,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                     # shape of attention_weight_grid will be (1, n_heads, target_sequence_length, target_sequence_length) for self attention (like in encoder layers and beginning of each decoder layer)
                     for i in range(attention_weight_grid.size(1)):
                         image_data = self.viz_attn_weights('Decoder-Self', d, i, attention_weight_grid[:, i, :target_sequence_length, :target_sequence_length].transpose(-2, -1).squeeze(0).numpy(), target_tokens, target_tokens)
-                        self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Self-Attn Weights for Segment {a}", plt.imread(image_data), global_step=step, dataformats='HWC')
+                        self.summary_writer.add_image(f"decoder/viz/layer_{d}/segment_{a}/head_{i}/self-attn", plt.imread(image_data), global_step=step, dataformats='HWC')
 
                 target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, src_key_padding_mask) # (N, pad_length, d_model)
 
@@ -255,6 +275,9 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                     # shape of attention_weights will be (1, n_heads, target_sequence_length, input_sequence_length) for encoder-decoder attention
                     for i in range(attention_weight_grid.size(1)):
                         image_data = self.viz_attn_weights('Decoder-Cross', d, i, attention_weight_grid[:, i, :target_sequence_length, :input_sequence_length].transpose(-2, -1).squeeze(0).numpy(), target_tokens, input_tokens)
-                        self.summary_writer.add_image(f"Decoder Layer {d} Head {i} Cross-Attn Weights for Segment {a}", plt.imread(image_data), global_step=step, dataformats='HWC')
+                        self.summary_writer.add_image(f"decoder/viz/layer_{d}/segment_{a}/head_{i}/cross-attn", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-                target_sequence, _ = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
+                fcn_output = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
+
+                if fcn_output is tuple:
+                    fcn_output = fcn_output[0]

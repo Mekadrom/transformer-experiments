@@ -1,9 +1,8 @@
-from modules import millions_moe, positionwise_fcn, multihead_attn, sum
+from modules import embedding_mlp, millions_moe, positionwise_fcn, multihead_attn, sum
 from torch import nn
 from typing import List
 
 import admin_torch
-import embedding_mlp
 import math
 import torch
 import utils
@@ -65,14 +64,14 @@ class EncoderLayer(nn.Module):
 
         moe = None
         if args.moe_type == 'millions':
-            moe = millions_moe.MillionsMOE(args)
+            moe = millions_moe.MillionsMoE(args)
         else:
             self.fcn = positionwise_fcn.PositionWiseFCNetwork(args, norm=norm)
 
         if moe is not None and bool(args.moe_replace):
             self.fcn = moe
         elif moe is not None:
-            self.fcn = nn.Sequential(millions_moe, self.fcn)
+            self.fcn = nn.Sequential(moe, self.fcn)
 
     def forward(self, encoder_sequences, key_padding_mask):
         self_attn, _ = self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, key_padding_mask)
@@ -89,8 +88,8 @@ class Encoder(nn.Module):
 
         self.args = args
 
-        if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
-            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.create_activation_function(args.activation_function) if 'embedding_compression_activation' in args and args.embedding_compression_activation else nn.Identity)
+        if args.embedding_compression_dim != 0:
+            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.create_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
         else:
             self.embedding = nn.Embedding(vocab_size, args.d_model)
 
@@ -99,7 +98,7 @@ class Encoder(nn.Module):
         self.encoder_layers = self.make_encoder_layers(args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers, norm=norm)
 
         if args.positional_encoding_type != 'rotary':
-            self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args, args.encoder_device))
+            self.tensor_positional_encoding = nn.Parameter(utils.get_tensor_positional_encoding(args, args.encoder_device))
 
     def make_encoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm) -> List[EncoderLayer]:
         def new_encoder_layer():
@@ -224,14 +223,14 @@ class DecoderLayer(nn.Module):
 
         moe = None
         if args.moe_type == 'millions':
-            moe = millions_moe.MillionsMOE(args)
+            moe = millions_moe.MillionsMoE(args)
         else:
             self.fcn = positionwise_fcn.PositionWiseFCNetwork(args, norm=norm)
 
         if moe is not None and bool(args.moe_replace):
             self.fcn = moe
         elif moe is not None:
-            self.fcn = nn.Sequential(millions_moe, self.fcn)
+            self.fcn = nn.Sequential(moe, self.fcn)
 
     def forward(self, decoder_sequences: torch.Tensor, encoder_sequences: torch.Tensor, src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> torch.Tensor:
         self_attn, _ = self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, tgt_key_padding_mask)
@@ -242,7 +241,6 @@ class DecoderLayer(nn.Module):
             decoder_sequences = self.cross_attn_residual(decoder_sequences, cross_attn)
 
         fcn, gating_variances = self.fcn(decoder_sequences)
-        
         decoder_sequences = self.fcn_residual(decoder_sequences, fcn)
 
         return decoder_sequences, gating_variances
@@ -254,8 +252,8 @@ class Decoder(nn.Module):
         self.args = args
         self.use_cross_attn = use_cross_attn
 
-        if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
-            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.create_activation_function(args.activation_function) if 'embedding_compression_activation' in args and args.embedding_compression_activation else nn.Identity)
+        if args.embedding_compression_dim != 0:
+            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.create_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
         else:
             self.embedding = nn.Embedding(vocab_size, args.d_model)
             
@@ -263,17 +261,17 @@ class Decoder(nn.Module):
         self.layer_norm = norm(args.d_model, args.norm_eps)
         self.decoder_layers = self.make_decoder_layers(args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers, norm=norm)
 
-        if 'embedding_compression_dim' in args and args.embedding_compression_dim is not None:
+        if args.embedding_compression_dim != 0:
             self.classifier = nn.Sequential(
                 nn.Linear(args.d_model, args.embedding_compression_dim),
-                utils.create_activation_function(args.activation_function) if 'embedding_compression_activation' in args and args.embedding_compression_activation else nn.Identity(),
+                utils.create_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity(),
                 nn.Linear(args.embedding_compression_dim, vocab_size)
             )
         else:
             self.classifier = nn.Linear(args.d_model, vocab_size)
 
         if args.positional_encoding_type != 'rotary':
-            self.tensor_positional_encoding = nn.Parameter(utils.get_positional_encoding(args, args.decoder_device))
+            self.tensor_positional_encoding = nn.Parameter(utils.get_tensor_positional_encoding(args, args.decoder_device))
 
     def make_decoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm) -> List[DecoderLayer]:
         def new_decoder_layer():
@@ -350,8 +348,7 @@ class Decoder(nn.Module):
         return nn.ModuleList(layers)
 
     def apply_embedding_transformation(self, decoder_sequences: torch.Tensor) -> torch.Tensor:
-        embedded = self.embedding(decoder_sequences) * math.sqrt(self.args.d_model) # (N, pad_length, d_model)
-        return embedded
+        return self.embedding(decoder_sequences) * math.sqrt(self.args.d_model) # (N, pad_length, d_model)
     
     def apply_positional_embedding(self, decoder_sequences: torch.Tensor) -> torch.Tensor:
         # 1D buffer/sinusoidal encoding is applied here. 2D buffer/sinusoidal encoding and rotary encoding are applied in the MultiHeadAttention layer(s)

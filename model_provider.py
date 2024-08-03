@@ -11,4 +11,3 @@ class TranslationTransformerModelProvider:
         model.decoder = model.decoder.to(args.decoder_device)
         
         return model
-    
