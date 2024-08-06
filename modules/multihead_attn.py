@@ -16,7 +16,7 @@ class MultiHeadAttention(nn.Module):
         self.in_decoder = in_decoder
 
         if args.positional_encoding_type == 'rotary':
-            self.rotary_embedding = RotaryEmbedding(dim=args.positional_encoding_dim).to(device)
+            self.rotary_embedding = RotaryEmbedding(dim=args.positional_encoding_dim, learned_freq=args.learnable_positional_encoding).to(device)
 
         self.n_q_heads = args.n_gqa_groups * args.n_heads
         self.n_heads = args.n_heads

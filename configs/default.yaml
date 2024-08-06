@@ -34,11 +34,11 @@ millions_moe_value_dropout: 0.0
 
 init_weights_from: glorot_uniform
 init_weights_gain: 1.0
-use_admin: false
+use_admin: False
 
 positional_encoding_type: sinusoidal
 positional_encoding_dim: 0
-learnable_positional_encoding: false
+learnable_positional_encoding: False
 
 encoder_param_sharing_type: none
 decoder_param_sharing_type: none
@@ -58,7 +58,7 @@ epsilon: 1.e-9
 label_smoothing: 0.1
 clip_grad_norm: 0.0
 
-early_stop: false
+early_stop: False
 early_stop_patience: 3
 early_stop_min_delta: 0.0
 early_stop_checkpoint_window: 3

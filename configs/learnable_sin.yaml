@@ -1,0 +1,3 @@
+tokenizer_run_name: BPE_SEPARATE
+
+learnable_positional_encoding: True
