@@ -89,7 +89,7 @@ class Encoder(nn.Module):
         self.args = args
 
         if args.embedding_compression_dim != 0:
-            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.create_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
+            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
         else:
             self.embedding = nn.Embedding(vocab_size, args.d_model)
 
@@ -253,7 +253,7 @@ class Decoder(nn.Module):
         self.use_cross_attn = use_cross_attn
 
         if args.embedding_compression_dim != 0:
-            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.create_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
+            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
         else:
             self.embedding = nn.Embedding(vocab_size, args.d_model)
             
@@ -264,7 +264,7 @@ class Decoder(nn.Module):
         if args.embedding_compression_dim != 0:
             self.classifier = nn.Sequential(
                 nn.Linear(args.d_model, args.embedding_compression_dim),
-                utils.create_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity(),
+                utils.create_activation_function(args.embedding_compression_dim, args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity(),
                 nn.Linear(args.embedding_compression_dim, vocab_size)
             )
         else:

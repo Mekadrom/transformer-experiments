@@ -132,7 +132,7 @@ class BayesianIter:
             print(f"decoder_param_sharing_type: cycle-rev")
 
         setattr(args, 'use_admin', bool(args.use_admin))
-        setattr(args, 'learnable_positional_encoding', bool(args.use_admin))
+        setattr(args, 'learnable_positional_encoding', bool(args.learnable_positional_encoding))
 
         return True
         

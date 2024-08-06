@@ -2,3 +2,4 @@ tokenizer_run_name: BPE_SEPARATE
 
 positional_encoding_type: rotary
 positional_encoding_dim: 64
+learnable_positional_encoding: True
