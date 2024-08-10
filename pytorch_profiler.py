@@ -4,13 +4,12 @@ if __name__ == '__main__':
     import argparse
     import os
     import torch
-    import translation.trainer.translation_trainer
     import utils
     
     argparser = argparse.ArgumentParser()
 
     argparser.add_argument("--run_name", type=str, required=True)
-    argparser.add_argument("--config_file_path", type=str, required=True)
+    argparser.add_argument("--config", type=str, required=True)
     argparser.add_argument("--model_checkpoint", type=str, default="transformer_checkpoint.pth.tar")
     argparser.add_argument("--profile_training", action="store_true")
 

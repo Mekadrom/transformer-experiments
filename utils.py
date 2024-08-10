@@ -439,7 +439,7 @@ def get_args():
     argparser = argparse.ArgumentParser()
 
     argparser.add_argument('--run_name', type=str, required=True)
-    argparser.add_argument('--config_file_path', type=str, required=True)
+    argparser.add_argument('--config', type=str, required=True)
 
     argsparser_args, unk = argparser.parse_known_args()
 
@@ -449,7 +449,7 @@ def get_args():
     if len(unk) > 0:
         print(f"unknown arguments: {unk}")
 
-    args = yaml_dict.load_yaml(argsparser_args.config_file_path, unk)
+    args = yaml_dict.load_yaml(argsparser_args.config, unk)
 
     setattr(args, 'run_name', argsparser_args.run_name)
 
