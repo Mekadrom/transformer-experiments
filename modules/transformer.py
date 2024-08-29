@@ -87,6 +87,7 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
 
         self.args = args
+        self.vocab_size = vocab_size
 
         if args.embedding_compression_dim != 0:
             self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
@@ -181,6 +182,8 @@ class Encoder(nn.Module):
         return encoder_layer(encoder_sequences, key_padding_mask)
 
     def forward(self, encoder_sequences: torch.Tensor, key_padding_mask: torch.Tensor) -> torch.Tensor:
+        assert torch.all(encoder_sequences < self.vocab_size), f"Encoder input is out of bounds: {torch.max(encoder_sequences)} >= {self.vocab_size}"
+
         encoder_sequences = encoder_sequences.to(self.args.encoder_device)
         key_padding_mask = key_padding_mask.to(self.args.encoder_device)
 
@@ -250,6 +253,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
 
         self.args = args
+        self.vocab_size = vocab_size
         self.use_cross_attn = use_cross_attn
 
         if args.embedding_compression_dim != 0:
@@ -360,12 +364,15 @@ class Decoder(nn.Module):
         return decoder_layer(decoder_sequences, encoder_sequences, src_key_padding_mask, tgt_key_padding_mask)
 
     def forward(self, decoder_sequences: torch.Tensor, encoder_sequences: torch.Tensor, src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> torch.Tensor:
-        decoder_sequences = self.apply_embedding_transformation(decoder_sequences) # (N, pad_length, d_model)
+        assert torch.all(encoder_sequences < self.vocab_size), f"Encoder input is out of bounds: {torch.max(encoder_sequences)} >= {self.vocab_size}"
+        assert torch.all(decoder_sequences < self.vocab_size), f"Decoder input is out of bounds: {torch.max(decoder_sequences)} >= {self.vocab_size}"
 
         decoder_sequences = decoder_sequences.to(self.args.decoder_device)
         encoder_sequences = encoder_sequences.to(self.args.decoder_device)
         src_key_padding_mask = src_key_padding_mask.to(self.args.decoder_device)
         tgt_key_padding_mask = tgt_key_padding_mask.to(self.args.decoder_device)
+
+        decoder_sequences = self.apply_embedding_transformation(decoder_sequences) # (N, pad_length, d_model)
 
         decoder_sequences = self.apply_positional_embedding(decoder_sequences) # (N, pad_length, d_model)
         decoder_sequences = self.apply_dropout(decoder_sequences)
@@ -394,6 +401,11 @@ class Transformer(nn.Module):
         init_weights(args, self, tie_embeddings)
 
     def forward(self, encoder_sequences, decoder_sequences, src_key_padding_mask, tgt_key_padding_mask):
+        self.encoder.embedding = self.encoder.embedding.to(self.args.encoder_device)
         encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, src_key_padding_mask) # (N, encoder_sequence_pad_length, d_model)
+
+        self.decoder.embedding = self.decoder.embedding.to(self.args.decoder_device)
+        self.decoder.classifier = self.decoder.classifier.to(self.args.decoder_device)
         decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, encoder_sequences, src_key_padding_mask, tgt_key_padding_mask) # (N, decoder_sequence_pad_length, vocab_size)
+
         return decoder_sequences, encoder_gating_variances, decoder_gating_variances

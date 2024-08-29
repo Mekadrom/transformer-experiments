@@ -79,7 +79,8 @@ class BayesianIter:
             next_args['tokenizer_run_name'] = self.args.tokenizer_run_name
             next_args['lr'] = utils.get_lr(step=1, d_model=next_args.d_model, warmup_steps=next_args.warmup_steps)
             if hasattr(next_args, 'tokens_in_batch'):
-                setattr(next_args, 'batches_per_step', next_args.target_tokens_per_batch // next_args.tokens_in_batch)
+                setattr(next_args, 'tokens_in_batch', int(next_args.tokens_in_batch))
+                setattr(next_args, 'batches_per_step', int(next_args.target_tokens_per_batch) // next_args.tokens_in_batch)
 
             print(f"next_args: {next_args}")
 

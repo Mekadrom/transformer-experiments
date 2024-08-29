@@ -6,7 +6,8 @@ from tqdm import tqdm
 import codecs
 import os
 import torch
-import youtokentome
+import youtokentome as yttm
+import utils
 
 class SequenceLoader(object):
     """
@@ -23,7 +24,7 @@ class SequenceLoader(object):
 
         Each batch contains just a single source-target pair, in the same order as in the files from which they were read.
     """
-    def __init__(self, src_bpe_model, tgt_bpe_model, data_folder, source_suffix, target_suffix, split, tokens_in_batch, pad_to_length=None):
+    def __init__(self, args, src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE, data_folder, source_suffix, target_suffix, split, tokens_in_batch, pad_to_length=None):
         """
         :param data_folder: folder containing the source and target language data files
         :param source_suffix: the filename suffix for the source language files
@@ -31,6 +32,7 @@ class SequenceLoader(object):
         :param split: train, or val, or test?
         :param tokens_in_batch: the number of target language tokens in each batch
         """
+        self.args = args
         self.source_suffix = source_suffix
         self.target_suffix = target_suffix
         self.tokens_in_batch = tokens_in_batch
@@ -43,8 +45,8 @@ class SequenceLoader(object):
         self.for_training = self.split == "train"
 
         # Load BPE model
-        self.src_bpe_model = src_bpe_model
-        self.tgt_bpe_model = tgt_bpe_model
+        self.src_tokenizer: yttm.BPE = src_tokenizer
+        self.tgt_tokenizer: yttm.BPE = tgt_tokenizer
 
         # Load data
         with codecs.open(os.path.join(data_folder, ".".join([split, source_suffix])), "r", encoding="utf-8") as f:
@@ -54,8 +56,9 @@ class SequenceLoader(object):
 
         assert len(source_data) == len(target_data), "There are a different number of source or target sequences!"
 
-        source_lengths = [len(s) for s in tqdm(self.src_bpe_model.encode(source_data, bos=False, eos=False), desc='Encoding src sequences')]
-        target_lengths = [len(t) for t in tqdm(self.tgt_bpe_model.encode(target_data, bos=True, eos=True), desc='Encoding tgt sequences')] # target language sequences have <BOS> and <EOS> tokens
+        source_lengths = [len(s) for s in tqdm(utils.encode(self.args, src_tokenizer, source_data), desc='Encoding src sequences')]
+        # target language sequences have <BOS> and <EOS> tokens
+        target_lengths = [len(t) for t in tqdm(utils.encode(self.args, tgt_tokenizer, target_data, eos=True), desc='Encoding tgt sequences')]
         self.data = list(zip(source_data, target_data, source_lengths, target_lengths))
 
         # If for training, pre-sort by target lengths - required for itertools.groupby() later
@@ -118,12 +121,12 @@ class SequenceLoader(object):
             raise StopIteration
 
         # Tokenize using BPE model to word IDs
-        source_data = self.src_bpe_model.encode(source_data, output_type=youtokentome.OutputType.ID, bos=False, eos=False)
-        target_data = self.tgt_bpe_model.encode(target_data, output_type=youtokentome.OutputType.ID, bos=True, eos=True)
+        source_data = utils.encode(self.args, self.src_tokenizer, source_data)
+        target_data = utils.encode(self.args, self.tgt_tokenizer, target_data, eos=True)
 
         # Convert source and target sequences as padded tensors
-        source_data = pad_sequence(sequences=[torch.LongTensor(s) for s in source_data], batch_first=True, padding_value=self.src_bpe_model.subword_to_id('<PAD>'))
-        target_data = pad_sequence(sequences=[torch.LongTensor(t) for t in target_data], batch_first=True, padding_value=self.tgt_bpe_model.subword_to_id('<PAD>'))
+        source_data = pad_sequence(sequences=[torch.LongTensor(s) for s in source_data], batch_first=True, padding_value=self.src_tokenizer.subword_to_id('<PAD>'))
+        target_data = pad_sequence(sequences=[torch.LongTensor(t) for t in target_data], batch_first=True, padding_value=self.tgt_tokenizer.subword_to_id('<PAD>'))
 
         if self.pad_to_length is not None:
             source_data = torch.cat([source_data, torch.zeros(source_data.size(0), self.pad_to_length - source_data.size(1), dtype=source_data.dtype)], dim=1)

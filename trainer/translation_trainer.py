@@ -1,7 +1,6 @@
-from dataloader import SequenceLoader
 from criteria.labelsmooth import LabelSmoothedCE
-from grokfast import gradfilter_ma, gradfilter_ema
 from model_provider import TranslationTransformerModelProvider
+from modules.grokfast import gradfilter_ma, gradfilter_ema
 from modules.transformer import Transformer
 from prettytable import PrettyTable
 from tqdm import tqdm
@@ -21,16 +20,16 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
         self.grads = None
 
-    def load_model_and_optimizer(self):
+    def load_model_and_optimizer(self, run_dir, checkpoint_model_name='transformer_checkpoint.pth.tar'):
         print('Initializing model...')
 
-        if os.path.exists(os.path.join(self.run_dir, 'transformer_checkpoint.pth.tar')):
-            checkpoint = torch.load(os.path.join(self.run_dir, 'transformer_checkpoint.pth.tar'))
+        if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
+            checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
             if hasattr(self.args, 'start_epoch') and self.args.start_epoch == 0:
                 self.args.start_epoch = checkpoint['epoch'] + 1
                 print('\nLoaded checkpoint from epoch %d.\n' % self.args.start_epoch)
 
-            model = TranslationTransformerModelProvider().provide_transformer(self.args, self.src_bpe_model.vocab_size(), self.tgt_bpe_model.vocab_size(), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model)
+            model = TranslationTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.src_bpe_model), utils.vocab_size(self.tgt_bpe_model), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model)
 
             model.load_state_dict(checkpoint['model'].state_dict())
 
@@ -40,7 +39,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 optimizer = None
         else:
             print("Starting from scratch...")
-            model = TranslationTransformerModelProvider().provide_transformer(self.args, self.src_bpe_model.vocab_size(), self.tgt_bpe_model.vocab_size(), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model)
+            model = TranslationTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.src_bpe_model), utils.vocab_size(self.tgt_bpe_model), tie_embeddings=self.tgt_bpe_model==self.src_bpe_model)
 
             optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=self.args.lr, betas=[self.args.beta1, self.args.beta2], eps=self.args.epsilon)
 
@@ -50,7 +49,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing)
 
     def load_data(self):
-        return utils.load_translation_data(self.args.tokens_in_batch, self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, pad_to_length=self.args.maxlen if self.args.use_infinite_attention else None)
+        return utils.load_translation_data(self.args, int(self.args.tokens_in_batch), self.bpe_run_dir, self.src_bpe_model, self.tgt_bpe_model, pad_to_length=self.args.maxlen if self.args.use_infinite_attention else None)
     
     def train(self, model_name_prefix=''):
         if self.args.start_epoch == 0:
@@ -58,7 +57,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             # get attention weight visualization before any updates are made to the model
             with torch.no_grad():
                 self.model.eval()
-                self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+                self.viz_model(0, self.model, "en__Anyone who retains the ability to recognise beauty will never become old.", "de__Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
         super().train()
 
@@ -91,8 +90,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
             predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = model(src_seqs, tgt_seqs, src_key_padding_mask, tgt_key_padding_mask) # (N, max_target_sequence_pad_length_this_batch, vocab_size)
 
-            del src_seqs, src_seq_lengths, src_key_padding_mask
-            del tgt_key_padding_mask
+            del src_seqs, src_seq_lengths, src_key_padding_mask, tgt_key_padding_mask
 
             if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
                 encoder_moe_gating_variances = torch.stack(encoder_moe_gating_variances).std(dim=0).mean()
@@ -115,8 +113,18 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             translation_losses.update(translation_loss.item(), (tgt_seq_lengths - 1).sum().item())
 
             loss = translation_loss + moe_diversity_loss
+            loss = loss / self.batches_per_step
 
-            (loss / self.batches_per_step).backward()
+            def print_graph_devices(tensor):
+                print(f"Tensor on device: {tensor.device}")
+                if tensor.grad_fn is not None:
+                    for next_fn in tensor.grad_fn.next_functions:
+                        if next_fn[0] is not None:
+                            print(next_fn[0])
+
+            print_graph_devices(translation_loss)
+
+            loss.backward()
 
             total_losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
 
@@ -144,7 +152,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 if self.steps % self.print_frequency == 0:
                     print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
                           'Loss {total_losses.val:.4f} ({total_losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches, self.steps, self.n_steps, step_time=step_time, data_time=data_time, total_losses=total_losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
-                    self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
+                    self.evaluate(src='en__Anyone who retains the ability to recognise beauty will never become old.', tgt='de__Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.', tgt_lang_code='de')
 
                 self.summary_writer.add_scalar('train/translation_loss', translation_losses.avg, self.steps)
                 self.summary_writer.add_scalar('train/avg_loss', total_losses.avg, self.steps)
@@ -184,12 +192,12 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.steps)
             print("\nValidation loss: %.3f\n\n" % losses.avg)
 
-            self.viz_model(self.steps, model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
+            self.viz_model(self.steps, model, "en__Anyone who retains the ability to recognise beauty will never become old.", "de__Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.")
 
             return losses.avg
 
-    def evaluate(self, src, tgt):
-        best, _ = utils.beam_search_translate(self.args, src, self.model, self.src_bpe_model, self.tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
+    def evaluate(self, src, tgt, tgt_lang_code):
+        best, _ = utils.beam_search_translate(self.args, src, utils.lang_code_to_id(tgt_lang_code), self.model, self.src_bpe_model, self.tgt_bpe_model, beam_size=4, length_norm_coefficient=0.6)
 
         debug_validate_table = PrettyTable(["Test Source", "Test Prediction", "Test Target"])
         debug_validate_table.add_row([src, best, tgt])
@@ -202,21 +210,23 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
     def viz_model(self, step, model: Transformer, src, tgt=None):
         if self.args.use_infinite_attention:
-            return # temporary; would like to visualize memory block attention weights in the future
+            return # todo: temporary; would like to visualize memory block attention weights in the future
 
         with torch.no_grad():
             model.eval()
 
-            input_sequence = torch.LongTensor(self.src_bpe_model.encode(src, eos=False)).unsqueeze(0).to(self.encoder_device) # (1, input_sequence_length)
-            input_tokens = [self.src_bpe_model.decode([id.item()])[0] for id in input_sequence.squeeze(0)]
+            input_sequence = torch.LongTensor(utils.encode(self.args, self.src_bpe_model, src)).unsqueeze(0).to(self.encoder_device) # (1, input_sequence_length)
+            _, input_tokens = utils.decode(self.args, self.src_bpe_model, input_sequence)
+            input_tokens = input_tokens[0]
             input_sequence_length = input_sequence.size(1)
 
             # pad input sequence to args.maxlen
             if self.args.use_infinite_attention or True:
                 input_sequence = torch.cat([input_sequence, torch.zeros([1, self.args.maxlen - input_sequence.size(1)], dtype=torch.long, device=input_sequence.device)], dim=1)
 
-            target_sequence = torch.LongTensor(self.tgt_bpe_model.encode(tgt, eos=True)).unsqueeze(0).to(self.encoder_device) # (1, target_sequence_length)
-            target_tokens = [self.tgt_bpe_model.decode([id.item()])[0] for id in target_sequence.squeeze(0)]
+            target_sequence = torch.LongTensor(utils.encode(self.args, self.tgt_bpe_model, tgt, eos=True)).unsqueeze(0).to(self.encoder_device) # (1, target_sequence_length)
+            _, target_tokens = utils.decode(self.args, self.tgt_bpe_model, target_sequence)
+            target_tokens = target_tokens[0]
             target_sequence_length = target_sequence.size(1)
 
             # pad target sequence to args.maxlen

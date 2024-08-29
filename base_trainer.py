@@ -54,7 +54,7 @@ class BaseTrainer:
 
         self.src_bpe_model, self.tgt_bpe_model = utils.load_tokenizers(self.bpe_run_dir)
 
-        self.model, self.optimizer = self.load_model_and_optimizer()
+        self.model, self.optimizer = self.load_model_and_optimizer(self.run_dir)
 
         if isinstance(self.model.encoder.embedding, nn.Embedding):
             print(self.model.encoder.embedding.weight.device)
@@ -90,7 +90,7 @@ class BaseTrainer:
     def get_criteria(self) -> nn.Module:
         raise NotImplementedError
 
-    def load_model_and_optimizer(self) -> Tuple[nn.Module, torch.optim.Optimizer]:
+    def load_model_and_optimizer(self, run_dir, checkpoint_model_name='transformer_checkpoint.pth.tar') -> Tuple[nn.Module, torch.optim.Optimizer]:
         raise NotImplementedError
     
     def load_data(self):

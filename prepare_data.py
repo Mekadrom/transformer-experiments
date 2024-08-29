@@ -111,7 +111,6 @@ if __name__ == '__main__':
     argparser.add_argument('--max_length', type=int, default=150)
     argparser.add_argument('--min_length', type=int, default=3)
     argparser.add_argument('--max_length_ratio', type=float, default=1.5)
-    argparser.add_argument('--prepend_cls_token', action='store_true')
 
     args, unk = argparser.parse_known_args()
 

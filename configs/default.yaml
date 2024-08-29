@@ -7,9 +7,9 @@ n_heads: 8
 d_queries: 64
 d_values: 64
 d_inner: 2048
-use_infinite_attention: false
+use_infinite_attention: False
 infinite_attention_n_segments: 0
-infinite_attention_update: false
+infinite_attention_update: False
 n_encoder_layers: 6
 n_decoder_layers: 6
 dropout: 0.1
@@ -69,11 +69,12 @@ start_epoch: 0
 print_frequency: 20
 encoder_device: cuda:0
 decoder_device: cuda:0
-save_initial_checkpoint: false
-cudnn_benchmark: false
-detect_nans: false
+save_initial_checkpoint: False
+cudnn_benchmark: False
+detect_nans: False
+debug: False
 
 compile_model: False
 dynamo_cache_size_limit: 16
 
-bayesian_iter: false
+bayesian_iter: False

@@ -17,21 +17,17 @@ def train():
     trainer: TranslationTrainer | None = None
 
     if args.bayesian_iter == True:
-        print("Performing Bayesian optimization.")
-        bayesian_iter = BayesianIter(args)
-
-        bayesian_iter.train()
+        trainer = BayesianIter(args)
+    elif args.distillation_teacher_run_name is not None:
+        trainer = DistillationTrainer(args)
     else:
-        if args.distillation_teacher_run_name is not None:
-            trainer = DistillationTrainer(args)
-        else:
-            trainer = TranslationTrainer(args)
+        trainer = TranslationTrainer(args)
 
-        trainer.train()
+    trainer.train()
 
 """
-Credit to them for the workflow and the implementation of most of the transformer model architecture code in transformer_provider.py.
 This entire project is a heavily modified version of https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Transformers. 
+Credit to them for the workflow and the implementation of most of the transformer model architecture code in transformer_provider.py.
 Most of the changes I've made have been to enable a highly configurable set of hyperparameters and additional architecture options.
 """
 if __name__ == '__main__':
