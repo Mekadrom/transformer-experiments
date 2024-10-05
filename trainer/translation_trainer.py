@@ -115,14 +115,14 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             loss = translation_loss + moe_diversity_loss
             loss = loss / self.batches_per_step
 
-            def print_graph_devices(tensor):
-                print(f"Tensor on device: {tensor.device}")
-                if tensor.grad_fn is not None:
-                    for next_fn in tensor.grad_fn.next_functions:
-                        if next_fn[0] is not None:
-                            print(next_fn[0])
+            # def print_graph_devices(tensor):
+            #     print(f"Tensor on device: {tensor.device}")
+            #     if tensor.grad_fn is not None:
+            #         for next_fn in tensor.grad_fn.next_functions:
+            #             if next_fn[0] is not None:
+            #                 print(next_fn[0])
 
-            print_graph_devices(translation_loss)
+            # print_graph_devices(translation_loss)
 
             loss.backward()
 

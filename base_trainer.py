@@ -101,7 +101,7 @@ class BaseTrainer:
         self.start_epoch = self.args.start_epoch
 
         self.train_loader, self.val_loader, self.test_loader = self.load_data()
-        self.epochs = (self.args.n_steps // (self.train_loader.n_batches // self.args.batches_per_step)) + 1
+        self.epochs = (self.args.n_steps // ((self.train_loader.n_batches * len(self.train_loader.src_file_paths)) // self.args.batches_per_step)) + 1
 
         print(f"Training for {self.epochs} epochs...")
         start = time.time()

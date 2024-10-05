@@ -183,6 +183,7 @@ def count_parameters(model: nn.Module):
 
 def load_translation_data(args, tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, pad_to_length=None) -> Tuple[SequenceLoader, SequenceLoader, SequenceLoader]:
     print('Loading training data SequenceLoader...')
+
     train_loader = SequenceLoader(
         args=args,
         src_tokenizer=src_bpe_model,
@@ -367,16 +368,22 @@ def beam_search_translate(args, src, tgt_lang_code, model: nn.Module, src_tokeni
 
             # Unroll and find top k scores, and their unrolled indices
             top_k_hypotheses_scores, unrolled_indices = scores.view(-1).topk(k, 0, True, True) # (k)
+            top_k_hypotheses_scores = top_k_hypotheses_scores.to(args.decoder_device)
+            unrolled_indices = unrolled_indices.to(args.decoder_device)
 
             # Convert unrolled indices to actual indices of the scores tensor which yielded the best scores
             prev_word_indices = unrolled_indices // tgt_vocab_size # (k)
             next_word_indices = unrolled_indices % tgt_vocab_size # (k)
 
+            print(f"hypotheses: {hypotheses.shape}")
+            print(f"prev_word_indices: {prev_word_indices.shape}, {prev_word_indices.min()}, {prev_word_indices.max()}")
+            print(f"next_word_indices: {next_word_indices.shape}, {next_word_indices.min()}, {next_word_indices.max()}")
+
             # Construct the the new top k hypotheses from these indices
             top_k_hypotheses = torch.cat([hypotheses[prev_word_indices], next_word_indices.unsqueeze(1)], dim=1) # (k, step + 1)
 
             # Which of these new hypotheses are complete (reached <EOS>)?
-            complete = next_word_indices == tgt_tokenizer.subword_to_id('<EOS>') # (k), bool
+            complete = (next_word_indices == tgt_tokenizer.subword_to_id('<EOS>')).to(args.decoder_device) # (k), bool
 
             # Set aside completed hypotheses and their scores normalized by their lengths
             # For the length normalization formula, see
@@ -434,7 +441,6 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
             split="test",
             tokens_in_batch=None
         )
-        test_loader.create_batches()
 
     # Evaluate
     with torch.no_grad():
