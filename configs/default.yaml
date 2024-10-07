@@ -48,8 +48,8 @@ activation_function: relu
 embedding_compression_dim: 0
 embedding_compression_activation: none
 
-tokens_in_batch: 5000
-target_tokens_per_batch: 25000
+tokens_in_batch: 2000
+target_tokens_per_batch: 24000
 n_steps: 100000
 warmup_steps: 8000
 beta1: 0.9

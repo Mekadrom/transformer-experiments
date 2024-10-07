@@ -68,7 +68,7 @@ class SequenceLoader(object):
 
         assert len(source_data) == len(target_data), "There are a different number of source or target sequences!"
 
-        source_lengths = [len(s) for s in tqdm(utils.encode(self.args, self.src_tokenizer, source_data), desc='Encoding src sequences')]
+        source_lengths = [len(s) for s in tqdm(utils.encode(self.args, self.src_tokenizer, source_data, eos=True), desc='Encoding src sequences')]
         # target language sequences have <BOS> (language specific) and <EOS> (language agnostic) tokens
         target_lengths = [len(t) for t in tqdm(utils.encode(self.args, self.tgt_tokenizer, target_data, eos=True), desc='Encoding tgt sequences')]
         self.data = list(zip(source_data, target_data, source_lengths, target_lengths))
@@ -123,7 +123,7 @@ class SequenceLoader(object):
             except IndexError:
                 raise StopIteration
 
-        source_data = utils.encode(self.args, self.src_tokenizer, source_data)
+        source_data = utils.encode(self.args, self.src_tokenizer, source_data, eos=True)
         target_data = utils.encode(self.args, self.tgt_tokenizer, target_data, eos=True)
 
         source_data = pad_sequence(sequences=[torch.LongTensor(s) for s in source_data], batch_first=True, padding_value=self.src_tokenizer.subword_to_id('<PAD>'))
