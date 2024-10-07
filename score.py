@@ -24,7 +24,7 @@ if __name__ == '__main__':
     if os.path.exists(os.path.join(run_dir, 'transformer_checkpoint.pth.tar')):
         checkpoint = torch.load(os.path.join(run_dir, 'transformer_checkpoint.pth.tar'))
 
-        model = TranslationTransformerModelProvider().provide_transformer(args, src_bpe_model.vocab_size(), tgt_bpe_model.vocab_size(), tie_embeddings=tgt_bpe_model==src_bpe_model)
+        model = TranslationTransformerModelProvider().provide_transformer(args, utils.vocab_size(src_bpe_model), utils.vocab_size(tgt_bpe_model), tie_embeddings=tgt_bpe_model==src_bpe_model)
 
         model.load_state_dict(checkpoint['model'].state_dict())
 

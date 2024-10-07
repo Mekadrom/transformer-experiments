@@ -317,7 +317,7 @@ def beam_search_translate(args, src, tgt_lang_code, model: nn.Module, src_tokeni
         n_completed_hypotheses = min(k, 10)
 
         # Vocab size
-        tgt_vocab_size = tgt_tokenizer.vocab_size()
+        tgt_vocab_size = vocab_size(tgt_tokenizer)
 
         # If the source sequence is a string, convert to a tensor of IDs
         if isinstance(src, str):
@@ -375,9 +375,9 @@ def beam_search_translate(args, src, tgt_lang_code, model: nn.Module, src_tokeni
             prev_word_indices = unrolled_indices // tgt_vocab_size # (k)
             next_word_indices = unrolled_indices % tgt_vocab_size # (k)
 
-            print(f"hypotheses: {hypotheses.shape}")
-            print(f"prev_word_indices: {prev_word_indices.shape}, {prev_word_indices.min()}, {prev_word_indices.max()}")
-            print(f"next_word_indices: {next_word_indices.shape}, {next_word_indices.min()}, {next_word_indices.max()}")
+            # print(f"hypotheses: {hypotheses.shape}")
+            # print(f"prev_word_indices: {prev_word_indices.shape}, {prev_word_indices.min()}, {prev_word_indices.max()}")
+            # print(f"next_word_indices: {next_word_indices.shape}, {next_word_indices.min()}, {next_word_indices.max()}")
 
             # Construct the the new top k hypotheses from these indices
             top_k_hypotheses = torch.cat([hypotheses[prev_word_indices], next_word_indices.unsqueeze(1)], dim=1) # (k, step + 1)
