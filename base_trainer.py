@@ -87,6 +87,17 @@ class BaseTrainer:
         self.sacrebleu_epochs = []
         self.target_sequence_transform: Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]] = lambda source_sequences, source_sequence_lengths, target_sequences, target_sequence_lengths: (target_sequences, target_sequence_lengths)
 
+    def moe_criterion(self, epoch, encoder_moe_gating_variances, decoder_moe_gating_variances):
+        if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
+            encoder_moe_gating_variances = torch.stack(encoder_moe_gating_variances).std(dim=0).mean()
+            decoder_moe_gating_variances = torch.stack(decoder_moe_gating_variances).std(dim=0).mean()
+            moe_diversity_loss = (encoder_moe_gating_variances + decoder_moe_gating_variances) / 2
+
+            moe_diversity_loss = moe_diversity_loss * self.args.moe_diversity_loss_coefficient
+            return moe_diversity_loss, encoder_moe_gating_variances, decoder_moe_gating_variances
+        else:
+            return torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0)
+
     def get_criteria(self) -> nn.Module:
         raise NotImplementedError
 
@@ -102,6 +113,8 @@ class BaseTrainer:
 
         self.train_loader, self.val_loader, self.test_loader = self.load_data()
         self.epochs = (self.args.n_steps // ((self.train_loader.n_batches * len(self.train_loader.src_file_paths)) // self.args.batches_per_step)) + 1
+        if hasattr(self.args, 'n_epochs') and self.args.n_epochs is not None and int(self.args.n_epochs) > 0:
+            self.epochs = int(self.args.n_epochs)
 
         print(f"Training for {self.epochs} epochs...")
         start = time.time()
