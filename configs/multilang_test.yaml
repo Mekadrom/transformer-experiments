@@ -1,3 +1,20 @@
 tokenizer_run_name: BPE_MULTI
 
-tokens_in_batch: 2500
+heads_activation: elu
+
+use_grokfast: ema
+grokfast_lambda: 2.0
+grokfast_alpha: 0.98
+
+tokens_in_batch: 2000
+target_tokens_per_batch: 24000
+n_steps: 300000
+warmup_steps: 10000
+
+print_frequency: 200
+compile_model: True
+encoder_device: cuda:0
+decoder_device: cuda:0
+save_initial_checkpoint: True
+cudnn_benchmark: True
+clip_grad_norm: 1.0

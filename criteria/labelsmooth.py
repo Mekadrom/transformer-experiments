@@ -39,13 +39,13 @@ class LabelSmoothedCE(nn.Module):
             lengths=lengths.cpu(),
             batch_first=True,
             enforce_sorted=False
-        ) # (sum(lengths), vocab_size)
+        ).to(self.args.decoder_device) # (sum(lengths), vocab_size)
         targets, _, _, _ = pack_padded_sequence(
             input=targets,
             lengths=lengths.cpu(),
             batch_first=True,
             enforce_sorted=False
-        ) # (sum(lengths))
+        ).to(self.args.decoder_device) # (sum(lengths))
 
         if self.eps == 0.:
             # Compute cross-entropy loss

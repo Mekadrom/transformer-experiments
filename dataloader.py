@@ -68,18 +68,18 @@ class SequenceLoader(object):
 
         assert len(source_data) == len(target_data), "There are a different number of source or target sequences!"
 
-        source_lengths = [len(s) for s in tqdm(utils.encode(self.args, self.src_tokenizer, source_data), desc='Encoding src sequences')]
+        source_lengths = [len(s) for s in tqdm(utils.encode(self.args, self.src_tokenizer, source_data, eos=True), desc='Encoding src sequences')]
         # target language sequences have <BOS> (language specific) and <EOS> (language agnostic) tokens
         target_lengths = [len(t) for t in tqdm(utils.encode(self.args, self.tgt_tokenizer, target_data, eos=True), desc='Encoding tgt sequences')]
         self.data = list(zip(source_data, target_data, source_lengths, target_lengths))
 
         # If for training, pre-sort by target lengths - required for itertools.groupby() later
         if self.for_training:
-            self.data.sort(key=lambda x: x[3])
+            self.data.sort(key=lambda x: (x[2] + x[3]) // 2)
         
         if self.for_training:
             # Group or chunk based on target sequence lengths
-            chunks = [list(g) for _, g in groupby(self.data, key=lambda x: x[3])]
+            chunks = [list(g) for _, g in groupby(self.data, key=lambda x: (x[2] + x[3]) // 2)]
 
             # Create batches, each with the same target sequence length
             self.all_batches = list()
@@ -113,17 +113,24 @@ class SequenceLoader(object):
         """
         self.current_batch += 1
         try:
-            source_data, target_data, source_lengths, target_lengths = zip(*self.all_batches[self.current_batch])
-        except IndexError:
-            self.file_idx += 1
-            self.create_batches()
-            self.current_batch += 1
             try:
                 source_data, target_data, source_lengths, target_lengths = zip(*self.all_batches[self.current_batch])
-            except IndexError:
-                raise StopIteration
+            except:
+                try:
+                    self.file_idx += 1
+                    if self.file_idx >= len(self.src_file_paths):
+                        raise StopIteration
+                    
+                    self.create_batches()
+                    self.current_batch += 1
+                    source_data, target_data, source_lengths, target_lengths = zip(*self.all_batches[self.current_batch])
+                except:
+                    raise StopIteration
+        except:
+            self.file_idx = 0
+            raise StopIteration
 
-        source_data = utils.encode(self.args, self.src_tokenizer, source_data)
+        source_data = utils.encode(self.args, self.src_tokenizer, source_data, eos=True)
         target_data = utils.encode(self.args, self.tgt_tokenizer, target_data, eos=True)
 
         source_data = pad_sequence(sequences=[torch.LongTensor(s) for s in source_data], batch_first=True, padding_value=self.src_tokenizer.subword_to_id('<PAD>'))

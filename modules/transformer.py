@@ -29,9 +29,8 @@ def init_weights(args, model: nn.Module, tie_embeddings):
     if isinstance(model, Transformer):
         if isinstance(model.encoder.embedding, nn.Embedding):
             nn.init.normal_(model.encoder.embedding.weight, mean=0., std=args.d_model ** -0.5)
-            model.decoder.embedding.weight = model.encoder.embedding.weight
-
             if tie_embeddings:
+                model.decoder.embedding.weight = model.encoder.embedding.weight
                 model.decoder.classifier.weight = model.decoder.embedding.weight
         elif isinstance(model.encoder.embedding, embedding_mlp.EmbeddingMLP):
             nn.init.normal_(model.encoder.embedding.embedding.weight, mean=0., std=args.d_model ** -0.5)
@@ -401,11 +400,19 @@ class Transformer(nn.Module):
         init_weights(args, self, tie_embeddings)
 
     def forward(self, encoder_sequences, decoder_sequences, src_key_padding_mask, tgt_key_padding_mask):
+        encoder_sequences = encoder_sequences.to(self.args.encoder_device)
+        src_key_padding_mask = src_key_padding_mask.to(self.args.encoder_device)
         self.encoder.embedding = self.encoder.embedding.to(self.args.encoder_device)
+
         encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, src_key_padding_mask) # (N, encoder_sequence_pad_length, d_model)
 
+        encoder_sequences = encoder_sequences.to(self.args.decoder_device)
+        decoder_sequences = decoder_sequences.to(self.args.decoder_device)
+        src_key_padding_mask = src_key_padding_mask.to(self.args.decoder_device)
+        tgt_key_padding_mask = tgt_key_padding_mask.to(self.args.decoder_device)
         self.decoder.embedding = self.decoder.embedding.to(self.args.decoder_device)
         self.decoder.classifier = self.decoder.classifier.to(self.args.decoder_device)
+        
         decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, encoder_sequences, src_key_padding_mask, tgt_key_padding_mask) # (N, decoder_sequence_pad_length, vocab_size)
 
         return decoder_sequences, encoder_gating_variances, decoder_gating_variances

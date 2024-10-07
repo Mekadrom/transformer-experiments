@@ -2,7 +2,6 @@ from collections import OrderedDict
 from dataloader import SequenceLoader
 from datasets import load_dataset
 from positional_encodings.torch_encodings import PositionalEncoding2D
-from rotary_embedding_torch import RotaryEmbedding
 from modules.swiglu import SwiGLU
 from torch import nn
 from torch.backends import cudnn
