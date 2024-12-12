@@ -5,6 +5,7 @@ from modules.transformer import Transformer
 from prettytable import PrettyTable
 from tqdm import tqdm
 from typing import List, Optional
+from multigpu_translation_training_wrapper import MultiGPUTranslationWrapper
 
 import avg_meter
 import base_trainer
@@ -46,6 +47,17 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             model = TranslationTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.src_bpe_model), utils.vocab_size(self.tgt_bpe_model), tie_embeddings=tie_embeddings)
 
             optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=self.args.lr, betas=[self.args.beta1, self.args.beta2], eps=self.args.epsilon)
+
+        if bool(self.args.multidevice):
+            self.model = MultiGPUTranslationWrapper(
+                model=model,
+                optimizer=optimizer,
+                gpu_ids=list(range(torch.cuda.device_count())),
+                sync_steps=self.args.multidevice_sync_steps
+            )
+            self.model.criterion = self.criterion
+            self.model.moe_criterion = self.moe_criterion
+        
         return model, optimizer
 
     def get_criteria(self):
@@ -254,7 +266,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             input_sequence = model.encoder.apply_positional_embedding(input_sequence) # (N, pad_length, d_model)
 
             for e, encoder_layer in enumerate(model.encoder.encoder_layers):
-                input_sequence, attention_weights = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, src_key_padding_mask)
+                encoder_sequences, attention_weights = encoder_layer.self_attn(input_sequence, input_sequence, input_sequence, src_key_padding_mask)
+                input_sequence = encoder_layer.self_attn_residual(input_sequence, encoder_sequences)
 
                 for a, attention_weight_grid in enumerate(attention_weights):
                     attention_weight_grid = attention_weight_grid.cpu().contiguous()
@@ -264,7 +277,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                         image_data = self.viz_attn_weights('Encoder-Self', e, i, attention_weight_grid[:, i, :input_sequence_length, :input_sequence_length].transpose(-2, -1).squeeze(0).cpu().detach().numpy(), input_tokens, input_tokens)
                         self.summary_writer.add_image(f"encoder/viz/layer_{e}/segment_{a}/head_{i}/self-attn", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-                fcn_output = encoder_layer.fcn(input_sequence) # (N, pad_length, d_model)
+                encoder_sequences = encoder_layer.fcn(input_sequence) # (N, pad_length, d_model)
+                input_sequence = encoder_layer.fcn_residual(input_sequence, encoder_sequences)
 
                 if fcn_output is tuple:
                     fcn_output = fcn_output[0]
@@ -281,7 +295,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
             attention_weights: Optional[List[torch.Tensor]] = None
             for d, decoder_layer in enumerate(model.decoder.decoder_layers):
-                target_sequence, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, tgt_key_padding_mask) # (N, pad_length, d_model)
+                decoder_sequences, attention_weights = decoder_layer.self_attn(target_sequence, target_sequence, target_sequence, tgt_key_padding_mask) # (N, pad_length, d_model)
+                target_sequence = decoder_layer.self_attn_residual(target_sequence, decoder_sequences)
                 
                 for a, attention_weight_grid in enumerate(attention_weights):
                     attention_weight_grid = attention_weight_grid.cpu().detach().contiguous()
@@ -291,7 +306,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                         image_data = self.viz_attn_weights('Decoder-Self', d, i, attention_weight_grid[:, i, :target_sequence_length, :target_sequence_length].transpose(-2, -1).squeeze(0).numpy(), target_tokens, target_tokens)
                         self.summary_writer.add_image(f"decoder/viz/layer_{d}/segment_{a}/head_{i}/self-attn", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-                target_sequence, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, src_key_padding_mask) # (N, pad_length, d_model)
+                decoder_sequences, attention_weights = decoder_layer.cross_attn(target_sequence, input_sequence, input_sequence, src_key_padding_mask) # (N, pad_length, d_model)
+                target_sequence = decoder_layer.cross_attn_residual(target_sequence, decoder_sequences)
 
                 for a, attention_weight_grid in enumerate(attention_weights):
                     attention_weight_grid = attention_weight_grid.cpu().detach().contiguous()
@@ -301,7 +317,8 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                         image_data = self.viz_attn_weights('Decoder-Cross', d, i, attention_weight_grid[:, i, :target_sequence_length, :input_sequence_length].transpose(-2, -1).squeeze(0).numpy(), target_tokens, input_tokens)
                         self.summary_writer.add_image(f"decoder/viz/layer_{d}/segment_{a}/head_{i}/cross-attn", plt.imread(image_data), global_step=step, dataformats='HWC')
 
-                fcn_output = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
+                decoder_sequences = decoder_layer.fcn(target_sequence) # (N, pad_length, d_model)
+                target_sequence = decoder_layer.fcn_residual(target_sequence, decoder_sequences)
 
                 if fcn_output is tuple:
                     fcn_output = fcn_output[0]

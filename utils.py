@@ -3,6 +3,7 @@ from dataloader import SequenceLoader
 from datasets import load_dataset
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from modules.swiglu import SwiGLU
+from multigpu_translation_training_wrapper import MultiGPUTranslationWrapper
 from torch import nn
 from torch.backends import cudnn
 from tqdm import tqdm
@@ -223,9 +224,11 @@ def load_translation_data(args, tokens_in_batch, run_dir, src_bpe_model, tgt_bpe
     return train_loader, val_loader, test_loader
 
 def save_checkpoint(epoch, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
-    state = {'epoch': epoch, 'model': model, 'optimizer': optimizer}
-    filename = prefix + 'transformer_checkpoint.pth.tar'
-    torch.save(state, filename)
+    if isinstance(model, MultiGPUTranslationWrapper):
+        state = model.save_checkpoint()
+    else:
+        state = {'epoch': epoch, 'model': model, 'optimizer': optimizer}
+    torch.save(state, f"{prefix}transformer_checkpoint.pth.tar")
 
 def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=None, model_name_prefix='step', model_name_suffix='_transformer_checkpoint.pth.tar'):
     # Get list of checkpoint names

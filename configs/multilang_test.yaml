@@ -6,15 +6,17 @@ use_grokfast: ema
 grokfast_lambda: 2.0
 grokfast_alpha: 0.98
 
-tokens_in_batch: 2000
+tokens_in_batch: 4000
 target_tokens_per_batch: 24000
 n_steps: 300000
 warmup_steps: 10000
+multidevice: true
+multidevice_sync_steps: 100
 
 print_frequency: 200
 compile_model: True
-encoder_device: cuda:0
-decoder_device: cuda:0
+encoder_device: cuda
+decoder_device: cuda
 save_initial_checkpoint: True
 cudnn_benchmark: True
 clip_grad_norm: 1.0
