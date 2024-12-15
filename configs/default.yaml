@@ -46,7 +46,7 @@ m_encoder_independent_layers: 0
 m_decoder_independent_layers: 0
 activation_function: relu
 embedding_compression_dim: 0
-embedding_compression_activation: none
+embedding_activation: none
 
 tokens_in_batch: 5000
 target_tokens_per_batch: 25000
