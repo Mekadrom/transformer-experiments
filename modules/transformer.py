@@ -4,6 +4,7 @@ from typing import List
 
 import admin_torch
 import math
+import per_lang_embedding
 import torch
 import utils
 
@@ -89,7 +90,7 @@ class Encoder(nn.Module):
         self.vocab_size = vocab_size
 
         if args.embedding_compression_dim != 0:
-            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
+            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity)
         else:
             self.embedding = nn.Embedding(vocab_size, args.d_model)
 
@@ -256,9 +257,13 @@ class Decoder(nn.Module):
         self.use_cross_attn = use_cross_attn
 
         if args.embedding_compression_dim != 0:
-            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity)
+            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity)
         else:
             self.embedding = nn.Embedding(vocab_size, args.d_model)
+
+        if int(args.per_lang_embedding_layers) > 1:
+            per_lang = per_lang_embedding.PerLangEmbedding(vocab_size, args.d_model, args.per_lang_embedding_layers, args.embedding_activation)
+            self.embedding = nn.Sequential(self.embedding, per_lang)
             
         self.apply_dropout = nn.Dropout(args.dropout)
         self.layer_norm = norm(args.d_model, args.norm_eps)
@@ -267,7 +272,7 @@ class Decoder(nn.Module):
         if args.embedding_compression_dim != 0:
             self.classifier = nn.Sequential(
                 nn.Linear(args.d_model, args.embedding_compression_dim),
-                utils.create_activation_function(args.embedding_compression_dim, args.embedding_compression_activation) if args.embedding_compression_activation != 'none' else nn.Identity(),
+                utils.create_activation_function(args.embedding_compression_dim, args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity(),
                 nn.Linear(args.embedding_compression_dim, vocab_size)
             )
         else:

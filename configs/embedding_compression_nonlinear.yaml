@@ -1,4 +1,4 @@
 tokenizer_run_name: BPE_SEPARATE
 
 embedding_compression_dim: 256
-embedding_compression_activation: relu
+embedding_activation: relu
