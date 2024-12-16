@@ -5,6 +5,7 @@ from typing import List
 import admin_torch
 import math
 import per_lang_embedding
+import phi3_mlp
 import torch
 import utils
 
@@ -63,8 +64,10 @@ class EncoderLayer(nn.Module):
             self.fcn_residual = sum.Sum()
 
         moe = None
-        if args.moe_type == 'millions':
+        if args.fcn_type == 'millions':
             moe = millions_moe.MillionsMoE(args)
+        elif args.fcn_type == "phi3":
+            self.fcn = phi3_mlp.Phi3MLP(args)
         else:
             self.fcn = positionwise_fcn.PositionWiseFCNetwork(args, norm=norm)
 
@@ -225,8 +228,10 @@ class DecoderLayer(nn.Module):
             self.fcn_residual = sum.Sum()
 
         moe = None
-        if args.moe_type == 'millions':
+        if args.fcn_type == 'millions':
             moe = millions_moe.MillionsMoE(args)
+        elif args.fcn_type == "phi3":
+            self.fcn = phi3_mlp.Phi3MLP(args)
         else:
             self.fcn = positionwise_fcn.PositionWiseFCNetwork(args, norm=norm)
 
@@ -258,13 +263,11 @@ class Decoder(nn.Module):
 
         if args.embedding_compression_dim != 0:
             self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity)
+        elif int(args.per_lang_embedding_layers) > 1:
+            self.embedding = per_lang_embedding.PerLangEmbedding(vocab_size, args.d_model, args.per_lang_embedding_layers, args.embedding_activation)
         else:
             self.embedding = nn.Embedding(vocab_size, args.d_model)
 
-        if int(args.per_lang_embedding_layers) > 1:
-            per_lang = per_lang_embedding.PerLangEmbedding(vocab_size, args.d_model, args.per_lang_embedding_layers, args.embedding_activation)
-            self.embedding = nn.Sequential(self.embedding, per_lang)
-            
         self.apply_dropout = nn.Dropout(args.dropout)
         self.layer_norm = norm(args.d_model, args.norm_eps)
         self.decoder_layers = self.make_decoder_layers(args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers, norm=norm)

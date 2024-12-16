@@ -20,7 +20,7 @@ weight_decay: 0.0
 use_grok_scaled_attn: False
 use_grokfast: none
 
-moe_type: none
+fcn_type: none
 moe_replace: False
 moe_n_experts: 0
 moe_top_k: 0
