@@ -120,7 +120,7 @@ class BaseTrainer:
         start = time.time()
         
         for epoch in range(self.start_epoch, self.epochs):
-            self.steps = (epoch * self.train_loader.n_batches // self.batches_per_step)
+            # self.steps = (epoch * self.train_loader.n_batches // self.batches_per_step)
 
             self.train_loader.create_batches()
             self.train_epoch(self.compiled_model, epoch=epoch)
@@ -143,7 +143,7 @@ class BaseTrainer:
         time_taken = time.time() - start
 
         # recalculate steps to make sure validation data is updated with correct steps
-        self.steps = (self.epochs * self.train_loader.n_batches // self.batches_per_step)
+        # self.steps = (self.epochs * self.train_loader.n_batches // self.batches_per_step)
 
         print(f"Training complete. Averaging checkpoints...")
         utils.average_checkpoints(self.epochs, self.optimizer, self.run_dir, model_name_prefix='step')
