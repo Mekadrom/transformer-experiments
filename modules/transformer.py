@@ -1,6 +1,6 @@
 from modules import embedding_mlp, millions_moe, positionwise_fcn, multihead_attn, sum
 from torch import nn
-from typing import List
+from typing import Optional
 
 import admin_torch
 import math
@@ -76,7 +76,7 @@ class EncoderLayer(nn.Module):
         elif moe is not None:
             self.fcn = nn.Sequential(moe, self.fcn)
 
-    def forward(self, encoder_sequences, key_padding_mask):
+    def forward(self, encoder_sequences, key_padding_mask) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         self_attn, _ = self.self_attn(encoder_sequences, encoder_sequences, encoder_sequences, key_padding_mask)
 
         encoder_sequences = self.self_attn_residual(encoder_sequences, self_attn)
@@ -104,7 +104,7 @@ class Encoder(nn.Module):
         if args.positional_encoding_type != 'rotary':
             self.tensor_positional_encoding = nn.Parameter(utils.get_tensor_positional_encoding(args, args.encoder_device))
 
-    def make_encoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm) -> List[EncoderLayer]:
+    def make_encoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm) -> list[EncoderLayer]:
         def new_encoder_layer():
             return EncoderLayer(self.args, norm=norm)
 
@@ -181,7 +181,7 @@ class Encoder(nn.Module):
             return encoder_sequences + self.tensor_positional_encoding[:, :encoder_sequences.size(1), :]
         return encoder_sequences
     
-    def apply_encoder_layer(self, encoder_sequences: torch.Tensor, key_padding_mask: torch.Tensor, encoder_layer: nn.Module) -> torch.Tensor:
+    def apply_encoder_layer(self, encoder_sequences: torch.Tensor, key_padding_mask: torch.Tensor, encoder_layer: nn.Module) -> tuple[torch.Tensor, list[torch.Tensor]]:
         return encoder_layer(encoder_sequences, key_padding_mask)
 
     def forward(self, encoder_sequences: torch.Tensor, key_padding_mask: torch.Tensor) -> torch.Tensor:
@@ -240,7 +240,7 @@ class DecoderLayer(nn.Module):
         elif moe is not None:
             self.fcn = nn.Sequential(moe, self.fcn)
 
-    def forward(self, decoder_sequences: torch.Tensor, encoder_sequences: torch.Tensor, src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, decoder_sequences: torch.Tensor, encoder_sequences: torch.Tensor, src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         self_attn, _ = self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, tgt_key_padding_mask)
         decoder_sequences = self.self_attn_residual(decoder_sequences, self_attn)
 
@@ -284,7 +284,7 @@ class Decoder(nn.Module):
         if args.positional_encoding_type != 'rotary':
             self.tensor_positional_encoding = nn.Parameter(utils.get_tensor_positional_encoding(args, args.decoder_device))
 
-    def make_decoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm) -> List[DecoderLayer]:
+    def make_decoder_layers(self, n_layers, param_sharing_type, m_independent_layers, norm=nn.LayerNorm) -> list[DecoderLayer]:
         def new_decoder_layer():
             return DecoderLayer(self.args, use_cross_attn=self.use_cross_attn, norm=norm)
         
@@ -370,7 +370,7 @@ class Decoder(nn.Module):
     def apply_decoder_layer(self, decoder_sequences: torch.Tensor, encoder_sequences: torch.Tensor, src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor, decoder_layer: nn.Module) -> torch.Tensor:
         return decoder_layer(decoder_sequences, encoder_sequences, src_key_padding_mask, tgt_key_padding_mask)
 
-    def forward(self, decoder_sequences: torch.Tensor, encoder_sequences: torch.Tensor, src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, decoder_sequences: torch.Tensor, encoder_sequences: torch.Tensor, src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
         assert torch.all(encoder_sequences < self.vocab_size), f"Encoder input is out of bounds: {torch.max(encoder_sequences)} >= {self.vocab_size}"
         assert torch.all(decoder_sequences < self.vocab_size), f"Decoder input is out of bounds: {torch.max(decoder_sequences)} >= {self.vocab_size}"
 
