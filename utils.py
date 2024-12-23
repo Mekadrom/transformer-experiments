@@ -501,6 +501,8 @@ def get_activation_function(activation_function_name):
         return nn.PReLU
     elif activation_function_name == 'leaky_relu':
         return nn.LeakyReLU
+    elif activation_function_name == 'silu':
+        return nn.SiLU
     elif activation_function_name == 'none':
         return nn.Identity
     else:
