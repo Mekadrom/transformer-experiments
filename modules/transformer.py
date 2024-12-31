@@ -1,11 +1,9 @@
-from modules import embedding_mlp, millions_moe, positionwise_fcn, multihead_attn, sum
+from modules import embedding_mlp, millions_moe, phi3_mlp, per_lang_embedding, positionwise_fcn, multihead_attn, sum
 from torch import nn
 from typing import Optional
 
 import admin_torch
 import math
-import per_lang_embedding
-import phi3_mlp
 import torch
 import utils
 
@@ -29,24 +27,24 @@ def init_weights(args, model: nn.Module, tie_embeddings):
 
     # share weights between the embedding layers and the logit layer
     if isinstance(model, Transformer):
-        if isinstance(model.encoder.embedding, nn.Embedding):
-            nn.init.normal_(model.encoder.embedding.weight, mean=0., std=args.d_model ** -0.5)
+        if isinstance(model.encoder.embed_tokens, nn.Embedding):
+            nn.init.normal_(model.encoder.embed_tokens.weight, mean=0., std=args.d_model ** -0.5)
             if tie_embeddings:
-                model.decoder.embedding.weight = model.encoder.embedding.weight
-                model.decoder.classifier.weight = model.decoder.embedding.weight
-        elif isinstance(model.encoder.embedding, embedding_mlp.EmbeddingMLP):
-            nn.init.normal_(model.encoder.embedding.embedding.weight, mean=0., std=args.d_model ** -0.5)
-            model.decoder.embedding.embedding.weight = model.encoder.embedding.embedding.weight
+                model.decoder.embed_tokens.weight = model.encoder.embed_tokens.weight
+                model.decoder.lm_head.weight = model.decoder.embed_tokens.weight
+        elif isinstance(model.encoder.embed_tokens, embedding_mlp.EmbeddingMLP):
+            nn.init.normal_(model.encoder.embed_tokens.embedding.weight, mean=0., std=args.d_model ** -0.5)
+            model.decoder.embed_tokens.embedding.weight = model.encoder.embed_tokens.embedding.weight
 
             if tie_embeddings:
-                model.decoder.classifier[-1].weight = model.decoder.embedding.embedding.weight
+                model.decoder.lm_head[-1].weight = model.decoder.embed_tokens.embedding.weight
     elif isinstance(model, Decoder):
-        if isinstance(model.encoder.embedding, nn.Embedding):
+        if isinstance(model.encoder.embed_tokens, nn.Embedding):
             if tie_embeddings:
-                model.classifier.weight = model.embedding.weight
-        elif isinstance(model.encoder.embedding, embedding_mlp.EmbeddingMLP):
+                model.lm_head.weight = model.embed_tokens.weight
+        elif isinstance(model.encoder.embed_tokens, embedding_mlp.EmbeddingMLP):
             if tie_embeddings:
-                model.classifier.weight = model.embedding.embedding.weight
+                model.lm_head.weight = model.embed_tokens.embedding.weight
 
     print("Model initialized.")
 
@@ -93,12 +91,14 @@ class Encoder(nn.Module):
         self.vocab_size = vocab_size
 
         if args.embedding_compression_dim != 0:
-            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity)
+            self.embed_tokens = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity)
+        elif hasattr(args, 'per_lang_embedding_layers') and int(args.per_lang_embedding_layers) > 1:
+            self.embed_tokens = per_lang_embedding.PerLangEmbedding(vocab_size, args.d_model, args.per_lang_embedding_layers, args.embedding_activation)
         else:
-            self.embedding = nn.Embedding(vocab_size, args.d_model)
+            self.embed_tokens = nn.Embedding(vocab_size, args.d_model)
 
-        self.apply_dropout = nn.Dropout(args.dropout)
-        self.norm = norm(args.d_model, args.norm_eps)
+        self.encoder_dropout = nn.Dropout(args.dropout)
+        self.post_encoder_norm = norm(args.d_model, args.norm_eps)
         self.encoder_layers = self.make_encoder_layers(args.n_encoder_layers, args.encoder_param_sharing_type, args.m_encoder_independent_layers, norm=norm)
 
         if args.positional_encoding_type != 'rotary':
@@ -172,8 +172,8 @@ class Encoder(nn.Module):
                 layers.append(new_encoder_layer())
         return nn.ModuleList(layers)
 
-    def perform_embedding_transformation(self, encoder_sequences : torch.Tensor) -> torch.Tensor:
-        return self.embedding(encoder_sequences) * math.sqrt(self.args.d_model) # (N, pad_length, d_model)
+    def apply_embedding_transformation(self, encoder_sequences : torch.Tensor) -> torch.Tensor:
+        return self.embed_tokens(encoder_sequences) * math.sqrt(self.args.d_model)
 
     def apply_positional_embedding(self, encoder_sequences):
         # 1D buffer/sinusoidal encoding is applied here. 2D buffer/sinusoidal encoding and rotary encoding are applied in the MultiHeadAttention layer(s)
@@ -190,9 +190,9 @@ class Encoder(nn.Module):
         encoder_sequences = encoder_sequences.to(self.args.encoder_device)
         key_padding_mask = key_padding_mask.to(self.args.encoder_device)
 
-        encoder_sequences = self.perform_embedding_transformation(encoder_sequences) # (N, pad_length, d_model)
-        encoder_sequences = self.apply_positional_embedding(encoder_sequences) # (N, pad_length, d_model)
-        encoder_sequences = self.apply_dropout(encoder_sequences) # (N, pad_length, d_model)
+        encoder_sequences = self.apply_embedding_transformation(encoder_sequences)
+        encoder_sequences = self.apply_positional_embedding(encoder_sequences)
+        encoder_sequences = self.encoder_dropout(encoder_sequences)
 
         gating_variances = []
         for encoder_layer in self.encoder_layers:
@@ -201,7 +201,7 @@ class Encoder(nn.Module):
                 gating_variances.append(gating_variance)
 
         # post-LN
-        encoder_sequences = self.norm(encoder_sequences) # (N, pad_length, d_model)
+        encoder_sequences = self.post_encoder_norm(encoder_sequences)
 
         return encoder_sequences, gating_variances
 
@@ -244,7 +244,7 @@ class DecoderLayer(nn.Module):
         self_attn, _ = self.self_attn(decoder_sequences, decoder_sequences, decoder_sequences, tgt_key_padding_mask)
         decoder_sequences = self.self_attn_residual(decoder_sequences, self_attn)
 
-        if self.cross_attn is not None:
+        if self.cross_attn is not None and encoder_sequences is not None and src_key_padding_mask is not None:
             cross_attn, _ = self.cross_attn(decoder_sequences, encoder_sequences, encoder_sequences, src_key_padding_mask)
             decoder_sequences = self.cross_attn_residual(decoder_sequences, cross_attn)
 
@@ -261,25 +261,25 @@ class Decoder(nn.Module):
         self.vocab_size = vocab_size
         self.use_cross_attn = use_cross_attn
 
-        if args.embedding_compression_dim != 0:
-            self.embedding = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity)
-        elif int(args.per_lang_embedding_layers) > 1:
-            self.embedding = per_lang_embedding.PerLangEmbedding(vocab_size, args.d_model, args.per_lang_embedding_layers, args.embedding_activation)
+        if hasattr(args, 'embedding_compression_dim') and args.embedding_compression_dim != 0:
+            self.embed_tokens = embedding_mlp.EmbeddingMLP(vocab_size, args.embedding_compression_dim, args.d_model, utils.get_activation_function(args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity)
+        elif hasattr(args, 'per_lang_embedding_layers') and int(args.per_lang_embedding_layers) > 1:
+            self.embed_tokens = per_lang_embedding.PerLangEmbedding(vocab_size, args.d_model, args.per_lang_embedding_layers, args.embedding_activation)
         else:
-            self.embedding = nn.Embedding(vocab_size, args.d_model)
+            self.embed_tokens = nn.Embedding(vocab_size, args.d_model)
 
-        self.apply_dropout = nn.Dropout(args.dropout)
-        self.layer_norm = norm(args.d_model, args.norm_eps)
+        self.decoder_dropout = nn.Dropout(args.dropout)
+        self.post_decoder_norm = norm(args.d_model, args.norm_eps)
         self.decoder_layers = self.make_decoder_layers(args.n_decoder_layers, args.decoder_param_sharing_type, args.m_decoder_independent_layers, norm=norm)
 
-        if args.embedding_compression_dim != 0:
-            self.classifier = nn.Sequential(
+        if hasattr(args, 'embedding_compression_dim') and args.embedding_compression_dim != 0:
+            self.lm_head = nn.Sequential(
                 nn.Linear(args.d_model, args.embedding_compression_dim),
                 utils.create_activation_function(args.embedding_compression_dim, args.embedding_activation) if args.embedding_activation != 'none' else nn.Identity(),
                 nn.Linear(args.embedding_compression_dim, vocab_size)
             )
         else:
-            self.classifier = nn.Linear(args.d_model, vocab_size)
+            self.lm_head = nn.Linear(args.d_model, vocab_size)
 
         if args.positional_encoding_type != 'rotary':
             self.tensor_positional_encoding = nn.Parameter(utils.get_tensor_positional_encoding(args, args.decoder_device))
@@ -359,7 +359,7 @@ class Decoder(nn.Module):
         return nn.ModuleList(layers)
 
     def apply_embedding_transformation(self, decoder_sequences: torch.Tensor) -> torch.Tensor:
-        return self.embedding(decoder_sequences) * math.sqrt(self.args.d_model) # (N, pad_length, d_model)
+        return self.embed_tokens(decoder_sequences) * math.sqrt(self.args.d_model)
     
     def apply_positional_embedding(self, decoder_sequences: torch.Tensor) -> torch.Tensor:
         # 1D buffer/sinusoidal encoding is applied here. 2D buffer/sinusoidal encoding and rotary encoding are applied in the MultiHeadAttention layer(s)
@@ -375,14 +375,23 @@ class Decoder(nn.Module):
         assert torch.all(decoder_sequences < self.vocab_size), f"Decoder input is out of bounds: {torch.max(decoder_sequences)} >= {self.vocab_size}"
 
         decoder_sequences = decoder_sequences.to(self.args.decoder_device)
-        encoder_sequences = encoder_sequences.to(self.args.decoder_device)
-        src_key_padding_mask = src_key_padding_mask.to(self.args.decoder_device)
-        tgt_key_padding_mask = tgt_key_padding_mask.to(self.args.decoder_device)
+        if encoder_sequences is not None:
+            encoder_sequences = encoder_sequences.to(self.args.decoder_device)
 
-        decoder_sequences = self.apply_embedding_transformation(decoder_sequences) # (N, pad_length, d_model)
+        if src_key_padding_mask is not None:
+            src_key_padding_mask = src_key_padding_mask.to(self.args.decoder_device)
+        elif encoder_sequences is not None:
+            src_key_padding_mask = encoder_sequences == 0
 
-        decoder_sequences = self.apply_positional_embedding(decoder_sequences) # (N, pad_length, d_model)
-        decoder_sequences = self.apply_dropout(decoder_sequences)
+        if tgt_key_padding_mask is not None:
+            tgt_key_padding_mask = tgt_key_padding_mask.to(self.args.decoder_device)
+        else:
+            tgt_key_padding_mask = decoder_sequences == 0
+
+        if self.embed_tokens is not None:
+            decoder_sequences = self.apply_embedding_transformation(decoder_sequences)
+        decoder_sequences = self.apply_positional_embedding(decoder_sequences)
+        decoder_sequences = self.decoder_dropout(decoder_sequences)
 
         gating_variances = []
         for decoder_layer in self.decoder_layers:
@@ -390,8 +399,8 @@ class Decoder(nn.Module):
             if gating_variance is not None:
                 gating_variances.append(gating_variance)
 
-        decoder_sequences = self.layer_norm(decoder_sequences) # (N, pad_length, d_model)
-        decoder_sequences = self.classifier(decoder_sequences) # (N, pad_length, vocab_size)
+        decoder_sequences = self.post_decoder_norm(decoder_sequences)
+        decoder_sequences = self.lm_head(decoder_sequences)
 
         return decoder_sequences, gating_variances
 
@@ -409,18 +418,18 @@ class Transformer(nn.Module):
 
     def forward(self, encoder_sequences, decoder_sequences, src_key_padding_mask, tgt_key_padding_mask):
         encoder_sequences = encoder_sequences.to(self.args.encoder_device)
+        decoder_sequences = decoder_sequences.to(self.args.decoder_device)
         src_key_padding_mask = src_key_padding_mask.to(self.args.encoder_device)
-        self.encoder.embedding = self.encoder.embedding.to(self.args.encoder_device)
+        tgt_key_padding_mask = tgt_key_padding_mask.to(self.args.decoder_device)
+        self.encoder.embed_tokens = self.encoder.embed_tokens.to(self.args.encoder_device)
 
-        encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, src_key_padding_mask) # (N, encoder_sequence_pad_length, d_model)
+        encoder_sequences, encoder_gating_variances = self.encoder(encoder_sequences, src_key_padding_mask)
 
         encoder_sequences = encoder_sequences.to(self.args.decoder_device)
-        decoder_sequences = decoder_sequences.to(self.args.decoder_device)
         src_key_padding_mask = src_key_padding_mask.to(self.args.decoder_device)
-        tgt_key_padding_mask = tgt_key_padding_mask.to(self.args.decoder_device)
-        self.decoder.embedding = self.decoder.embedding.to(self.args.decoder_device)
-        self.decoder.classifier = self.decoder.classifier.to(self.args.decoder_device)
+        self.decoder.embed_tokens = self.decoder.embed_tokens.to(self.args.decoder_device)
+        self.decoder.lm_head = self.decoder.lm_head.to(self.args.decoder_device)
         
-        decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, encoder_sequences, src_key_padding_mask, tgt_key_padding_mask) # (N, decoder_sequence_pad_length, vocab_size)
+        decoder_sequences, decoder_gating_variances = self.decoder(decoder_sequences, encoder_sequences, src_key_padding_mask, tgt_key_padding_mask)
 
         return decoder_sequences, encoder_gating_variances, decoder_gating_variances

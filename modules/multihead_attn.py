@@ -23,32 +23,32 @@ class MultiHeadAttention(nn.Module):
         self.n_gqa_groups = args.n_gqa_groups
 
         # A linear projection to cast (n_kv_heads sets of) queries from the input query sequences
-        self.cast_queries = nn.Linear(args.d_model, self.n_q_heads * args.d_queries) # (N, query_sequence_pad_length, n_kv_heads * d_queries)
+        self.q_proj = nn.Linear(args.d_model, self.n_q_heads * args.d_queries, bias=bool(args.q_bias)) # (N, query_sequence_pad_length, n_kv_heads * d_queries)
         # A linear projection to cast (n_kv_heads sets of) keys and values from the input reference sequences
-        self.cast_keys = nn.Linear(args.d_model, args.n_heads * args.d_queries) # (N, key_value_sequence_pad_length, n_kv_heads * d_queries)
-        self.cast_values = nn.Linear(args.d_model, args.n_heads * args.d_values) # (N, key_value_sequence_pad_length, n_kv_heads * d_values)
+        self.k_proj = nn.Linear(args.d_model, args.n_heads * args.d_queries, bias=bool(args.k_bias)) # (N, key_value_sequence_pad_length, n_kv_heads * d_queries)
+        self.v_proj = nn.Linear(args.d_model, args.n_heads * args.d_values, bias=bool(args.v_bias)) # (N, key_value_sequence_pad_length, n_kv_heads * d_values)
 
         # a linear projection to cast (n_q_heads sets of) computed attention-weighted vectors to output vectors
-        self.mha_cast_output = nn.Linear(args.n_heads * args.d_values, args.d_model)
+        self.o_proj = nn.Linear(args.n_heads * args.d_values, args.d_model, bias=bool(args.o_bias))
 
-        self.softmax = nn.Softmax(dim=-1)
+        self.attn_softmax = nn.Softmax(dim=-1)
 
-        self.norm = norm(args.d_model, args.norm_eps)
+        self.qkv_norm = norm(args.d_model, args.norm_eps)
 
-        self.dropout = nn.Dropout(args.dropout)
+        self.attn_dropout = nn.Dropout(args.dropout)
 
         self.heads_activation: Optional[nn.Module] = None
         if 'heads_activation' in args:
             self.heads_activation = utils.create_activation_function(args.d_model, args.heads_activation)
 
-        self.elu: Optional[nn.ELU] = None
-        self.beta: Optional[nn.Parameter] = None
+        self.infinite_attn_elu: Optional[nn.ELU] = None
+        self.infinite_attn_beta: Optional[nn.Parameter] = None
 
         if args.use_infinite_attention:
             assert args.maxlen % args.infinite_attention_n_segments == 0, "maxlen must be divisible by infinite_attention_n_segments"
 
-            self.beta = nn.Parameter(torch.ones((1,)))
-            self.elu = nn.ELU()
+            self.infinite_attn_beta = nn.Parameter(torch.ones((1,)))
+            self.infinite_attn_elu = nn.ELU()
             self.register_buffer('causal_mask', torch.tril(torch.ones((args.maxlen // args.infinite_attention_n_segments) + 1, (args.maxlen // args.infinite_attention_n_segments) + 1).to(self.device)))
         else:
             self.register_buffer('causal_mask', torch.tril(torch.ones(args.maxlen + 1, args.maxlen + 1).to(self.device)))
@@ -70,25 +70,24 @@ class MultiHeadAttention(nn.Module):
         return attention_weights
 
     def forward(self, query_sequences: torch.Tensor, key_sequences: torch.Tensor, value_sequences: torch.Tensor, key_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        query_sequences = self.norm(query_sequences)
+        query_sequences = self.qkv_norm(query_sequences)
 
         # if this isn't self-attention, they will already have been normed in the last layer of the Encoder (from whence they came)
         if self.self_attn:
-            key_sequences = self.norm(key_sequences)
-            value_sequences = self.norm(value_sequences)
+            key_sequences = self.qkv_norm(key_sequences)
+            value_sequences = self.qkv_norm(value_sequences)
 
-        q_heads: torch.Tensor = self.cast_queries(query_sequences)
-        k_heads: torch.Tensor = self.cast_keys(key_sequences)
-        v_heads: torch.Tensor = self.cast_values(value_sequences)
+        q_heads: torch.Tensor = self.q_proj(query_sequences)
+        k_heads: torch.Tensor = self.k_proj(key_sequences)
+        v_heads: torch.Tensor = self.v_proj(value_sequences)
 
         if self.heads_activation is not None:
             q_heads = self.heads_activation(q_heads)
             k_heads = self.heads_activation(k_heads)
             v_heads = self.heads_activation(v_heads)
 
-        N = q_heads.size(0) # batch size (N) in number of sequences
-        t = q_heads.size(1) # query sequence padded lengths
-        T = k_heads.size(1) # key-value sequence padded lengths
+        N, t, _ = q_heads.shape
+        N, T, _ = k_heads.shape
 
         # Split the last dimension by the n_kv_heads subspaces
         q_heads = q_heads.contiguous().view(N, t, self.n_gqa_groups, self.n_heads, self.args.d_queries) # (N, query_sequence_pad_length, n_gqa_groups, n_heads, d_queries)
@@ -115,8 +114,8 @@ class MultiHeadAttention(nn.Module):
 
             output = []
             for idx in range(self.args.infinite_attention_n_segments):
-                sigma_q: torch.Tensor = self.elu(q_heads[:, :, :, idx, :, :]) + 1.0
-                sigma_k: torch.Tensor = self.elu(k_heads[:, :, idx, :, :]) + 1.0
+                sigma_q: torch.Tensor = self.infinite_attn_elu(q_heads[:, :, :, idx, :, :]) + 1.0
+                sigma_k: torch.Tensor = self.infinite_attn_elu(k_heads[:, :, idx, :, :]) + 1.0
 
                 A_mem = (sigma_q @ memory) / ((sigma_q @ z) + (1e-6))
 
@@ -133,7 +132,7 @@ class MultiHeadAttention(nn.Module):
                 # attention_weights = 30.0 * torch.tanh(attention_weights / 30.0) # grok version of scaled attention
 
                 attention_weights = self.mask_attention(attention_weights, None)
-                attention_weights = self.softmax(attention_weights)
+                attention_weights = self.attn_softmax(attention_weights)
 
                 print(f"attention_weights: {attention_weights.shape}")
 
@@ -143,7 +142,7 @@ class MultiHeadAttention(nn.Module):
                 # attention_weights = self.dropout(attention_weights)
                 attention_weights = attention_weights @ v_heads[:, :, idx, :, :]
 
-                attention_weights = (F.sigmoid(self.beta) * A_mem) + ((1 - F.sigmoid(self.beta)) * attention_weights)
+                attention_weights = (F.sigmoid(self.infinite_attn_beta) * A_mem) + ((1 - F.sigmoid(self.infinite_attn_beta)) * attention_weights)
 
                 if self.args.infinite_attention_update == 'linear':
                     memory = memory + (sigma_k.transpose(-2, -1) @ v_heads[:, :, idx, :, :])
@@ -168,12 +167,12 @@ class MultiHeadAttention(nn.Module):
 
             attention_weights = self.mask_attention(attention_weights, key_padding_mask)
 
-            attention_weights = self.softmax(attention_weights)
+            attention_weights = self.attn_softmax(attention_weights)
 
             # for visualization, switch the kv_heads and q_per_kv_heads dimensions
             attention_weights_for_visualization.append(attention_weights.clone().detach())
 
-            attention_weights = self.dropout(attention_weights)
+            attention_weights = self.attn_dropout(attention_weights)
 
             # Calculate sequences as the weighted sums of values based on these softmax weights
             sequences = torch.einsum('...htT,...hTv->...htv', attention_weights, v_heads)
@@ -183,8 +182,8 @@ class MultiHeadAttention(nn.Module):
         # Concatenate the n_heads subspaces (each with an output of size d_values)
         sequences = sequences.contiguous().view(N, t, -1)
 
-        sequences = self.dropout(sequences)
+        sequences = self.attn_dropout(sequences)
 
-        sequences = self.mha_cast_output(sequences)
+        sequences = self.o_proj(sequences)
 
         return sequences, attention_weights_for_visualization

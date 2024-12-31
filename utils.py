@@ -7,7 +7,7 @@ from multigpu_translation_training_wrapper import MultiGPUTranslationWrapper
 from torch import nn
 from torch.backends import cudnn
 from tqdm import tqdm
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import argparse
 import codecs
@@ -42,22 +42,30 @@ lang_tag_token_ids = {
 def lang_code_to_id(lang_code):
     return lang_tag_token_ids[lang_code] + 4
 
-def vocab_size(bpe_model: yttm.BPE):
-    return bpe_model.vocab_size() + len(lang_tag_token_ids)
+def vocab_size(args, bpe_model: yttm.BPE):
+    if hasattr(args, 'multilang') and bool(args.multilang):
+        return bpe_model.vocab_size() + len(lang_tag_token_ids)
+    return bpe_model.vocab_size()
 
-def encode(args, tokenizer: yttm.BPE, string, bos=False, eos=False, output_type=yttm.OutputType.ID):
-    if isinstance(string, str):
-        ss = [string]
+def encode(multilang: bool, tokenizer: yttm.BPE, sentences: Union[str, list[str]], *args, **kwargs):
+    if isinstance(sentences, str):
+        sentences = [sentences]
     else:
-        ss = string
+        sentences = sentences
+
+    assert isinstance(sentences, list), f"Expected sentences to be a list of strings, but got {type(sentences)}"
+    assert isinstance(sentences[0], str), f"Expected sentences to be a list of strings, but got list[{type(sentences[0])}]"
+
+    if not multilang:
+        return tokenizer.encode(sentences, *args, **kwargs)
 
     tokenized = []
-    for s in ss:
+    for s in sentences:
         splits = s.split('__')
         if len(splits) != 2:
             raise Exception(f"Expected string to be in the format 'lang_code__string', but got \"{s}\"")
         lang_code, s = splits
-        tokens = tokenizer.encode(s, bos=bos, eos=eos, output_type=output_type)
+        tokens = tokenizer.encode(s, *args, **kwargs)
         offset_tokens = [lang_code_to_id(lang_code)]
         for token in tokens:
             if token < 4:
@@ -65,33 +73,48 @@ def encode(args, tokenizer: yttm.BPE, string, bos=False, eos=False, output_type=
             else:
                 offset_tokens.append(token + len(lang_tag_token_ids))
         tokenized.append(offset_tokens)
-
-    # print(f"Encoded: {string} -> {tokenized}")
-
-    if isinstance(string, str):
-        return tokenized[0]
-
     return tokenized
 
-def decode(args, tokenizer: yttm.BPE, seqs, ignore_ids=None):
-    if isinstance(seqs[0], int):
-        seqs = [seqs]
+def decode(multilang: bool, tokenizer: yttm.BPE, ids: Union[list[int], list[list[int]]], *args, **kwargs):
+    if isinstance(ids[0], int):
+        ids = [ids]
 
-    decoded = []
+    if isinstance(ids, (torch.Tensor, torch.LongTensor)):
+        if len(ids.size()) == 2:
+            ids = ids.tolist()
+        elif len(ids.size()) == 3:
+            ids = ids.tolist()
+            ids = [tensor.tolist() for tensor in ids]
+        else:
+            raise Exception(f"Expected ids to be a list of lists of integers, but got {ids.size()}")
+
+    assert isinstance(ids, list), f"Expected ids to be a list of lists of integers, but got {type(ids)}"
+    assert isinstance(ids[0], list), f"Expected ids to be a list of lists of integers, but got list[{type(ids[0])}]"
+    assert isinstance(ids[0][0], int), f"Expected ids to be a list of lists of integers, but got list[list[{type(ids[0][0])}]]"
+
+    if not multilang:
+        sentences = tokenizer.decode(ids, *args, **kwargs)
+        tokens = []
+        for token_set in ids:
+            token_set = [tokenizer.id_to_subword(token) for token in token_set]
+            tokens.append(token_set)
+        return sentences, tokens
+
+    sentences = []
     tokens = []
-    for seq in seqs:
+    for seq in ids:
         lang_code = f"{list(lang_tag_token_ids.keys())[seq[0] - 4]}"
 
         seq = seq[1:]
         seq = [(token - len(lang_tag_token_ids) if token >= len(lang_tag_token_ids) else token) for token in seq]
         seq = [token.item() if isinstance(token, torch.Tensor) else token for token in seq]
 
-        string = tokenizer.decode(seq, ignore_ids=ignore_ids)[0]
-        seq_tokens = [f"<{lang_code}>"] + [tokenizer.id_to_subword(token) for token in seq]
-        string = f"{lang_code}__{string}"
-        decoded.append(string)
-        tokens.append(seq_tokens)
-    return decoded, tokens
+        sentence = tokenizer.decode(seq, *args, **kwargs)[0]
+        token_set = [f"<{lang_code}>"] + [tokenizer.id_to_subword(token) for token in seq]
+        sentence = f"{lang_code}__{sentence}"
+        sentences.append(sentence)
+        tokens.append(token_set)
+    return sentences, tokens
 
 def sanitize_model(model):
     if hasattr(model, '_orig_mod'):
@@ -122,6 +145,16 @@ def get_buffered_positional_encoding(args, d_model, device, maxlen=100, num_dims
         positional_encoding = positional_encoding_2d(positional_encoding.to(device))
     return positional_encoding  # (1, max_length, d_model) or (1, max_length, max_length, d_model)
 
+def get_tensor_positional_encoding(args, device):
+    positional_encoding = get_buffered_positional_encoding(
+        args,
+        d_model=args.d_model,
+        device=device,
+        maxlen=args.maxlen + 1,
+    ).to(device)
+    positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
+    return positional_encoding
+
 def load_tokenizers(run_dir) -> Tuple[yttm.BPE, yttm.BPE]:
     src_tokenizer_file = os.path.join(run_dir, 'src_tokenizer.model')
     tgt_tokenizer_file = os.path.join(run_dir, 'tgt_tokenizer.model')
@@ -140,16 +173,6 @@ def load_tokenizers(run_dir) -> Tuple[yttm.BPE, yttm.BPE]:
         tgt_bpe_model = src_bpe_model
 
     return src_bpe_model, tgt_bpe_model
-
-def get_tensor_positional_encoding(args, device):
-    positional_encoding = get_buffered_positional_encoding(
-        args,
-        d_model=args.d_model,
-        device=device,
-        maxlen=args.maxlen + 1,
-    ).to(device)
-    positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
-    return positional_encoding
 
 def get_optimizer(optimizer_name, model: nn.Module, lr, beta1, beta2, epsilon, weight_decay):
     if optimizer_name == 'adamw':
@@ -170,7 +193,7 @@ def print_model(model: nn.Module):
 
     already_counted = []
     total_params = 0
-    for _, param in model.named_parameters():
+    for name, param in model.named_parameters():
         if param.requires_grad and not tensor_in(param, already_counted):
             # print(f"Layer {name} has {param.numel():,} parameters and {torch.count_nonzero(param).item():,} non-zero parameters")
             total_params += param.numel()
@@ -301,7 +324,7 @@ def greedy_translate(args, src, model: nn.Module, src_tokenizer: yttm.BPE, tgt_t
 
         return ' '.join(tgt_tokenizer.decode(decoded.tolist(), ignore_ids=[0, 2, 3]))
 
-def beam_search_translate(args, src, tgt_lang_code, model: nn.Module, src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE, beam_size=4, length_norm_coefficient=0.6):
+def beam_search_translate(args, src, start_token, model: nn.Module, src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE, beam_size=4, length_norm_coefficient=0.6):
     """
     Translates a source language sequence to the target language, with beam search decoding.
 
@@ -319,12 +342,12 @@ def beam_search_translate(args, src, tgt_lang_code, model: nn.Module, src_tokeni
         n_completed_hypotheses = min(k, 10)
 
         # Vocab size
-        tgt_vocab_size = vocab_size(tgt_tokenizer)
+        tgt_vocab_size = vocab_size(args, tgt_tokenizer)
 
         # If the source sequence is a string, convert to a tensor of IDs
         if isinstance(src, str):
-            encoder_sequences = encode(args, src_tokenizer, src)
-            encoder_sequences = torch.LongTensor(encoder_sequences).unsqueeze(0) # (1, source_sequence_length)
+            encoder_sequences = encode(bool(args.multilang), src_tokenizer, src)
+            encoder_sequences = torch.LongTensor(encoder_sequences)
         else:
             encoder_sequences = src
         encoder_sequences = encoder_sequences.to(args.encoder_device) # (1, source_sequence_length)
@@ -334,7 +357,7 @@ def beam_search_translate(args, src, tgt_lang_code, model: nn.Module, src_tokeni
         encoder_sequences, _ = model.encoder(encoder_sequences, src_key_padding_mask) # (1, source_sequence_length, d_model)
 
         # hypotheses begin with just lang code tag for the target language
-        hypotheses = torch.LongTensor([[tgt_lang_code]]) # (1, 1)
+        hypotheses = torch.LongTensor([[start_token]]) # (1, 1)
 
         # tensor to store hypotheses' scores; now it's just 0
         hypotheses_scores = torch.zeros(1).to(args.decoder_device) # (1)
@@ -414,7 +437,7 @@ def beam_search_translate(args, src, tgt_lang_code, model: nn.Module, src_tokeni
 
         # Decode the hypotheses
         all_hypotheses = list()
-        for i, h in enumerate(decode(args, tgt_tokenizer, completed_hypotheses, ignore_ids=[0, 2, 3])[0]):
+        for i, h in enumerate(decode(bool(args.multilang), tgt_tokenizer, completed_hypotheses, ignore_ids=[0, 2, 3])[0]):
             all_hypotheses.append({"hypothesis": h, "score": completed_hypotheses_scores[i]})
 
         # Find the best scoring completed hypothesis
@@ -427,6 +450,10 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
     """
     Returns None when command line sacrebleu is used
     """
+
+    start_token = tgt_bpe_model.subword_to_id('<BOS>')
+    if hasattr(args, 'multilang') and bool(args.multilang):
+        start_token = lang_code_to_id(lang_code)
 
     before_nanos = time.time_ns()
 
@@ -450,7 +477,7 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
         references = list()
         for i, (source_sequence, target_sequence, _, _) in enumerate(tqdm(test_loader, total=test_loader.n_batches)):
             lang_code, target_sequence = target_sequence.split('__')
-            hypotheses.append(beam_search_translate(args, src=source_sequence, tgt_lang_code=lang_code_to_id(lang_code), src_tokenizer=src_bpe_model, tgt_tokenizer=tgt_bpe_model, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
+            hypotheses.append(beam_search_translate(args, src=source_sequence, start_token=start_token, src_tokenizer=src_bpe_model, tgt_tokenizer=tgt_bpe_model, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
             references.extend(tgt_bpe_model.decode(target_sequence.tolist(), ignore_ids=[0, 2, 3]))
 
         if sacrebleu_in_python:

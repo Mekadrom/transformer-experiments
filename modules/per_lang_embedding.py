@@ -9,7 +9,7 @@ class PerLangEmbedding(nn.Module):
         self.per_lang_embedding_layers = per_lang_embedding_layers
         self.embedding_activation = embedding_activation
 
-        self.initial_embedding = nn.Embedding(vocab_size, d_model)
+        self.embed_tokens = nn.Embedding(vocab_size, d_model)
         self.embeddings = nn.ModuleList([nn.Linear(d_model, d_model) for _ in range(per_lang_embedding_layers)])
         self.activation = embedding_activation
 
@@ -18,7 +18,7 @@ class PerLangEmbedding(nn.Module):
 
         lang_indices = sequences[:, 0]
 
-        flat_sequences = self.initial_embedding(sequences).view(-1, D)
+        flat_sequences = self.embed_tokens(sequences).view(-1, D)
         output = torch.zeros(N*P, self.expert_weights[0].out_features, device=sequences.device)
 
         for i in range(len(self.embeddings)):

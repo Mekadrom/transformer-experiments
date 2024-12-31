@@ -1,12 +1,21 @@
 seed: 42
 maxlen: 150
 
+multilang: False
+multidevice: False
+per_lang_embedding_layers: 0
+
 d_model: 512
 n_gqa_groups: 1
 n_heads: 8
 d_queries: 64
 d_values: 64
+q_bias: False
+k_bias: False
+v_bias: False
+o_bias: False
 d_inner: 2048
+fcn_bias: True
 use_infinite_attention: False
 infinite_attention_n_segments: 0
 infinite_attention_update: False
@@ -20,7 +29,7 @@ weight_decay: 0.0
 use_grok_scaled_attn: False
 use_grokfast: none
 
-fcn_type: none
+fcn_type: simple
 moe_replace: False
 moe_n_experts: 0
 moe_top_k: 0

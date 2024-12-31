@@ -2,6 +2,8 @@ tokenizer_run_name: BPE_MULTI
 
 heads_activation: elu
 
+multilang: True
+
 use_grokfast: ema
 grokfast_lambda: 2.0
 grokfast_alpha: 0.98
@@ -10,7 +12,7 @@ tokens_in_batch: 4000
 target_tokens_per_batch: 24000
 n_steps: 300000
 warmup_steps: 10000
-multidevice: true
+multidevice: True
 multidevice_sync_steps: 100
 
 print_frequency: 200
