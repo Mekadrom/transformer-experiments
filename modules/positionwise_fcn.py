@@ -16,9 +16,9 @@ class PositionWiseFCNetwork(nn.Module):
         if args.fcn_type == 'simple':
             self.expand = sparse_moe.SparseMoE(args)
         else:
-            self.expand = nn.Linear(args.d_model, args.d_inner)
+            self.expand = nn.Linear(args.d_model, args.d_inner, bias=bool(args.fcn_bias))
 
-        self.condense = nn.Linear(args.d_inner, args.d_model)
+        self.condense = nn.Linear(args.d_inner, args.d_model, bias=bool(args.fcn_bias))
 
     def forward(self, sequences, *args):
         sequences = self.layer_norm(sequences)

@@ -1,4 +1,5 @@
 from datasets import load_dataset
+from functools import partial
 from tqdm import tqdm
 
 import argparse
@@ -51,6 +52,7 @@ argparser.add_argument('--tgt_vocab_size', type=int, default=32000, help='Target
 argparser.add_argument('--share_vocab', action='store_true', help='Share vocabulary between source and target languages')
 argparser.add_argument('--min_length', type=int, default=3, help='Minimum number of tokens in an example')
 argparser.add_argument('--max_length', type=int, default=192, help='Maximum number of tokens in an example')
+argparser.add_argument('--multilang', action='store_true', help='Use multilingual tokenization')
 
 args = argparser.parse_args()
 
@@ -125,7 +127,10 @@ def train_tokenizer(share_vocab=False):
         tgt_bpe = yttm.BPE.train(data=tgt_filepath, vocab_size=args.tgt_vocab_size, model=os.path.join(run_dir, 'tgt_tokenizer.model'))
     return src_bpe, tgt_bpe
 
-def filter_dataset(src_tokenizer, tgt_tokenizer, src_filename, tgt_filename):
+def filter_dataset(src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE, src_filename, tgt_filename):
+    src_encode = partial(utils.encode, bool(args.multilang), src_tokenizer)
+    tgt_encode = partial(utils.encode, bool(args.multilang), tgt_tokenizer)
+
     src_filepath = os.path.join('data', 'aggregate', src_filename)
     tgt_filepath = os.path.join('data', 'aggregate', tgt_filename)
     with codecs.open(src_filepath, 'r', encoding='utf-8') as src_datafile_in, codecs.open(tgt_filepath, 'r', encoding='utf-8') as tgt_datafile_in:
@@ -133,8 +138,8 @@ def filter_dataset(src_tokenizer, tgt_tokenizer, src_filename, tgt_filename):
             src = src_datafile_in.readlines()
             tgt = tgt_datafile_in.readlines()
             for s, t in zip(src, tgt):
-                src_tokens = utils.encode(args, src_tokenizer, s.strip(), output_type=yttm.OutputType.ID)
-                tgt_tokens = utils.encode(args, tgt_tokenizer, t.strip(), output_type=yttm.OutputType.ID)
+                src_tokens = src_encode(s.strip(), eos=bool(args.multilang))
+                tgt_tokens = tgt_encode(t.strip(), bos=True, eos=True)
                 if args.min_length < len(src_tokens) < args.max_length and args.min_length < len(tgt_tokens) < args.max_length:
                     src_datafile_out.write(s)
                     tgt_datafile_out.write(t)

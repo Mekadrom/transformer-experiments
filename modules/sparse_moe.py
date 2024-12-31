@@ -8,8 +8,8 @@ class SparseMoE(nn.Module):
 
         self.args = args
 
-        self.expert_weights = nn.ModuleList([nn.Linear(args.d_model, args.d_inner) for _ in range(args.moe_n_experts)])
-        self.gating = nn.Linear(args.d_model, args.moe_n_experts)
+        self.expert_weights = nn.ModuleList([nn.Linear(args.d_model, args.d_inner, bias=bool(args.fcn_bias)) for _ in range(args.moe_n_experts)])
+        self.gating = nn.Linear(args.d_model, args.moe_n_experts, bias=bool(args.fcn_bias))
         self.softmax = nn.Softmax(dim=-1)
         
         self.reset_parameters()

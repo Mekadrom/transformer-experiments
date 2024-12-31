@@ -52,16 +52,16 @@ class BaseTrainer:
 
         self.bpe_run_dir = os.path.join('runs', args.tokenizer_run_name)
 
-        self.src_bpe_model, self.tgt_bpe_model = utils.load_tokenizers(self.bpe_run_dir)
+        self.src_tokenizer, self.tgt_tokenizer = utils.load_tokenizers(self.bpe_run_dir)
 
         self.model, self.optimizer = self.load_model_and_optimizer(self.run_dir)
 
-        if isinstance(self.model.encoder.embedding, nn.Embedding):
-            print(self.model.encoder.embedding.weight.device)
-            print(self.model.decoder.embedding.weight.device)
+        if isinstance(self.model.encoder.embed_tokens, nn.Embedding):
+            print(self.model.encoder.embed_tokens.weight.device)
+            print(self.model.decoder.embed_tokens.weight.device)
         else:
-            print(self.model.encoder.embedding.embedding.weight.device)
-            print(self.model.decoder.embedding.embedding.weight.device)
+            print(self.model.encoder.embed_tokens.embedding.weight.device)
+            print(self.model.decoder.embed_tokens.embedding.weight.device)
 
         if bool(args.compile_model):
             torch.set_float32_matmul_precision('high')
@@ -153,7 +153,7 @@ class BaseTrainer:
         self.validate_epoch(self.model)
 
         print(f"Training complete. Scoring with sacrebleu...")
-        return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_bpe_model, self.tgt_bpe_model, self.model, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
+        return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_tokenizer, self.tgt_tokenizer, self.model, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
 
     def train_epoch(self, model: transformer.Transformer, epoch):
         raise NotImplementedError
@@ -164,10 +164,10 @@ class BaseTrainer:
     def evaluate(self, src, tgt):
         raise NotImplementedError
     
-    def viz_model(self, step, model: transformer.Transformer, src, tgt=None):
+    def viz_model(self, step, model: transformer.Transformer, src, tgt=None, src_lang_code=None, tgt_lang_code=None):
         raise NotImplementedError
     
-    def viz_attn_weights(self, stack_name, layer_num, n_head, activation_weights, attendee_tokens, attending_tokens):
+    def viz_attn_weight(self, stack_name, layer_num, n_head, activation_weights, attendee_tokens, attending_tokens):
         fig, ax = plt.subplots(figsize=(10, 10))
         s = sns.heatmap(activation_weights, square=True, annot=True, annot_kws={"fontsize":6}, fmt=".4f", xticklabels=attendee_tokens, yticklabels=attending_tokens, ax=ax)
         s.set(xlabel="Attending Tokens", ylabel="Attended Tokens", title=f"{stack_name}-Attn Layer {layer_num} Head {n_head} Weights")

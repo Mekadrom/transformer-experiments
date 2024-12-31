@@ -1,3 +1,4 @@
+from functools import partial
 from itertools import groupby
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
@@ -55,6 +56,9 @@ class SequenceLoader(object):
 
         self.file_idx = 0
 
+        self.src_encode = partial(utils.encode, bool(self.args.multilang), self.src_tokenizer)
+        self.tgt_encode = partial(utils.encode, bool(self.args.multilang), self.tgt_tokenizer)
+
         # Create batches
         self.create_batches()
 
@@ -68,9 +72,9 @@ class SequenceLoader(object):
 
         assert len(source_data) == len(target_data), "There are a different number of source or target sequences!"
 
-        source_lengths = [len(s) for s in tqdm(utils.encode(self.args, self.src_tokenizer, source_data, eos=True), desc='Encoding src sequences')]
+        source_lengths = [len(s) for s in tqdm(self.src_encode(source_data, eos=bool(self.args.multilang)), desc='Encoding src sequences')]
         # target language sequences have <BOS> (language specific) and <EOS> (language agnostic) tokens
-        target_lengths = [len(t) for t in tqdm(utils.encode(self.args, self.tgt_tokenizer, target_data, eos=True), desc='Encoding tgt sequences')]
+        target_lengths = [len(t) for t in tqdm(self.tgt_encode(target_data, bos=True, eos=True), desc='Encoding tgt sequences')]
         self.data = list(zip(source_data, target_data, source_lengths, target_lengths))
 
         # If for training, pre-sort by target lengths - required for itertools.groupby() later
@@ -129,9 +133,12 @@ class SequenceLoader(object):
         except:
             self.file_idx = 0
             raise StopIteration
+        
+        source_data = list(source_data)
+        target_data = list(target_data)
 
-        source_data = utils.encode(self.args, self.src_tokenizer, source_data, eos=True)
-        target_data = utils.encode(self.args, self.tgt_tokenizer, target_data, eos=True)
+        source_data = self.src_encode(source_data, eos=bool(self.args.multilang))
+        target_data = self.tgt_encode(target_data, bos=True, eos=True)
 
         source_data = pad_sequence(sequences=[torch.LongTensor(s) for s in source_data], batch_first=True, padding_value=self.src_tokenizer.subword_to_id('<PAD>'))
         target_data = pad_sequence(sequences=[torch.LongTensor(t) for t in target_data], batch_first=True, padding_value=self.tgt_tokenizer.subword_to_id('<PAD>'))

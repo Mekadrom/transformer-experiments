@@ -77,10 +77,6 @@ class MultiGPUTranslationWrapper:
                     tgt_seq_lengths: torch.Tensor,
                     src_key_padding_mask: torch.Tensor,
                     tgt_key_padding_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Distributed forward pass across multiple GPUs with gradient accumulation.
-        Returns the same tuple structure as your original forward_pass method.
-        """
         splits = self.split_batch(src_seqs, tgt_seqs, tgt_seq_lengths.clone(), tgt_seq_lengths.clone(), src_key_padding_mask, tgt_key_padding_mask)
         
         total_translation_loss = 0
