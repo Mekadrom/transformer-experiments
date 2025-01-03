@@ -452,8 +452,6 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
     """
 
     start_token = tgt_bpe_model.subword_to_id('<BOS>')
-    if hasattr(args, 'multilang') and bool(args.multilang):
-        start_token = lang_code_to_id(lang_code)
 
     before_nanos = time.time_ns()
 
@@ -476,7 +474,6 @@ def sacrebleu_evaluate(args, run_dir, src_bpe_model, tgt_bpe_model, model, sacre
         hypotheses = list()
         references = list()
         for i, (source_sequence, target_sequence, _, _) in enumerate(tqdm(test_loader, total=test_loader.n_batches)):
-            lang_code, target_sequence = target_sequence.split('__')
             hypotheses.append(beam_search_translate(args, src=source_sequence, start_token=start_token, src_tokenizer=src_bpe_model, tgt_tokenizer=tgt_bpe_model, model=model, beam_size=4, length_norm_coefficient=0.6)[0])
             references.extend(tgt_bpe_model.decode(target_sequence.tolist(), ignore_ids=[0, 2, 3]))
 
