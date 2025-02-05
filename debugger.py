@@ -1,5 +1,5 @@
+from megatransformer import megatransformer
 from criteria import labelsmooth
-from modules import transformer
 
 def trace_tensor_devices(tensor, visited=None, depth=0):
     """
@@ -71,7 +71,7 @@ def find_device_mismatches(model):
             print(f"  - {tensor_name}")
 
 # Example usage for your encoder-decoder case:
-def analyze_encoder_decoder_devices(args, encoder: transformer.Encoder, decoder: transformer.Decoder, encoder_sequences, decoder_sequences, src_key_padding_mask, tgt_key_padding_mask, lengths):
+def analyze_encoder_decoder_devices(args, encoder: megatransformer.Encoder, decoder: megatransformer.Decoder, encoder_sequences, decoder_sequences, src_key_padding_mask, tgt_key_padding_mask, lengths):
     """
     Specifically analyzes an encoder-decoder transformer setup for device mismatches.
     

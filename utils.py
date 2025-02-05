@@ -2,8 +2,8 @@ from collections import OrderedDict
 from dataloader import SequenceLoader
 from datasets import load_dataset
 from positional_encodings.torch_encodings import PositionalEncoding2D
-from modules.swiglu import SwiGLU
-from multigpu_translation_training_wrapper import MultiGPUTranslationWrapper
+from megatransformer import swiglu
+from multigpu_training_wrappers import MultiGPUTranslationWrapper
 from torch import nn
 from torch.backends import cudnn
 from tqdm import tqdm
@@ -354,7 +354,7 @@ def beam_search_translate(args, src, start_token, model: nn.Module, src_tokenize
 
         src_key_padding_mask = (encoder_sequences == 0).to(args.encoder_device) # (1, source_sequence_length)
         
-        encoder_sequences, _ = model.encoder(encoder_sequences, src_key_padding_mask) # (1, source_sequence_length, d_model)
+        encoder_sequences, _ = model.encoder(input_ids=encoder_sequences, key_padding_mask=src_key_padding_mask) # (1, source_sequence_length, d_model)
 
         # hypotheses begin with just lang code tag for the target language
         hypotheses = torch.LongTensor([[start_token]]) # (1, 1)
@@ -376,10 +376,10 @@ def beam_search_translate(args, src, start_token, model: nn.Module, src_tokenize
             tgt_key_padding_masks = torch.zeros(s, hypotheses.size(1)).to(args.decoder_device).bool()
 
             decoder_sequences, _ = model.decoder(
-                hypotheses,
-                encoder_sequences.repeat(s, 1, 1),
-                src_key_padding_mask.repeat(s, 1), # (s, 1)
-                tgt_key_padding_masks
+                target_ids=hypotheses,
+                encoder_sequences=encoder_sequences.repeat(s, 1, 1),
+                attention_mask=src_key_padding_mask.repeat(s, 1), # (s, 1)
+                decoder_attention_mask=tgt_key_padding_masks
             )
 
             hypotheses = hypotheses.to(args.decoder_device)
@@ -534,7 +534,7 @@ def get_activation_function(activation_function_name):
 
 def create_activation_function(d_in, activation_function_name):
     if activation_function_name == 'swiglu':
-        return SwiGLU(d_in)
+        return swiglu.SwiGLU(d_in)
     return get_activation_function(activation_function_name)()
 
 def get_args():

@@ -1,4 +1,4 @@
-from modules import transformer
+from megatransformer import megatransformer, multihead_attn
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from typing import Callable, Tuple
@@ -155,16 +155,13 @@ class BaseTrainer:
         print(f"Training complete. Scoring with sacrebleu...")
         return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_tokenizer, self.tgt_tokenizer, self.model, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
 
-    def train_epoch(self, model: transformer.Transformer, epoch):
+    def train_epoch(self, model: megatransformer.MegaTransformer, epoch):
         raise NotImplementedError
     
-    def validate_epoch(self, model: transformer.Transformer):
+    def validate_epoch(self, model: megatransformer.MegaTransformer):
         raise NotImplementedError
     
     def evaluate(self, src, tgt):
-        raise NotImplementedError
-    
-    def viz_model(self, step, model: transformer.Transformer, src, tgt=None, src_lang_code=None, tgt_lang_code=None):
         raise NotImplementedError
     
     def viz_attn_weight(self, stack_name, layer_num, n_head, activation_weights, attendee_tokens, attending_tokens):
@@ -178,3 +175,63 @@ class BaseTrainer:
         buf.seek(0)
 
         return buf
+    
+    def viz_attn_weights(self, attn: multihead_attn.MultiHeadAttention, attn_residual, layer_num, src_seq, src_seq_len, key_padding_mask, tgt_seq, tgt_seq_len, src_tokens, tgt_tokens, summary_writer, step):
+        decoder_or_encoder = 'decoder' if attn.in_decoder else 'encoder'
+        self_or_cross = 'self' if attn.self_attn else 'cross'
+        stack_name = f"{decoder_or_encoder}-{self_or_cross}"
+
+        residual, attention_weights = attn(tgt_seq, src_seq, src_seq, key_padding_mask)
+        tgt_seq = attn_residual(tgt_seq, residual)
+
+        for a, attention_weight_grid in enumerate(attention_weights):
+            attention_weight_grid = attention_weight_grid.cpu().contiguous()
+            for head_num in range(attention_weight_grid.size(1)):
+                image_data = self.viz_attn_weight(stack_name, layer_num, head_num, attention_weight_grid[:, head_num, :tgt_seq_len, :src_seq_len].transpose(-2, -1).squeeze(0).cpu().detach().numpy(), tgt_tokens, src_tokens)
+                summary_writer.add_image(f"{decoder_or_encoder}/viz/layer_{layer_num}/segment_{a}/head_{head_num}/{self_or_cross}-attn", plt.imread(image_data), global_step=step, dataformats='HWC')
+
+        return tgt_seq
+
+    def viz_encoder_layer(self, encoder_layer: megatransformer.EncoderLayer, src_seq, src_seq_len, src_key_padding_mask, src_tokens, summary_writer, step, layer_num):
+        print(f"Visualizing encoder layer {layer_num}...")
+        residual = self.viz_attn_weights(encoder_layer.self_attn, encoder_layer.self_attn_residual, layer_num, src_seq, src_seq_len, src_key_padding_mask, src_seq, src_seq_len, src_tokens, src_tokens, summary_writer, step)
+        fcn_out, _ = encoder_layer.ffn(residual)
+        return encoder_layer.ffn_residual(residual, fcn_out)
+
+    def viz_encoder_layers(self, encoder_layers: list[megatransformer.EncoderLayer], seq, seq_len, key_padding_mask, tokens, summary_writer, step):
+        for e, encoder_layer in enumerate(encoder_layers):
+            seq = self.viz_encoder_layer(encoder_layer, seq, seq_len, key_padding_mask, tokens, summary_writer, step, e)
+        return seq
+
+    def viz_encoder(self, encoder: megatransformer.Encoder, seq, seq_len, key_padding_mask, tokens, summary_writer, step):
+        print("Visualizing encoder...")
+        if (hasattr(encoder, 'embed_tokens') and encoder.embed_tokens is not None) or (hasattr(encoder, 'embedding') and encoder.embed_tokens is not None):
+            seq = encoder.apply_embedding_transformation(seq)
+        seq = encoder.apply_positional_embedding(seq)
+        seq = self.viz_encoder_layers(encoder.encoder_layers, seq, seq_len, key_padding_mask, tokens, summary_writer, step)
+        return encoder.post_encoder_norm(seq).to(self.args.decoder_device)
+
+    def viz_decoder_layer(self, decoder_layer: megatransformer.DecoderLayer, src_seq, src_seq_len, src_key_padding_mask, tgt_seq, tgt_seq_len, tgt_key_padding_mask, src_tokens, tgt_tokens, summary_writer, step, layer_num):
+        print(f"Visualizing decoder layer {layer_num}...")
+        tgt_seq = self.viz_attn_weights(decoder_layer.self_attn, decoder_layer.self_attn_residual, layer_num, tgt_seq, tgt_seq_len, tgt_key_padding_mask, tgt_seq, tgt_seq_len, tgt_tokens, tgt_tokens, summary_writer, step)
+        if decoder_layer.cross_attn is not None:
+            residual = self.viz_attn_weights(decoder_layer.cross_attn, decoder_layer.cross_attn_residual, layer_num, src_seq, src_seq_len, src_key_padding_mask, tgt_seq, tgt_seq_len, src_tokens, tgt_tokens, summary_writer, step)
+        else:
+            residual = tgt_seq
+        fcn_out, _ = decoder_layer.ffn(residual)
+        return decoder_layer.ffn_residual(residual, fcn_out)
+
+    def viz_decoder_layers(self, decoder_layers, src_seq, src_seq_len, src_key_padding_mask, tgt_seq, tgt_seq_len, tgt_key_padding_mask, src_tokens, tgt_tokens, summary_writer, step):
+        for d, decoder_layer in enumerate(decoder_layers):
+            tgt_seq = self.viz_decoder_layer(decoder_layer, src_seq, src_seq_len, src_key_padding_mask, tgt_seq, tgt_seq_len, tgt_key_padding_mask, src_tokens, tgt_tokens, summary_writer, step, d)
+        return tgt_seq
+
+    def viz_decoder(self, decoder: megatransformer.Decoder, src_seq, src_seq_len, src_key_padding_mask, tgt_seq, tgt_seq_len, tgt_key_padding_mask, src_tokens, tgt_tokens, summary_writer, step):
+        print("Visualizing decoder...")
+        if (hasattr(decoder, 'embed_tokens') and decoder.embed_tokens is not None) or (hasattr(decoder, 'embedding') and decoder.embed_tokens is not None):
+            tgt_seq = decoder.apply_embedding_transformation(tgt_seq)
+        tgt_seq = decoder.apply_positional_embedding(tgt_seq.to(self.args.decoder_device))
+        return self.viz_decoder_layers(decoder.decoder_layers, src_seq, src_seq_len, src_key_padding_mask, tgt_seq, tgt_seq_len, tgt_key_padding_mask, src_tokens, tgt_tokens, summary_writer, step)
+
+    def viz_model(self, step, model, src, **kwargs):
+        raise NotImplementedError

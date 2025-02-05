@@ -1,23 +1,22 @@
 from criteria.labelsmooth import LabelSmoothedCE
 from functools import partial
-from model_provider import TranslationTransformerModelProvider
+from model_provider import CausalTransformerModelProvider
 from megatransformer import megatransformer
 from megatransformer import grokfast
-from multigpu_training_wrappers import MultiGPUTranslationWrapper
 from prettytable import PrettyTable
 from tqdm import tqdm
+from multigpu_training_wrappers import MultiGPUCausalWrapper
 
 import avg_meter
-import base_trainer
-import debugger
+import trainer.base_trainer as base_trainer
 import os
 import time
 import torch
 import utils
 
-class TranslationTrainer(base_trainer.BaseTrainer):
+class CausalTrainer(base_trainer.BaseTrainer):
     def __init__(self, args):
-        super(TranslationTrainer, self).__init__(args)
+        super(CausalTrainer, self).__init__(args)
 
         self.grads = None
 
@@ -34,7 +33,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 self.args.start_epoch = checkpoint['epoch'] + 1
                 print('\nLoaded checkpoint from epoch %d.\n' % self.args.start_epoch)
 
-            model = TranslationTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.args, self.src_tokenizer), utils.vocab_size(self.args, self.tgt_tokenizer), tie_embeddings=tie_embeddings)
+            model = CausalTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.args, self.src_tokenizer), tie_embeddings=tie_embeddings)
 
             model.load_state_dict(checkpoint['model'].state_dict())
 
@@ -44,12 +43,12 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 optimizer = None
         else:
             print("Starting from scratch...")
-            model = TranslationTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.args, self.src_tokenizer), utils.vocab_size(self.args, self.tgt_tokenizer), tie_embeddings=tie_embeddings)
+            model = CausalTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.args, self.src_tokenizer), tie_embeddings=tie_embeddings)
 
             optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=self.args.lr, betas=[self.args.beta1, self.args.beta2], eps=self.args.epsilon)
 
         if hasattr(self.args, 'multidevice') and bool(self.args.multidevice):
-            self.model = MultiGPUTranslationWrapper(
+            self.model = MultiGPUCausalTrainer(
                 model=model,
                 optimizer=optimizer,
                 gpu_ids=list(range(torch.cuda.device_count())),
@@ -232,64 +231,32 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
         print(debug_validate_table)
 
-    def viz_model(self, step, model, src, **kwargs):
-        tgt = kwargs.get('tgt', None)
-        src_lang_code = kwargs.get('src_lang_code', None)
-        tgt_lang_code = kwargs.get('tgt_lang_code', None)
-        
+    def viz_model(self, step, model, seq, **kwargs):
         print("Visualizing model...")
         if self.args.use_infinite_attention:
             return # todo: temporary; would like to visualize memory block attention weights in the future
         
-        if src_lang_code is not None and tgt_lang_code is not None and self.args.multilang:
-            src = f"{src_lang_code}__{src}"
-            tgt = f"{tgt_lang_code}__{tgt}"
-
-        src_encode = partial(utils.encode, bool(self.args.multilang), self.src_tokenizer)
-        src_decode = partial(utils.decode, bool(self.args.multilang), self.src_tokenizer)
-
-        tgt_encode = partial(utils.encode, bool(self.args.multilang), self.tgt_tokenizer)
-        tgt_decode = partial(utils.decode, bool(self.args.multilang), self.tgt_tokenizer)
+        seq_encode = partial(utils.encode, bool(self.args.multilang), self.src_tokenizer)
+        seq_encode = partial(utils.decode, bool(self.args.multilang), self.src_tokenizer)
 
         model.eval()
         with torch.no_grad():
-            src = torch.LongTensor(src_encode(sentences=src, eos=bool(self.args.multilang)))
-            src_tokens = src_decode(ids=src)[-1][0]
-            src = src.to(self.encoder_device)
+            seq = torch.LongTensor(seq_encode(sentences=seq, eos=bool(self.args.multilang)))
+            seq_tokens = seq_encode(ids=seq)[-1][0]
+            seq = seq.to(self.encoder_device)
 
-            tgt = torch.LongTensor(tgt_encode(sentences=tgt, bos=True, eos=True))
-            tgt_tokens = tgt_decode(ids=tgt)[-1][0]
-            tgt = tgt.to(self.decoder_device)
-
-            src_seq_len = src.size(1)
-            tgt_seq_len = tgt.size(1)
+            seq_len = seq.size(1)
             
             maxlen = self.args.maxlen
 
             # pad input sequence to args.maxlen
-            src = torch.cat([src, torch.zeros([1, maxlen - src.size(1)], dtype=torch.long, device=src.device)], dim=1)
-            tgt = torch.cat([tgt, torch.zeros([1, maxlen - tgt.size(1)], dtype=torch.long, device=tgt.device)], dim=1)
+            seq = torch.cat([seq, torch.zeros([1, maxlen - seq.size(1)], dtype=torch.long, device=seq.device)], dim=1)
 
-            src_key_padding_mask = src == 0
-            tgt_key_padding_mask = tgt.to(self.args.decoder_device) == 0
+            key_padding_mask = seq == 0
 
-            if bool(self.args.debug):
-                debugger.analyze_encoder_decoder_devices(self.args, model.encoder, model.decoder, src, tgt, src_key_padding_mask, tgt_key_padding_mask, torch.LongTensor([tgt_seq_len]))
-
-            # permanent device assignments
-            src = src.to(self.args.encoder_device)
-            tgt = tgt.to(self.args.decoder_device)
-            src_key_padding_mask = src_key_padding_mask.to(self.args.encoder_device)
-            tgt_key_padding_mask = tgt_key_padding_mask.to(self.args.decoder_device)
-            model.encoder.embed_tokens = model.encoder.embed_tokens.to(self.args.encoder_device)
-
-
-            src = self.viz_encoder(model.encoder, src, src_seq_len, src_key_padding_mask, src_tokens, self.summary_writer, step)
-
-            # things that need to move to decoder device
-            src = src.to(self.args.decoder_device)
-            src_key_padding_mask = src_key_padding_mask.to(self.args.decoder_device)
+            seq = seq.to(self.args.decoder_device)
+            key_padding_mask = key_padding_mask.to(self.args.decoder_device)
             model.decoder.embed_tokens = model.decoder.embed_tokens.to(self.args.decoder_device)
             model.decoder.lm_head = model.decoder.lm_head.to(self.args.decoder_device)
 
-            tgt = self.viz_decoder(model.decoder, src, src_seq_len, src_key_padding_mask, tgt, tgt_seq_len, tgt_key_padding_mask, src_tokens, tgt_tokens, self.summary_writer, step)
+            tgt = self.viz_decoder(model.decoder, seq, seq_len, key_padding_mask, seq, seq_len, key_padding_mask, seq_tokens, seq_tokens, self.summary_writer, step)

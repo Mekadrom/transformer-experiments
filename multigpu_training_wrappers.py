@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Optional
+from typing import List, Tuple
+
+class MultiGPUCausalWrapper:
+    def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, gpu_ids: List[int], batches_per_step: int, sync_steps: int):
+        pass
 
 class MultiGPUTranslationWrapper:
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, gpu_ids: List[int], batches_per_step: int, sync_steps: int):

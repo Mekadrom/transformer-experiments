@@ -1,5 +1,6 @@
 seed: 42
 maxlen: 150
+padding_value: 0
 
 multilang: False
 multidevice: False
@@ -54,6 +55,7 @@ decoder_param_sharing_type: none
 m_encoder_independent_layers: 0
 m_decoder_independent_layers: 0
 activation_function: relu
+heads_activation: none
 embedding_compression_dim: 0
 embedding_activation: none
 
