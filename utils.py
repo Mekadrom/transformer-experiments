@@ -246,6 +246,45 @@ def load_translation_data(args, tokens_in_batch, run_dir, src_bpe_model, tgt_bpe
     )
     return train_loader, val_loader, test_loader
 
+def load_causal_data(args, tokens_in_batch, run_dir, bpe_model, pad_to_length=None) -> Tuple[SequenceLoader, SequenceLoader, SequenceLoader]:
+    print('Loading training data SequenceLoader...')
+
+    train_loader = SequenceLoader(
+        args=args,
+        src_tokenizer=bpe_model,
+        tgt_tokenizer=None,
+        data_folder=os.path.join(run_dir),
+        source_suffix="txt",
+        split="train",
+        tokens_in_batch=tokens_in_batch,
+        pad_to_length=pad_to_length
+    )
+
+    print('Loading validation data SequenceLoader...')
+    val_loader = SequenceLoader(
+        args=args,
+        src_tokenizer=bpe_model,
+        tgt_tokenizer=None,
+        data_folder=os.path.join(run_dir),
+        source_suffix="txt",
+        split="val",
+        tokens_in_batch=tokens_in_batch,
+        pad_to_length=pad_to_length
+    )
+
+    print('Loading test data SequenceLoader...')
+    test_loader = SequenceLoader(
+        args=args,
+        src_tokenizer=bpe_model,
+        tgt_tokenizer=None,
+        data_folder=os.path.join(run_dir),
+        source_suffix="txt",
+        split="test",
+        tokens_in_batch=tokens_in_batch,
+        pad_to_length=pad_to_length
+    )
+    return train_loader, val_loader, test_loader
+
 def save_checkpoint(epoch, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
     if isinstance(model, MultiGPUTranslationWrapper):
         state = model.save_checkpoint()
@@ -285,6 +324,36 @@ def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=
 
     # Save averaged checkpoint
     torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
+
+def greedy_complete(args, seq, model: nn.Module, tokenizer: yttm.BPE, n_predictions: int, top_k: float=0.95) -> list[str]:
+    with torch.no_grad():
+        if isinstance(seq, str):
+            seq = encode(False, tokenizer, seq)
+            seq = torch.LongTensor(seq).unsqueeze(0)
+        else:
+            seq = seq
+
+        seq = seq.to(args.decoder_device)
+
+        key_padding_mask = (seq == 0).to(args.decoder_device)
+
+        decoded = torch.LongTensor([seq]).to(args.decoder_device)
+        predictions = []
+        for i in range(n_predictions):
+            decoder_sequences, _ = model(target_ids=decoded, key_padding_mask=key_padding_mask)
+
+            next_word_scores = decoder_sequences[:, -1, :]
+            next_word_scores = F.log_softmax(next_word_scores, dim=-1)
+
+            next_word_scores, next_word = next_word_scores.topk(int(top_k * next_word_scores.size(1)), dim=-1)
+
+            for i in range(next_word.size(1)):
+                decoded = torch.cat([decoded, next_word[:, i].unsqueeze(1)], dim=1)
+                if next_word[:, i].item() == tokenizer.subword_to_id('<EOS>'):
+                    predictions.append(' '.join(tokenizer.decode(decoded.tolist(), ignore_ids=[0, 2, 3])))
+                    break
+
+        return predictions
 
 def greedy_translate(args, src, model: nn.Module, src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE):
     with torch.no_grad():

@@ -76,6 +76,18 @@ def is_valid_string(input_string):
     # Check if all characters in the normalized string are in the allowed ranges
     return all(is_valid_byte(ord(char)) for char in normalized_string) and not '----' in input_string and not '....' in input_string and not '##' in input_string and not '__' in input_string
 
+def save_to_single_file(data, filename, collation_fn=lambda x: x):
+    filepath = os.path.join('data', 'aggregate', filename)
+    with codecs.open(filepath, 'a', encoding='utf-8') as datafile:
+        for example in tqdm(data, unit=' examples', total=len(data)):
+            example = collation_fn(example)
+
+            example_line = example['text']
+            if is_valid_string(example_line):
+                example_line = fix_example_line(example_line)
+
+                datafile.write(f"{example_line} ")
+
 def save_to_file(data, src_lang, tgt_lang, src_filename, tgt_filename, collation_fn=lambda x: x):
     src_filepath = os.path.join('data', 'aggregate', src_filename)
     tgt_filepath = os.path.join('data', 'aggregate', tgt_filename)
@@ -116,6 +128,28 @@ def download_dataset(path, src_lang, tgt_lang, name):
     dataset = load_dataset(path, name, cache_dir=os.path.join('data', 'cache'))
     save_datasets(dataset, src_lang, tgt_lang)
 
+def split_dataset(dataset):
+    splits = dataset.train_test_split(test_size=0.1, seed=42)
+    train_dataset = splits['train']
+    val_datasets = splits['test'].train_test_split(test_size=0.25, seed=42)
+    val_dataset = val_datasets['train']
+    test_dataset = val_datasets['test']
+    return train_dataset, val_dataset, test_dataset
+
+def download_causal_dataset(path, name):
+    dataset = load_dataset(path, name, cache_dir=os.path.join('data', 'cache'), streaming=True)
+
+    train_dataset, val_dataset, test_dataset = split_dataset(dataset)
+
+    save_to_single_file(train_dataset, "train.txt")
+    save_to_single_file(val_dataset, "val.txt")
+    save_to_single_file(test_dataset, "test.txt")
+
+def train_single_tokenizer():
+    filepath = os.path.join('data', 'aggregate', 'train.txt')
+    bpe = yttm.BPE.train(data=filepath, vocab_size=args.src_vocab_size, model=os.path.join(run_dir, 'tokenizer.model'))
+    return bpe
+
 def train_tokenizer(share_vocab=False):
     src_filepath = os.path.join('data', 'aggregate', 'train.src')
     tgt_filepath = os.path.join('data', 'aggregate', 'train.tgt')
@@ -147,6 +181,10 @@ def filter_dataset(src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE, src_filenam
 if args.dataset == 'wmt14':
     download_dataset('wmt/wmt14', 'de', 'en', 'de-en')
     src_bpe, tgt_bpe = train_tokenizer(share_vocab=args.share_vocab)
+
+    filter_dataset(src_bpe, tgt_bpe, 'train.src', 'train.tgt')
+    filter_dataset(src_bpe, tgt_bpe, 'val.src', 'val.tgt')
+    filter_dataset(src_bpe, tgt_bpe, 'test.src', 'test.tgt')
 elif args.dataset == 'mixed':
     download_dataset("wmt/wmt19", "cs", "en", "cs-en")
     download_dataset("wmt/wmt19", "de", "en", "de-en")
@@ -169,9 +207,12 @@ elif args.dataset == 'mixed':
     download_dataset("wmt/wmt14", "hi", "en", "hi-en")
 
     src_bpe, tgt_bpe = train_tokenizer(share_vocab=True)
+
+    filter_dataset(src_bpe, tgt_bpe, 'train.src', 'train.tgt')
+    filter_dataset(src_bpe, tgt_bpe, 'val.src', 'val.tgt')
+    filter_dataset(src_bpe, tgt_bpe, 'test.src', 'test.tgt')
+elif args.dataset == "fineweb":
+    download_causal_dataset("HuggingFaceFW/fineweb", "default")
+    bpe = train_single_tokenizer()
 else:
     raise ValueError(f"Unknown dataset {args.dataset}")
-
-filter_dataset(src_bpe, tgt_bpe, 'train.src', 'train.tgt')
-filter_dataset(src_bpe, tgt_bpe, 'val.src', 'val.tgt')
-filter_dataset(src_bpe, tgt_bpe, 'test.src', 'test.tgt')
