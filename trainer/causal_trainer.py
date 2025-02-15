@@ -1,38 +1,35 @@
-from criteria.labelsmooth import LabelSmoothedCE
-from functools import partial
+from dataloaders import streaming_dataloader
+from datasets import load_dataset
 from model_provider import CausalTransformerModelProvider
-from megatransformer import megatransformer
-from megatransformer import grokfast
+from megatransformer import megatransformer, grokfast, transformer_utils, visualization_helper
 from prettytable import PrettyTable
+from torch.amp import autocast
 from tqdm import tqdm
+from trainer import base_trainer
+from transformers import AutoTokenizer
 from multigpu_training_wrappers import MultiGPUCausalWrapper
 
 import avg_meter
-import trainer.base_trainer as base_trainer
 import os
+import random
 import time
 import torch
 import utils
 
 class CausalTrainer(base_trainer.BaseTrainer):
     def __init__(self, args):
-        super(CausalTrainer, self).__init__(args)
-
         self.grads = None
 
-    def moe_criterion(self, epoch, moe_gating_variances):
-        if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
-            moe_gating_variances = torch.stack(moe_gating_variances).std(dim=0).mean()
+        super(CausalTrainer, self).__init__(args)
 
-            moe_diversity_loss = moe_diversity_loss * self.args.moe_diversity_loss_coefficient
-            return moe_diversity_loss, moe_gating_variances
-        else:
-            return torch.tensor(0.0), torch.tensor(0.0)
+    def load_tokenizers(self, identifier):
+        tokenizer = AutoTokenizer.from_pretrained(identifier[5:])
+        return tokenizer, None
 
     def load_model_and_optimizer(self, run_dir, checkpoint_model_name='transformer_checkpoint.pth.tar'):
         print('Initializing model...')
 
-        tie_embeddings = self.src_tokenizer == self.tgt_tokenizer
+        tie_embeddings = True
         if hasattr(self.args, 'tie_embeddings'):
             tie_embeddings = bool(self.args.tie_embeddings)
 
@@ -42,7 +39,7 @@ class CausalTrainer(base_trainer.BaseTrainer):
                 self.args.start_epoch = checkpoint['epoch'] + 1
                 print('\nLoaded checkpoint from epoch %d.\n' % self.args.start_epoch)
 
-            model = CausalTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.args, self.src_tokenizer), tie_embeddings=tie_embeddings)
+            model = CausalTransformerModelProvider().provide_transformer(self.args, run_dir, self.src_tokenizer, tie_embeddings=tie_embeddings)
 
             model.load_state_dict(checkpoint['model'].state_dict())
 
@@ -52,9 +49,15 @@ class CausalTrainer(base_trainer.BaseTrainer):
                 optimizer = None
         else:
             print("Starting from scratch...")
-            model = CausalTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.args, self.src_tokenizer), tie_embeddings=tie_embeddings)
+            model = CausalTransformerModelProvider().provide_transformer(self.args, run_dir, self.src_tokenizer, tie_embeddings=tie_embeddings)
 
-            optimizer = torch.optim.Adam(params=[p for p in model.parameters() if p.requires_grad], lr=self.args.lr, betas=[self.args.beta1, self.args.beta2], eps=self.args.epsilon)
+            optimizer = torch.optim.AdamW(
+                params=model.parameters(),
+                lr=self.args.lr,
+                betas=[self.args.beta1, self.args.beta2],
+                weight_decay=float(self.args.weight_decay),
+                eps=self.args.epsilon
+            )
 
         if hasattr(self.args, 'multidevice') and bool(self.args.multidevice):
             self.model = MultiGPUCausalWrapper(
@@ -63,16 +66,34 @@ class CausalTrainer(base_trainer.BaseTrainer):
                 gpu_ids=list(range(torch.cuda.device_count())),
                 sync_steps=self.args.multidevice_sync_steps
             )
-            self.model.criterion = self.criterion
-            self.model.moe_criterion = self.moe_criterion
         
         return model, optimizer
 
-    def get_criteria(self):
-        return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing)
-
     def load_data(self):
-        return utils.load_causal_data(self.args, int(self.args.tokens_in_batch), self.bpe_run_dir, self.src_tokenizer, pad_to_length=self.args.maxlen if self.args.use_infinite_attention else None)
+        if hasattr(self.args, 'batch_size'):
+            self.batch_size = self.args.batch_size
+        else:
+            tokens_in_batch = self.args.tokens_in_batch
+            self.batch_size = tokens_in_batch // self.args.maxlen
+
+        path = "wikitext"
+        name = "wikitext-103-raw-v1"
+
+        dataloaders = streaming_dataloader.create_causal_lm_dataloaders(
+            tokenizer=self.src_tokenizer,
+            dataset_name=path,
+            dataset_config_name=name,
+            batch_size=self.batch_size,
+            sequence_length=self.args.maxlen,
+            num_workers=1,
+            seed=self.args.seed,
+        )
+
+        train_loader = dataloaders['train']
+        val_loader = dataloaders['validation']
+        test_loader = dataloaders['test']
+        
+        return train_loader, val_loader, test_loader
     
     def train(self, model_name_prefix=''):
         if self.args.start_epoch == 0:
@@ -80,31 +101,22 @@ class CausalTrainer(base_trainer.BaseTrainer):
             # get attention weight visualization before any updates are made to the model
             with torch.no_grad():
                 self.model.eval()
-                self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", src_lang_code="en", tgt_lang_code="de")
+                self.viz_model(0, self.model, seq=random.choice(self.args.print_example_tgts))
 
         super().train()
 
-    def forward_pass(self, model, epoch,
-                     src_seqs: torch.Tensor,
-                     seq_lengths: torch.Tensor,
-                     key_padding_mask: torch.Tensor):
-        predicted_sequences, moe_gating_variances = model(target_ids=src_seqs, decoder_attention_mask=key_padding_mask)
+    def forward_pass(self, model, input_ids: torch.Tensor, labels: torch.Tensor, key_padding_mask: torch.Tensor):
+        with autocast('cuda' if 'cuda' in self.args.decoder_device else 'cpu'):
+            outputs = model(input_ids=input_ids, labels=labels, decoder_attention_mask=key_padding_mask, return_dict=True)
 
-        # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
-        # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
-        # Therefore, pads start after (length - 1) positions
-        causal_loss: torch.Tensor = self.criterion(inputs=predicted_sequences, targets=src_seqs[:, 1:], lengths=seq_lengths - 1)
-
-        predicted_sequences = predicted_sequences.to(self.args.decoder_device)
-
-        moe_diversity_loss, moe_gating_variances = self.moe_criterion(epoch, moe_gating_variances)
-
-        loss = causal_loss + moe_diversity_loss
-        loss = (loss / self.batches_per_step).to(self.args.decoder_device)
+        loss = outputs.loss
+        causal_loss = outputs.prediction_loss
+        moe_loss = outputs.moe_loss
+        gating_variances = outputs.decoder_gating_variances
 
         loss.backward()
 
-        return causal_loss, loss, moe_diversity_loss, moe_gating_variances
+        return loss, causal_loss, moe_loss, gating_variances
     
     def train_epoch(self, model: megatransformer.MegaTransformer, epoch):
         # training mode enables dropout
@@ -112,28 +124,40 @@ class CausalTrainer(base_trainer.BaseTrainer):
 
         data_time = avg_meter.AverageMeter()
         step_time = avg_meter.AverageMeter()
-        total_losses = avg_meter.AverageMeter()
-        translation_losses = avg_meter.AverageMeter()
+        losses = avg_meter.AverageMeter()
+        causal_losses = avg_meter.AverageMeter()
         moe_losses = avg_meter.AverageMeter()
+        avg_gating_variances = avg_meter.AverageMeter()
+        ppls = avg_meter.AverageMeter()
 
         start_data_time = time.time()
         start_step_time = time.time()
 
-        for i, (src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) in enumerate(self.train_loader):
-            src_seqs, src_seq_lengths = self.target_sequence_transform(tgt_seqs, tgt_seq_lengths, src_seqs, src_seq_lengths)
-            tgt_seqs, tgt_seq_lengths = self.target_sequence_transform(src_seqs, src_seq_lengths, tgt_seqs, tgt_seq_lengths)
+        for i, batch in enumerate(self.train_loader):
+            input_ids = batch['input_ids'].to(self.args.decoder_device)
+            labels = batch['labels'].to(self.args.decoder_device)
+            key_padding_mask = batch['attention_mask'].to(self.args.decoder_device)
 
-            src_key_padding_mask = src_seqs == 0
-            tgt_key_padding_mask = tgt_seqs == 0
+            input_ids = self.target_sequence_transform(labels, input_ids)
+            labels = self.target_sequence_transform(input_ids, labels)
+
+            if self.args.debug:
+                first_example_input_seq = input_ids[0].tolist()#self.src_tokenizer.decode(input_ids[0].tolist(), skip_special_tokens=False)
+                first_example_label_seq = labels[0].tolist()#self.src_tokenizer.decode(labels[0].tolist(), skip_special_tokens=False)
+                first_example_mask = key_padding_mask[0].tolist()
+
+                print(f"############# Input #############: {first_example_input_seq}")
+                print(f"############# Label #############: {first_example_label_seq}")
+                print(f"############# Mask  ##############: {first_example_mask}")
 
             data_time.update(time.time() - start_data_time)
 
-            sum_total_lengths = (tgt_seq_lengths - 1).sum().item()
-
-            forward_translation_loss, total_loss, moe_loss = self.forward_pass(model, epoch, src_seqs, tgt_seqs, tgt_seq_lengths, src_key_padding_mask, tgt_key_padding_mask)
-            translation_losses.update(forward_translation_loss.item(), sum_total_lengths)
-            total_losses.update(total_loss.item(), sum_total_lengths)
-            moe_losses.update(moe_loss.item(), 1)
+            loss, causal_loss, moe_loss, gating_variances = self.forward_pass(model, input_ids, labels, key_padding_mask)
+            losses.update(loss.item())
+            causal_losses.update(causal_loss.item())
+            moe_losses.update(moe_loss.item())
+            avg_gating_variances.update(gating_variances.mean().item())
+            ppls.update(torch.exp(loss).item())
 
             # Update model (i.e. perform a training step) only after gradients are accumulated from batches_per_step batches
             if (i + 1) % self.batches_per_step == 0:
@@ -146,30 +170,40 @@ class CausalTrainer(base_trainer.BaseTrainer):
                     self.grads = grokfast.gradfilter_ma(utils.sanitize_model(model), grads=self.grads, window_size=self.args.grokfast_window_size, lamb=self.args.grokfast_lambda)
 
                 self.optimizer.step()
+
+                grad_norms = utils.get_grad_norms(model)
+                avg_grad_norm = sum(grad_norms) / len(grad_norms)
+                self.summary_writer.add_scalar('train/avg_grad_norm', avg_grad_norm, self.steps)
+
                 self.optimizer.zero_grad()
 
                 self.steps += 1
 
-                utils.change_lr(self.optimizer, new_lr=utils.get_lr(self.steps, self.args.d_model, self.warmup_steps))
+                if self.lr_scheduler is None:
+                    utils.change_lr(self.optimizer, new_lr=utils.get_lr(self.steps, self.args.d_model, self.warmup_steps))
+                else:
+                    self.lr_scheduler.step()
+
+                lr = self.lr_scheduler.get_last_lr()[0]
+                self.summary_writer.add_scalar('train/lr', lr, self.steps)
 
                 step_time.update(time.time() - start_step_time)
 
                 if self.steps % self.print_frequency == 0:
-                    print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
-                          'Loss {total_losses.val:.4f} ({total_losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches * len(self.train_loader.src_file_paths), self.steps, self.n_steps, step_time=step_time, data_time=data_time, total_losses=total_losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
-                    if self.args.multilang:
-                        self.evaluate(seq='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.', src_lang_code='en', tgt_lang_code='de')
-                        self.evaluate(seq='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.', tgt='Anyone who retains the ability to recognise beauty will never become old.', src_lang_code='de', tgt_lang_code='en')
-                        self.evaluate(seq='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.', tgt='Ceux qui conservent la capacité de reconnaître la beauté ne vieillissent jamais.', src_lang_code='de', tgt_lang_code='fr')
-                        self.evaluate(seq='Anyone who retains the ability to recognise beauty will never become old.', tgt='Tie, kas saglabā spēju atpazīt skaistumu, nekad nenoveco.', src_lang_code='en', tgt_lang_code='lv')
-                        self.evaluate(seq='Ceux qui conservent la capacité de reconnaître la beauté ne vieillissent jamais.', tgt='Tie, kas saglabā spēju atpazīt skaistumu, nekad nenoveco.', src_lang_code='fr', tgt_lang_code='lv')
-                    else:
-                        self.evaluate(seq='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
+                    print('Epoch {0}/{1}-----Step {2}/{3}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
+                          'Loss {losses.val:.4f} ({losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(epoch + 1, self.epochs, self.steps, self.n_steps, step_time=step_time, data_time=data_time, losses=losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
+                    for i, (src, tgt) in enumerate(zip(self.args.print_examples, self.args.print_example_tgts)):
+                        predictions = self.evaluate(src, tgt)
+                        for j, prediction in enumerate(predictions):
+                            self.summary_writer.add_text(f"train/prediction_{i}_{j}", prediction, self.steps)
+                            self.summary_writer.add_text(f"train/expected_{i}_{j}", tgt, self.steps)
 
-                self.summary_writer.add_scalar('train/translation_loss', translation_losses.avg, self.steps)
-                self.summary_writer.add_scalar('train/avg_loss', total_losses.avg, self.steps)
+                self.summary_writer.add_scalar('train/avg_perplexity', ppls.avg, self.steps)
+                self.summary_writer.add_scalar('train/avg_loss', losses.avg, self.steps)
+                self.summary_writer.add_scalar('train/causal_loss', causal_losses.avg, self.steps)
                 if moe_loss > 0:
-                    self.summary_writer.add_scalar('MoE Gating Variances', moe_losses.avg, self.steps)
+                    self.summary_writer.add_scalar('MoE Loss', moe_losses.avg, self.steps)
+                    self.summary_writer.add_scalar('Decoder Gating Variance', avg_gating_variances.avg, self.steps)
 
                 start_step_time = time.time()
 
@@ -183,32 +217,45 @@ class CausalTrainer(base_trainer.BaseTrainer):
         model.eval()
 
         with torch.no_grad():
-            losses = avg_meter.AverageMeter()
-            for (src_seqs, seq_lengths) in tqdm(self.val_loader, total=self.val_loader.n_batches):
-                src_seqs = src_seqs.to(self.decoder_device)
-                seq_lengths = seq_lengths.to(self.decoder_device)
+            self.viz_model(self.steps, model, random.choice(self.args.print_example_tgts))
+            if self.val_loader is not None:
+                losses = avg_meter.AverageMeter()
+                ppls = avg_meter.AverageMeter()
 
-                key_padding_mask = (src_seqs == 0).to(self.decoder_device)
+                for batch in tqdm(self.val_loader):
+                    input_ids = batch['input_ids'].to(self.args.decoder_device)
+                    labels = batch['labels'].to(self.args.decoder_device)
+                    key_padding_mask = batch['attention_mask'].to(self.args.decoder_device)
 
-                predicted_sequences = model(target_ids=src_seqs, decoder_attention_mask=key_padding_mask)[0]
+                    outputs = model(input_ids=input_ids, labels=labels, decoder_attention_mask=key_padding_mask, return_dict=True)
 
-                loss: torch.Tensor = self.criterion(inputs=predicted_sequences, targets=src_seqs[:, 1:], lengths=seq_lengths - 1)
+                    loss = outputs.loss
 
-                losses.update(loss.item(), (seq_lengths - 1).sum().item())
+                    losses.update(loss.item())
+                    ppls.update(torch.exp(loss).item())
 
-            self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.steps)
-            print("\nValidation loss: %.3f\n\n" % losses.avg)
+                self.summary_writer.add_scalar('val/avg_perplexity', ppls.avg, self.steps)
+                self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.steps)
+                print("\nValidation loss: %.3f\n\n" % losses.avg)
 
-            self.viz_model(self.steps, model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", src_lang_code="en", tgt_lang_code="de")
+                return losses.avg, ppls.avg
+            return 0, 0
 
-            return losses.avg
+    def evaluate(self, src, tgt):
+        predictions = []
+        for _ in range(2):
+            seq = self.src_tokenizer.encode(src, return_tensors='pt').to(self.args.decoder_device)
+            result = self.model.generate(
+                seq,
+                max_length=self.args.maxlen,
+                do_sample=False,
+                eos_token_id=self.src_tokenizer.eos_token_id
+            ).squeeze(0).tolist()
+            predictions.append(self.src_tokenizer.decode(result, skip_special_tokens=True))
 
-    def evaluate(self, seq):
-        predictions = utils.greedy_complete(self.args, seq, self.model, self.src_tokenizer, 5)
-
-        debug_validate_table = PrettyTable(["Rank", "Prediction"])
+        debug_validate_table = PrettyTable(["Rank", "Prediction", "Expected"])
         for i, prediction in enumerate(predictions):
-            debug_validate_table.add_row([i + 1, prediction])
+            debug_validate_table.add_row([i + 1, prediction, tgt])
 
         console_size = os.get_terminal_size()
         debug_validate_table.max_width = (console_size.columns // 3) - 15
@@ -216,32 +263,34 @@ class CausalTrainer(base_trainer.BaseTrainer):
 
         print(debug_validate_table)
 
+        return predictions
+
     def viz_model(self, step, model, seq, **kwargs):
         print("Visualizing model...")
-        if self.args.use_infinite_attention:
-            return # todo: temporary; would like to visualize memory block attention weights in the future
-        
-        seq_encode = partial(utils.encode, bool(self.args.multilang), self.src_tokenizer)
-        seq_encode = partial(utils.decode, bool(self.args.multilang), self.src_tokenizer)
+        all_tokens = [''] * self.src_tokenizer.vocab_size
+        for token, id in self.src_tokenizer.get_vocab().items():
+            all_tokens[id] = token
 
         model.eval()
         with torch.no_grad():
-            seq = torch.LongTensor(seq_encode(sentences=seq, eos=bool(self.args.multilang)))
-            seq_tokens = seq_encode(ids=seq)[-1][0]
-            seq = seq.to(self.decoder_device)
+            with autocast('cuda' if 'cuda' in self.args.decoder_device else 'cpu'):
+                transformer_utils.record_model_param_stats(self.args, self.summary_writer, model, step, embedding_tokens=all_tokens)
 
-            seq_len = seq.size(1)
-            
-            maxlen = self.args.maxlen
+                input_ids = self.src_tokenizer.encode(
+                    seq,
+                    max_length=self.args.maxlen,
+                    truncation=True,
+                    return_tensors='pt'
+                ).to(self.args.decoder_device)
 
-            # pad input sequence to args.maxlen
-            seq = torch.cat([seq, torch.zeros([1, maxlen - seq.size(1)], dtype=torch.long, device=seq.device)], dim=1)
+                attention_mask = torch.zeros_like(input_ids)
 
-            key_padding_mask = seq == 0
+                tokens = [self.src_tokenizer.decode([token]) for token in input_ids.squeeze(0).tolist()]
 
-            seq = seq.to(self.args.decoder_device)
-            key_padding_mask = key_padding_mask.to(self.args.decoder_device)
-            model.decoder.embed_tokens = model.decoder.embed_tokens.to(self.args.decoder_device)
-            model.decoder.lm_head = model.decoder.lm_head.to(self.args.decoder_device)
+                seq_len = input_ids.size(1)
+                
+                input_ids = input_ids.to(self.args.decoder_device)
+                model.embed_tokens = model.embed_tokens.to(self.args.decoder_device)
+                model.lm_head = model.lm_head.to(self.args.decoder_device)
 
-            seq = self.viz_decoder(model.decoder, seq, seq_len, key_padding_mask, seq, seq_len, key_padding_mask, seq_tokens, seq_tokens, self.summary_writer, step)
+                seq = visualization_helper.viz_decoder(self.args.decoder_device, model, input_ids, seq_len, attention_mask, input_ids, seq_len, None, tokens, tokens, self.summary_writer.add_image, step, annot=False)

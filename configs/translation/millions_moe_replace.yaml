@@ -1,6 +1,6 @@
 tokenizer_run_name: BPE_SEPARATE
 
-fcn_type: millions
+ffn_type: millions
 moe_replace: True
 moe_top_k: 32
 moe_n_experts: 128

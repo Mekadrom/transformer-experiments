@@ -1,5 +1,4 @@
 from megatransformer import megatransformer
-from criteria import labelsmooth
 
 def trace_tensor_devices(tensor, visited=None, depth=0):
     """
@@ -93,8 +92,6 @@ def analyze_encoder_decoder_devices(args, encoder: megatransformer.Encoder, deco
     print("\n=== Analyzing Sample Target ===")
     print(f"Target device: {decoder_sequences.device}")
 
-    loss_fn = labelsmooth.LabelSmoothedCE(args)
-    
     # Try a forward pass and trace the computation graph
     print("\n=== Tracing Computation Graph ===")
     
@@ -111,10 +108,9 @@ def analyze_encoder_decoder_devices(args, encoder: megatransformer.Encoder, deco
     decoder.embed_tokens = decoder.embed_tokens.to(args.decoder_device)
     decoder.lm_head = decoder.lm_head.to(args.decoder_device)
 
-    decoder_output, _ = decoder(decoder_sequences, encoder_sequences, src_key_padding_mask, tgt_key_padding_mask)
-    loss = loss_fn(decoder_output, decoder_sequences, lengths=lengths)  # Replace with your loss function
+    outputs = decoder(input_ids=decoder_sequences, encoder_sequences=encoder_sequences, decoder_attention_mask=tgt_key_padding_mask, encoder_attention_mask=src_key_padding_mask, return_dict=True)
     print("\nTracing backward graph from loss:")
-    trace_tensor_devices(loss)
+    trace_tensor_devices(outputs.loss.cpu())
 
 # Usage example:
 """

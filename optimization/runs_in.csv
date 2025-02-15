@@ -1,0 +1,6 @@
+trial_0|{"lr": 5.00e-5, "warmup_steps": 4000, "grokfast_lambda": 1.0000, "grokfast_alpha": 0.9800, "dropout": 0.1000, "beta2": 0.9700}|27.4500
+trial_1|{"lr": 2.48e-5, "warmup_steps": 6000, "grokfast_lambda": 2.7237, "grokfast_alpha": 0.9284, "dropout": 0.0923, "beta2": 0.9670}|34.0600
+trial_2|{"lr": 6.25e-5, "warmup_steps": 8000, "grokfast_lambda": 0.8228, "grokfast_alpha": 0.9535, "dropout": 0.0755, "beta2": 0.9684}|27.1400
+trial_3|{"lr": 5.67e-5, "warmup_steps": 0, "grokfast_lambda": 1.1416, "grokfast_alpha": 0.9046, "dropout": 0.0464, "beta2": 0.9745}|107.900
+trial_4|{"lr": 1.99e-5, "warmup_steps": 0, "grokfast_lambda": 2.7586, "grokfast_alpha": 0.9467, "dropout": 0.0956, "beta2": 0.9957}|128.000
+trial_5|{"lr": 1.52e-6, "warmup_steps": 4000, "grokfast_lambda": 0.9745, "grokfast_alpha": 0.9719, "dropout": 0.1344, "beta2": 0.9525}|144.100

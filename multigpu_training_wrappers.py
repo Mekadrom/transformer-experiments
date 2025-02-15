@@ -34,14 +34,10 @@ class MultiGPUTranslationWrapper:
         self.optimizer = optimizer
         self.step = 0
         self.current_accumulation_step = 0
-        self.criterion = None
-        self.moe_criterion = None
         
     def split_batch(self, 
                    src_seqs: torch.Tensor,
                    tgt_seqs: torch.Tensor,
-                   src_seq_lengths: torch.Tensor,
-                   tgt_seq_lengths: torch.Tensor,
                    src_key_padding_mask: torch.Tensor,
                    tgt_key_padding_mask: torch.Tensor) -> List[Tuple[torch.Tensor, ...]]:
         """
@@ -66,8 +62,6 @@ class MultiGPUTranslationWrapper:
             splits.append((
                 src_seqs[start_idx:end_idx].to(device),
                 tgt_seqs[start_idx:end_idx].to(device),
-                src_seq_lengths[start_idx:end_idx].to(device),
-                tgt_seq_lengths[start_idx:end_idx].to(device),
                 src_key_padding_mask[start_idx:end_idx].to(device),
                 tgt_key_padding_mask[start_idx:end_idx].to(device)
             ))
@@ -75,13 +69,11 @@ class MultiGPUTranslationWrapper:
         return splits
 
     def forward_pass(self, 
-                    epoch: int,
-                    src_seqs: torch.Tensor,
-                    tgt_seqs: torch.Tensor,
-                    tgt_seq_lengths: torch.Tensor,
-                    src_key_padding_mask: torch.Tensor,
-                    tgt_key_padding_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        splits = self.split_batch(src_seqs, tgt_seqs, tgt_seq_lengths.clone(), tgt_seq_lengths.clone(), src_key_padding_mask, tgt_key_padding_mask)
+                     src_seqs: torch.Tensor,
+                     tgt_seqs: torch.Tensor,
+                     src_key_padding_mask: torch.Tensor,
+                     tgt_key_padding_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        splits = self.split_batch(src_seqs, tgt_seqs, src_key_padding_mask, tgt_key_padding_mask)
         
         total_translation_loss = 0
         total_moe_loss = 0
@@ -89,24 +81,19 @@ class MultiGPUTranslationWrapper:
         total_decoder_moe_loss = 0
         
         # Process each split on its designated GPU
-        for i, (split_src, split_tgt, _, split_tgt_lengths, split_src_mask, split_tgt_mask) in enumerate(splits):
-            predicted_sequences, encoder_moe_vars, decoder_moe_vars = self.models[i](
-                split_src, split_tgt, split_src_mask, split_tgt_mask
+        for i, (input_ids, labels, src_key_padding_mask, tgt_key_padding_mask) in enumerate(splits):
+            outputs = self.models[i](
+                input_ids=input_ids, labels=labels, attention_mask=src_key_padding_mask, decoder_attention_mask=tgt_key_padding_mask
             )
-            
-            # Calculate losses (moved to appropriate device)
-            translation_loss = self.criterion(
-                inputs=predicted_sequences,
-                targets=split_tgt[:, 1:],
-                lengths=split_tgt_lengths - 1
-            ).to(split_src.device)
-            
-            moe_loss, enc_moe_vars, dec_moe_vars = self.moe_criterion(
-                epoch, encoder_moe_vars, decoder_moe_vars
-            )
+
+            loss = outputs.loss.to(input_ids.device)
+            translation_loss = outputs.prediction_loss.to(input_ids.device)
+            moe_loss = outputs.moe_loss.to(input_ids.device)
+            enc_moe_vars = outputs.encoder_gating_variances.to(input_ids.device)
+            dec_moe_vars = outputs.decoder_gating_variances.to(input_ids.device)
             
             # Scale losses
-            scaled_loss = (translation_loss + moe_loss) / (self.batches_per_step * self.num_gpus)
+            scaled_loss = (loss) / (self.batches_per_step * self.num_gpus)
             scaled_loss.backward()
             
             # Accumulate losses for reporting

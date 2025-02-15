@@ -69,7 +69,7 @@ class SequenceLoader(object):
         with codecs.open(os.path.join(self.data_folder, ".".join([f"{self.split}_{self.file_idx}", self.source_suffix])), "r", encoding="utf-8") as f:
             source_data = f.read().split("\n")[:-1]
 
-        if self.tgt_tokenizer is None:
+        if self.tgt_tokenizer is not None:
             with codecs.open(os.path.join(self.data_folder, ".".join([f"{self.split}_{self.file_idx}", self.target_suffix])), "r", encoding="utf-8") as f:
                 target_data = f.read().split("\n")[:-1]
             assert len(source_data) == len(target_data), "There are a different number of source or target sequences!"
@@ -77,35 +77,23 @@ class SequenceLoader(object):
             target_data = source_data
 
         source_lengths = [len(s) for s in tqdm(self.src_encode(source_data, eos=bool(self.args.multilang)), desc='Encoding src sequences')]
-        if target_data is not None:
-            # target language sequences have <BOS> (language specific) and <EOS> (language agnostic) tokens
-            target_lengths = [len(t) for t in tqdm(self.tgt_encode(target_data, bos=True, eos=True), desc='Encoding tgt sequences')]
-            self.data = list(zip(source_data, target_data, source_lengths, target_lengths))
-        else:
-            self.data = list(zip(source_data, source_lengths))
+        # target language sequences have <BOS> (language specific) and <EOS> (language agnostic) tokens
+        target_lengths = [len(t) for t in tqdm(self.tgt_encode(target_data, bos=True, eos=True), desc='Encoding tgt sequences')]
+        self.data = list(zip(source_data, target_data, source_lengths, target_lengths))
 
         # If for training, pre-sort by target lengths - required for itertools.groupby() later
         if self.for_training:
-            if target_data is not None:
-                self.data.sort(key=lambda x: (x[2] + x[3]) // 2)
-            else:
-                self.data.sort(key=lambda x: x[1])
+            self.data.sort(key=lambda x: (x[2] + x[3]) // 2)
         
         if self.for_training:
             # Group or chunk based on target sequence lengths
-            if target_data is not None:
-                chunks = [list(g) for _, g in groupby(self.data, key=lambda x: (x[2] + x[3]) // 2)]
-            else:
-                chunks = [list(g) for _, g in groupby(self.data, key=lambda x: x[1])]
+            chunks = [list(g) for _, g in groupby(self.data, key=lambda x: (x[2] + x[3]) // 2)]
 
             # Create batches, each with the same target sequence length
             self.all_batches = list()
             for chunk in chunks:
                 # Sort inside chunk by source sequence lengths, so that a batch would also have similar source sequence lengths
-                if target_data is not None:
-                    chunk.sort(key=lambda x: x[2])
-                else:
-                    chunk.sort(key=lambda x: x[1])
+                chunk.sort(key=lambda x: x[2])
                 # How many sequences in each batch? Divide expected batch size (i.e. tokens) by target sequence length in this chunk
                 seqs_per_batch = self.tokens_in_batch // chunk[0][3]
                 # Split chunk into batches
@@ -135,12 +123,7 @@ class SequenceLoader(object):
         try:
             try:
                 batch = zip(*self.all_batches[self.current_batch])
-                if len(batch) == 4:
-                    source_data, target_data, source_lengths, target_lengths = batch
-                else:
-                    source_data, source_lengths = batch
-                    target_data = None
-                    target_lengths = None
+                source_data, target_data, _, _ = batch
             except:
                 try:
                     self.file_idx += 1
@@ -151,12 +134,7 @@ class SequenceLoader(object):
                     self.current_batch += 1
 
                     batch = zip(*self.all_batches[self.current_batch])
-                    if len(batch) == 4:
-                        source_data, target_data, source_lengths, target_lengths = batch
-                    else:
-                        source_data, source_lengths = batch
-                        target_data = None
-                        target_lengths = None
+                    source_data, target_data, _, _ = batch
                 except:
                     raise StopIteration
         except:
@@ -164,27 +142,16 @@ class SequenceLoader(object):
             raise StopIteration
         
         source_data = list(source_data)
-        if target_data is not None:
-            target_data = list(target_data)
+        target_data = list(target_data)
 
-        source_data = self.src_encode(source_data, eos=bool(self.args.multilang))
-        source_data = pad_sequence(sequences=[torch.LongTensor(s) for s in source_data], batch_first=True, padding_value=self.src_tokenizer.subword_to_id('<PAD>'))
+        source_data = self.src_encode(source_data, bose=True, eos=bool(self.args.multilang))
+        source_data = pad_sequence(sequences=[torch.LongTensor(s) for s in source_data], batch_first=True, pad_token_id=self.src_tokenizer.subword_to_id('<PAD>'))
 
-        if target_data is not None:
-            target_data = self.tgt_encode(target_data, bos=True, eos=True)
-            target_data = pad_sequence(sequences=[torch.LongTensor(t) for t in target_data], batch_first=True, padding_value=self.tgt_tokenizer.subword_to_id('<PAD>'))
+        target_data = self.tgt_encode(target_data, bos=False, eos=True)
+        target_data = pad_sequence(sequences=[torch.LongTensor(t) for t in target_data], batch_first=True, pad_token_id=self.tgt_tokenizer.subword_to_id('<PAD>'))
 
         if self.pad_to_length is not None:
             source_data = torch.cat([source_data, torch.zeros(source_data.size(0), self.pad_to_length - source_data.size(1), dtype=source_data.dtype)], dim=1)
+            target_data = torch.cat([target_data, torch.zeros(target_data.size(0), self.pad_to_length - target_data.size(1), dtype=target_data.dtype)], dim=1)
 
-            if target_data is not None:
-                target_data = torch.cat([target_data, torch.zeros(target_data.size(0), self.pad_to_length - target_data.size(1), dtype=target_data.dtype)], dim=1)
-
-        source_lengths = torch.LongTensor(source_lengths)
-
-        if target_data is not None:
-            target_lengths = torch.LongTensor(target_lengths)
-
-            return source_data, target_data, source_lengths, target_lengths
-        else:
-            return source_data, source_lengths
+        return source_data, target_data
