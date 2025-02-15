@@ -1,7 +1,9 @@
 seed: 42
-maxlen: 150
-padding_value: 0
+maxlen: 256
+tokenizer_run_name: gpt2
+set_pad_token_eos: True
 
+precision: bf16
 multilang: False
 multidevice: False
 per_lang_embedding_layers: 0
@@ -20,7 +22,6 @@ fcn_bias: True
 attn_impl: mha
 infinite_attention_n_segments: 0
 infinite_attention_update: False
-n_encoder_layers: 6
 n_decoder_layers: 6
 dropout: 0.1
 norm_type: layer
@@ -50,17 +51,15 @@ positional_encoding_type: sinusoidal
 positional_encoding_dim: 0
 learnable_positional_encoding: False
 
-encoder_param_sharing_type: none
 decoder_param_sharing_type: none
-m_encoder_independent_layers: 0
 m_decoder_independent_layers: 0
 activation_function: relu
 heads_activation: none
 embedding_compression_dim: 0
 embedding_activation: none
 
-tokens_in_batch: 5000
-target_tokens_per_batch: 25000
+tokens_in_batch: 1024
+target_tokens_per_batch: 10240
 n_steps: 100000
 warmup_steps: 8000
 beta1: 0.9
@@ -78,7 +77,6 @@ distillation_teacher_run_name:
 
 start_epoch: 0
 print_frequency: 20
-encoder_device: cuda:0
 decoder_device: cuda:0
 save_initial_checkpoint: False
 cudnn_benchmark: False

@@ -6,6 +6,7 @@ from megatransformer import swiglu
 from multigpu_training_wrappers import MultiGPUTranslationWrapper
 from torch import nn
 from torch.backends import cudnn
+from transformers import AutoTokenizer
 from tqdm import tqdm
 from typing import Optional, Tuple, Union
 
@@ -155,7 +156,7 @@ def get_tensor_positional_encoding(args, device):
     positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
     return positional_encoding
 
-def load_tokenizers(run_dir) -> Tuple[yttm.BPE, yttm.BPE]:
+def load_yttm_tokenizers(run_dir) -> Tuple[yttm.BPE, yttm.BPE]:
     src_tokenizer_file = os.path.join(run_dir, 'src_tokenizer.model')
     tgt_tokenizer_file = os.path.join(run_dir, 'tgt_tokenizer.model')
 
@@ -325,34 +326,57 @@ def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=
     # Save averaged checkpoint
     torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def greedy_complete(args, seq, model: nn.Module, tokenizer: yttm.BPE, n_predictions: int, top_k: float=0.95) -> list[str]:
+def greedy_complete(args, start_seq, model: nn.Module, tokenizer: AutoTokenizer, n_predictions: int, top_k: Optional[int]=None, top_p: Optional[float]=0.9) -> list[str]:
     with torch.no_grad():
-        if isinstance(seq, str):
-            seq = encode(False, tokenizer, seq)
-            seq = torch.LongTensor(seq).unsqueeze(0)
-        else:
-            seq = seq
+        if isinstance(start_seq, str):
+            start_seq = tokenizer.encode(
+                start_seq,
+                return_tensors='pt',
+                max_length=args.maxlen,
+                padding=True,
+                truncation=True
+            )
 
-        seq = seq.to(args.decoder_device)
+        start_seq = start_seq.to(args.decoder_device)
 
-        key_padding_mask = (seq == 0).to(args.decoder_device)
-
-        decoded = torch.LongTensor([seq]).to(args.decoder_device)
         predictions = []
         for i in range(n_predictions):
-            decoder_sequences, _ = model(target_ids=decoded, key_padding_mask=key_padding_mask)
+            decoded = start_seq.clone().detach().to(args.decoder_device)
 
-            next_word_scores = decoder_sequences[:, -1, :]
-            next_word_scores = F.log_softmax(next_word_scores, dim=-1)
+            logits, _ = model(input_ids=decoded)
 
-            next_word_scores, next_word = next_word_scores.topk(int(top_k * next_word_scores.size(1)), dim=-1)
+            probs = logits[:, -1, :]
+            probs = F.softmax(probs, dim=-1)
 
-            for i in range(next_word.size(1)):
-                decoded = torch.cat([decoded, next_word[:, i].unsqueeze(1)], dim=1)
-                if next_word[:, i].item() == tokenizer.subword_to_id('<EOS>'):
-                    predictions.append(' '.join(tokenizer.decode(decoded.tolist(), ignore_ids=[0, 2, 3])))
+            for i in range(args.maxlen):
+                if top_k is not None:
+                    probs = probs.topk(top_k, dim=-1)[0]
+
+                    next_token = torch.multinomial(probs, num_samples=1)
+                elif top_p is not None:
+                    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+        
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                    
+                    mask = cumulative_probs <= top_p
+
+                    mask[..., 1:] = mask[..., :-1].clone()
+                    mask[..., 0] = True
+
+                    sorted_indices_to_keep = mask
+                    indices_to_keep = sorted_indices[sorted_indices_to_keep]
+
+                    new_logits = torch.full_like(logits, float('-inf'))
+                    new_logits[indices_to_keep] = logits[indices_to_keep]
+
+                    predictions = torch.softmax(new_logits, dim=-1)
+
+                    next_token = torch.multinomial(probs, num_samples=1)
+                decoded = torch.cat([decoded, next_token], dim=1)
+                if next_token.item() == tokenizer.eos_token_id:
                     break
 
+            predictions.append(tokenizer.decode(decoded.squeeze(0).tolist(), ignore_ids=[0, 2, 3]))
         return predictions
 
 def greedy_translate(args, src, model: nn.Module, src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE):

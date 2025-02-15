@@ -50,27 +50,39 @@ class BaseTrainer:
 
         self.summary_writer = SummaryWriter(log_dir=self.run_dir)
 
-        self.bpe_run_dir = os.path.join('runs', args.tokenizer_run_name)
+        self.tokenizer_run_dir = os.path.join('runs', args.tokenizer_run_name)
 
-        self.src_tokenizer, self.tgt_tokenizer = utils.load_tokenizers(self.bpe_run_dir)
+        self.src_tokenizer, self.tgt_tokenizer = self.load_tokenizers(identifier=self.tokenizer_run_dir)
 
         self.model, self.optimizer = self.load_model_and_optimizer(self.run_dir)
 
-        if isinstance(self.model.encoder.embed_tokens, nn.Embedding):
-            print(self.model.encoder.embed_tokens.weight.device)
-            print(self.model.decoder.embed_tokens.weight.device)
+        if hasattr(self.model, 'encoder'):
+            if isinstance(self.model.encoder.embed_tokens, nn.Embedding):
+                print(self.model.encoder.embed_tokens.weight.device)
+            else:
+                print(self.model.encoder.embed_tokens.embedding.weight.device)
+        
+        decoder = self.model.decoder if hasattr(self.model, 'decoder') else self.model
+        if isinstance(decoder.embed_tokens, nn.Embedding):
+            print(decoder.embed_tokens.weight.device)
         else:
-            print(self.model.encoder.embed_tokens.embedding.weight.device)
-            print(self.model.decoder.embed_tokens.embedding.weight.device)
+            print(decoder.embed_tokens.embedding.weight.device)
+
+        self.precision = torch.float32
+        if hasattr(args, 'precision') and args.precision is not None:
+            if args.precision == 'bf16':
+                self.precision = torch.bfloat16
+            elif args.precision == 'fp16':
+                self.precision = torch.float16
+
+        self.model = self.model.to(self.precision)
 
         if bool(args.compile_model):
-            torch.set_float32_matmul_precision('high')
+            print("Using compiled model")
             torch._dynamo.config.cache_size_limit = int(args.dynamo_cache_size_limit)
             self.compiled_model = torch.compile(self.model)
         else:
             self.compiled_model = self.model
-
-        self.criterion: nn.Module = self.get_criteria()
 
         if bool(args.early_stop):
             self.early_stopping = EarlyStopping(patience=args.early_stop_patience, min_delta=args.early_stop_min_delta)
@@ -79,26 +91,14 @@ class BaseTrainer:
 
         utils.print_model(self.model)
         print(f"Optimizer: {self.optimizer}")
-        print(f"Criterion: {self.criterion}")
 
         if args.save_initial_checkpoint:
             utils.save_checkpoint(-1, self.model, self.optimizer, f"runs/{args.run_name}/")
 
         self.sacrebleu_epochs = []
-        self.target_sequence_transform: Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]] = lambda source_sequences, source_sequence_lengths, target_sequences, target_sequence_lengths: (target_sequences, target_sequence_lengths)
+        self.target_sequence_transform: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = lambda source_sequences, target_sequences: (target_sequences)
 
-    def moe_criterion(self, epoch, encoder_moe_gating_variances, decoder_moe_gating_variances):
-        if self.args.moe_diversity_loss_coefficient > 0 and epoch >= self.args.moe_diversity_inclusion_epoch:
-            encoder_moe_gating_variances = torch.stack(encoder_moe_gating_variances).std(dim=0).mean()
-            decoder_moe_gating_variances = torch.stack(decoder_moe_gating_variances).std(dim=0).mean()
-            moe_diversity_loss = (encoder_moe_gating_variances + decoder_moe_gating_variances) / 2
-
-            moe_diversity_loss = moe_diversity_loss * self.args.moe_diversity_loss_coefficient
-            return moe_diversity_loss, encoder_moe_gating_variances, decoder_moe_gating_variances
-        else:
-            return torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0)
-
-    def get_criteria(self) -> nn.Module:
+    def load_tokenizers(self, identifier):
         raise NotImplementedError
 
     def load_model_and_optimizer(self, run_dir, checkpoint_model_name='transformer_checkpoint.pth.tar') -> Tuple[nn.Module, torch.optim.Optimizer]:
@@ -112,21 +112,26 @@ class BaseTrainer:
         self.start_epoch = self.args.start_epoch
 
         self.train_loader, self.val_loader, self.test_loader = self.load_data()
-        self.epochs = (self.args.n_steps // ((self.train_loader.n_batches * len(self.train_loader.src_file_paths)) // self.args.batches_per_step)) + 1
+        if hasattr(self.train_loader, 'create_batches'):
+            self.epochs = (self.args.n_steps // ((self.train_loader.n_batches * len(self.train_loader.src_file_paths)) // self.args.batches_per_step)) + 1
+        else:
+            if hasattr(self.args, 'n_epochs') and self.args.n_epochs is not None and int(self.args.n_epochs) > 0:
+                self.epochs = int(self.args.n_epochs)
+            else:
+                raise ValueError("n_epochs must be set to a positive integer if using non SequenceLoader dataloader")
         if hasattr(self.args, 'n_epochs') and self.args.n_epochs is not None and int(self.args.n_epochs) > 0:
             self.epochs = int(self.args.n_epochs)
 
         print(f"Training for {self.epochs} epochs...")
-        start = time.time()
-        
         for epoch in range(self.start_epoch, self.epochs):
-            # self.steps = (epoch * self.train_loader.n_batches // self.batches_per_step)
-
-            self.train_loader.create_batches()
+            if hasattr(self.train_loader, 'create_batches'):
+                self.train_loader.create_batches()
             self.train_epoch(self.compiled_model, epoch=epoch)
 
-            self.val_loader.create_batches()
-            val_loss_avg = self.validate_epoch(self.model)
+            if self.val_loader is not None:
+                if hasattr(self.val_loader, 'create_batches'):
+                    self.val_loader.create_batches()
+                val_loss_avg = self.validate_epoch(self.model)
 
             utils.save_checkpoint(epoch, self.model, self.optimizer, prefix=f"{self.run_dir}/{model_name_prefix}")
 
@@ -136,24 +141,18 @@ class BaseTrainer:
                     utils.average_checkpoints(self.epochs, self.optimizer, self.run_dir, self.args.early_stop_checkpoint_window, model_name_prefix='step')
 
                     print(f"Training complete. Evaluating one last time...")
-                    self.val_loader.create_batches()
+                    if hasattr(self.val_loader, 'create_batches'):
+                        self.val_loader.create_batches()
                     self.validate_epoch(self.model)
                     break
-
-        time_taken = time.time() - start
-
-        # recalculate steps to make sure validation data is updated with correct steps
-        # self.steps = (self.epochs * self.train_loader.n_batches // self.batches_per_step)
 
         print(f"Training complete. Averaging checkpoints...")
         utils.average_checkpoints(self.epochs, self.optimizer, self.run_dir, model_name_prefix='step')
 
         print(f"Training complete. Evaluating one last time...")
-        self.val_loader.create_batches()
+        if hasattr(self.val_loader, 'create_batches'):
+            self.val_loader.create_batches()
         self.validate_epoch(self.model)
-
-        print(f"Training complete. Scoring with sacrebleu...")
-        return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_tokenizer, self.tgt_tokenizer, self.model, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
 
     def train_epoch(self, model: megatransformer.MegaTransformer, epoch):
         raise NotImplementedError
@@ -181,13 +180,13 @@ class BaseTrainer:
         self_or_cross = 'self' if attn.self_attn else 'cross'
         stack_name = f"{decoder_or_encoder}-{self_or_cross}"
 
-        residual, attention_weights = attn(tgt_seq, src_seq, src_seq, key_padding_mask)
+        residual, attention_weights = attn(tgt_seq, src_seq, src_seq, key_padding_mask, return_attn_values=True)
         tgt_seq = attn_residual(tgt_seq, residual)
 
         for a, attention_weight_grid in enumerate(attention_weights):
             attention_weight_grid = attention_weight_grid.cpu().contiguous()
             for head_num in range(attention_weight_grid.size(1)):
-                image_data = self.viz_attn_weight(stack_name, layer_num, head_num, attention_weight_grid[:, head_num, :tgt_seq_len, :src_seq_len].transpose(-2, -1).squeeze(0).cpu().detach().numpy(), tgt_tokens, src_tokens)
+                image_data = self.viz_attn_weight(stack_name, layer_num, head_num, attention_weight_grid[:, head_num, :tgt_seq_len, :src_seq_len].transpose(-2, -1).squeeze(0).to(torch.float32).cpu().detach().numpy(), tgt_tokens, src_tokens)
                 summary_writer.add_image(f"{decoder_or_encoder}/viz/layer_{layer_num}/segment_{a}/head_{head_num}/{self_or_cross}-attn", plt.imread(image_data), global_step=step, dataformats='HWC')
 
         return tgt_seq
