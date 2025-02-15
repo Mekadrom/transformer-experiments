@@ -22,7 +22,7 @@ if __name__ == '__main__':
     setattr(args, "model_checkpoint", argparser_args.model_checkpoint)
     setattr(args, "profile_training", argparser_args.profile_training)
 
-    src_bpe_model, tgt_bpe_model = utils.load_tokenizers(os.path.join('runs', args.tokenizer_run_name))
+    src_bpe_model, tgt_bpe_model = utils.load_yttm_tokenizers(os.path.join('runs', args.tokenizer_run_name))
     model, _ = utils.load_translation_checkpoint_or_generate_new(args, os.path.join('runs', args.run_name), src_bpe_model, tgt_bpe_model, checkpoint_model_name=args.model_checkpoint)
 
     model.encoder = model.encoder.to(args.encoder_device)

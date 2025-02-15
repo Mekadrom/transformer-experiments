@@ -1,11 +1,14 @@
 from collections import OrderedDict
 from dataloader import SequenceLoader
-from datasets import load_dataset
 from positional_encodings.torch_encodings import PositionalEncoding2D
-from megatransformer import swiglu
+from megatransformer import swiglu, megatransformer, multihead_attn, positionwise_fcn
 from multigpu_training_wrappers import MultiGPUTranslationWrapper
 from torch import nn
+from torch.nn import functional as F
 from torch.backends import cudnn
+from torch.cuda.amp import autocast
+from torch.utils.tensorboard import SummaryWriter
+from transformers import AutoTokenizer
 from tqdm import tqdm
 from typing import Optional, Tuple, Union
 
@@ -129,6 +132,29 @@ def change_lr(optimizer: torch.optim.Optimizer, new_lr: float):
     for param_group in optimizer.param_groups:
         param_group['lr'] = new_lr
 
+def create_warmup_cosine_scheduler(optimizer: torch.optim.Optimizer, warmup_steps: int, total_steps: int, min_lr: float=0.):
+    # Linear warmup from 0 to initial_lr
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=0.0,  # Start from 0
+        end_factor=1.0,    # Go to initial_lr
+        total_iters=warmup_steps
+    )
+    
+    # Cosine decay from initial_lr to min_lr
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps - warmup_steps,
+        eta_min=min_lr
+    )
+    
+    # Combine schedulers
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_steps]
+    )
+
 def get_buffered_positional_encoding(args, d_model, device, maxlen=100, num_dims=1):
     if num_dims == 1:
         positional_encoding = torch.zeros((maxlen, d_model)) # (max_length, d_model)
@@ -155,7 +181,7 @@ def get_tensor_positional_encoding(args, device):
     positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
     return positional_encoding
 
-def load_tokenizers(run_dir) -> Tuple[yttm.BPE, yttm.BPE]:
+def load_yttm_tokenizers(run_dir) -> Tuple[yttm.BPE, yttm.BPE]:
     src_tokenizer_file = os.path.join(run_dir, 'src_tokenizer.model')
     tgt_tokenizer_file = os.path.join(run_dir, 'tgt_tokenizer.model')
 
@@ -185,24 +211,8 @@ def print_model(model: nn.Module):
     print(f'The model has {count_parameters(model):,} total parameters')
     print(f'The model has {sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad):,} non-zero total parameters')
 
-    def tensor_in(tensor, tensor_list):
-        for t in tensor_list:
-            if tensor is t:
-                return True
-        return False
-
-    already_counted = []
-    total_params = 0
-    for name, param in model.named_parameters():
-        if param.requires_grad and not tensor_in(param, already_counted):
-            # print(f"Layer {name} has {param.numel():,} parameters and {torch.count_nonzero(param).item():,} non-zero parameters")
-            total_params += param.numel()
-            already_counted.append(param)
-
-    print(f'The model has {total_params:,} trainable parameters')
-
 def count_parameters(model: nn.Module):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return sum(p.numel() for _, p in model.named_parameters(remove_duplicate=True))
 
 def load_translation_data(args, tokens_in_batch, run_dir, src_bpe_model, tgt_bpe_model, pad_to_length=None) -> Tuple[SequenceLoader, SequenceLoader, SequenceLoader]:
     print('Loading training data SequenceLoader...')
@@ -325,35 +335,41 @@ def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=
     # Save averaged checkpoint
     torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
-def greedy_complete(args, seq, model: nn.Module, tokenizer: yttm.BPE, n_predictions: int, top_k: float=0.95) -> list[str]:
+def greedy_complete(args, start_seq, model: nn.Module, tokenizer: AutoTokenizer, n_predictions: int, top_k: Optional[int]=None, top_p: Optional[float]=0.9, precision=torch.float32) -> list[str]:
     with torch.no_grad():
-        if isinstance(seq, str):
-            seq = encode(False, tokenizer, seq)
-            seq = torch.LongTensor(seq).unsqueeze(0)
-        else:
-            seq = seq
+        with autocast():
+            if isinstance(start_seq, str):
+                start_seq = tokenizer.encode(
+                    start_seq,
+                    return_tensors='pt',
+                    max_length=args.maxlen,
+                )
 
-        seq = seq.to(args.decoder_device)
+            start_seq = start_seq.to(args.decoder_device)
 
-        key_padding_mask = (seq == 0).to(args.decoder_device)
+            predictions = []
+            for i in range(n_predictions):
+                decoded = start_seq.clone().detach().to(args.decoder_device)
 
-        decoded = torch.LongTensor([seq]).to(args.decoder_device)
-        predictions = []
-        for i in range(n_predictions):
-            decoder_sequences, _ = model(target_ids=decoded, key_padding_mask=key_padding_mask)
+                for i in range(args.maxlen - start_seq.shape[1]):
+                    logits, _ = model(input_ids=decoded)
 
-            next_word_scores = decoder_sequences[:, -1, :]
-            next_word_scores = F.log_softmax(next_word_scores, dim=-1)
+                    probs = logits[:, -1, :]
+                    probs = F.softmax(probs, dim=-1)
 
-            next_word_scores, next_word = next_word_scores.topk(int(top_k * next_word_scores.size(1)), dim=-1)
+                    if top_k is not None:
+                        probs, indices = probs.topk(top_k, dim=-1)
+                        k_index = torch.multinomial(probs, 1)
 
-            for i in range(next_word.size(1)):
-                decoded = torch.cat([decoded, next_word[:, i].unsqueeze(1)], dim=1)
-                if next_word[:, i].item() == tokenizer.subword_to_id('<EOS>'):
-                    predictions.append(' '.join(tokenizer.decode(decoded.tolist(), ignore_ids=[0, 2, 3])))
-                    break
+                        next_token = indices[0, k_index]
+                    elif top_p is not None:
+                        pass
+                    decoded = torch.cat([decoded, next_token], dim=1)
+                    if next_token.item() == tokenizer.eos_token_id:
+                        break
 
-        return predictions
+                predictions.append(tokenizer.decode(decoded.squeeze(0).tolist(), ignore_ids=[0, 2, 3]))
+            return predictions
 
 def greedy_translate(args, src, model: nn.Module, src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE):
     with torch.no_grad():
