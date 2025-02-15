@@ -1,4 +1,3 @@
-from criteria.labelsmooth import LabelSmoothedCE
 from functools import partial
 from model_provider import TranslationTransformerModelProvider
 from megatransformer import megatransformer
@@ -6,9 +5,9 @@ from megatransformer import grokfast
 from multigpu_training_wrappers import MultiGPUTranslationWrapper
 from prettytable import PrettyTable
 from tqdm import tqdm
+from trainer import base_trainer
 
 import avg_meter
-import base_trainer
 import debugger
 import os
 import time
@@ -20,6 +19,9 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         super(TranslationTrainer, self).__init__(args)
 
         self.grads = None
+
+    def load_tokenizers(self, identifier):
+        return utils.load_yttm_tokenizers(run_dir=identifier)
 
     def load_model_and_optimizer(self, run_dir, checkpoint_model_name='transformer_checkpoint.pth.tar'):
         print('Initializing model...')
@@ -55,16 +57,11 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 gpu_ids=list(range(torch.cuda.device_count())),
                 sync_steps=self.args.multidevice_sync_steps
             )
-            self.model.criterion = self.criterion
-            self.model.moe_criterion = self.moe_criterion
         
         return model, optimizer
 
-    def get_criteria(self):
-        return LabelSmoothedCE(args=self.args, eps=self.args.label_smoothing)
-
     def load_data(self):
-        return utils.load_translation_data(self.args, int(self.args.tokens_in_batch), self.bpe_run_dir, self.src_tokenizer, self.tgt_tokenizer, pad_to_length=self.args.maxlen if self.args.use_infinite_attention else None)
+        return utils.load_translation_data(self.args, int(self.args.tokens_in_batch), self.tokenizer_run_dir, self.src_tokenizer, self.tgt_tokenizer, pad_to_length=self.args.maxlen if self.args.use_infinite_attention else None)
     
     def train(self, model_name_prefix=''):
         if self.args.start_epoch == 0:
@@ -74,32 +71,27 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 self.model.eval()
                 self.viz_model(0, self.model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", src_lang_code="en", tgt_lang_code="de")
 
+        start = time.time()
         super().train()
+        time_taken = time.time() - start
+
+        print(f"Training complete. Scoring with sacrebleu...")
+        return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_tokenizer, self.tgt_tokenizer, self.model, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
 
     def forward_pass(self, model, epoch,
                      src_seqs: torch.Tensor,
                      tgt_seqs: torch.Tensor,
-                     tgt_seq_lengths: torch.Tensor,
                      src_key_padding_mask: torch.Tensor,
                      tgt_key_padding_mask: torch.Tensor):
-        predicted_sequences, encoder_moe_gating_variances, decoder_moe_gating_variances = model(input_ids=src_seqs, labels=tgt_seqs, attention_mask=src_key_padding_mask, decoder_attention_mask=tgt_key_padding_mask)
+        outputs = model(input_ids=src_seqs, labels=tgt_seqs, decoder_attention_mask=tgt_key_padding_mask, encoder_attention_mask=src_key_padding_mask, return_dict=True)
 
-        # Note: If the target sequence is "<BOS> w1 w2 ... wN <EOS> <PAD> <PAD> <PAD> <PAD> ..."
-        # we should consider only "w1 w2 ... wN <EOS>" as <BOS> is not predicted
-        # Therefore, pads start after (length - 1) positions
-        translation_loss: torch.Tensor = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1)
+        total_loss = outputs.total_loss
+        translation_loss = outputs.main_loss
+        moe_loss = outputs.moe_loss
 
-        predicted_sequences = predicted_sequences.to(self.args.decoder_device)
-        tgt_seqs = tgt_seqs.to(self.args.decoder_device)
-
-        moe_diversity_loss, encoder_moe_gating_variances, decoder_moe_gating_variances = self.moe_criterion(epoch, encoder_moe_gating_variances, decoder_moe_gating_variances)
-
-        loss = translation_loss + moe_diversity_loss
-        loss = (loss / self.batches_per_step).to(self.args.decoder_device)
-
-        loss.backward()
-
-        return translation_loss, loss, moe_diversity_loss, encoder_moe_gating_variances, decoder_moe_gating_variances
+        total_loss.backward()
+        
+        return total_loss, translation_loss, moe_loss
     
     def train_epoch(self, model: megatransformer.MegaTransformer, epoch):
         # training mode enables dropout
@@ -116,31 +108,29 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         start_data_time = time.time()
         start_step_time = time.time()
 
-        for i, (src_seqs, tgt_seqs, src_seq_lengths, tgt_seq_lengths) in enumerate(self.train_loader):
-            src_seqs, src_seq_lengths = self.target_sequence_transform(tgt_seqs, tgt_seq_lengths, src_seqs, src_seq_lengths)
-            tgt_seqs, tgt_seq_lengths = self.target_sequence_transform(src_seqs, src_seq_lengths, tgt_seqs, tgt_seq_lengths)
+        for i, (input_ids, labels) in enumerate(self.train_loader):
+            input_ids = self.target_sequence_transform(labels, input_ids)
+            labels = self.target_sequence_transform(input_ids, labels)
 
-            src_key_padding_mask = src_seqs == 0
-            tgt_key_padding_mask = tgt_seqs == 0
+            src_key_padding_mask = input_ids == 0
+            tgt_key_padding_mask = labels == 0
 
             data_time.update(time.time() - start_data_time)
 
-            sum_total_lengths = (tgt_seq_lengths - 1).sum().item()
-
-            forward_translation_loss, total_loss, moe_loss, encoder_moe_loss, decoder_moe_loss = self.forward_pass(model, epoch, src_seqs, tgt_seqs, tgt_seq_lengths, src_key_padding_mask, tgt_key_padding_mask)
-            translation_losses.update(forward_translation_loss.item(), sum_total_lengths)
-            total_losses.update(total_loss.item(), sum_total_lengths)
+            total_loss, forward_translation_loss, moe_loss, encoder_gating_variances, decoder_gating_variances = self.forward_pass(model, epoch, input_ids, labels, src_key_padding_mask, tgt_key_padding_mask)
+            translation_losses.update(forward_translation_loss.item())
+            total_losses.update(total_loss.item())
             moe_losses.update(moe_loss.item(), 1)
-            encoder_moe_gating_variance_losses.update(encoder_moe_loss.item(), 1)
-            decoder_moe_gating_variance_losses.update(decoder_moe_loss.item(), 1)
+            encoder_moe_gating_variance_losses.update(encoder_gating_variances.item(), 1)
+            decoder_moe_gating_variance_losses.update(decoder_gating_variances.item(), 1)
 
             if bool(self.args.multilang):
-                backward_translation_loss, total_loss, moe_loss, encoder_moe_loss, decoder_moe_loss = self.forward_pass(model, epoch, tgt_seqs, src_seqs, src_seq_lengths, tgt_key_padding_mask, src_key_padding_mask)
-                translation_losses.update(backward_translation_loss.item(), sum_total_lengths)
-                total_losses.update(total_loss.item(), sum_total_lengths)
+                total_loss, backward_translation_loss, moe_loss, encoder_gating_variances, decoder_gating_variances = self.forward_pass(model, epoch, labels, input_ids, tgt_key_padding_mask, src_key_padding_mask)
+                translation_losses.update(backward_translation_loss.item())
+                total_losses.update(total_loss.item())
                 moe_losses.update(moe_loss.item(), 1)
-                encoder_moe_gating_variance_losses.update(encoder_moe_loss.item(), 1)
-                decoder_moe_gating_variance_losses.update(decoder_moe_loss.item(), 1)
+                encoder_moe_gating_variance_losses.update(encoder_gating_variances.item(), 1)
+                decoder_moe_gating_variance_losses.update(decoder_gating_variances.item(), 1)
 
             # Update model (i.e. perform a training step) only after gradients are accumulated from batches_per_step batches
             if (i + 1) % self.batches_per_step == 0:
@@ -192,21 +182,18 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
         with torch.no_grad():
             losses = avg_meter.AverageMeter()
-            for (src_seqs, tgt_seqs, _, tgt_seq_lengths) in tqdm(self.val_loader, total=self.val_loader.n_batches):
-                src_seqs = src_seqs.to(self.encoder_device)
-                tgt_seqs = tgt_seqs.to(self.encoder_device)
-                tgt_seq_lengths = tgt_seq_lengths.to(self.decoder_device)
+            for (input_ids, labels) in tqdm(self.val_loader, total=self.val_loader.n_batches):
+                input_ids = input_ids.to(self.encoder_device)
+                labels = labels.to(self.encoder_device)
 
-                src_key_padding_mask = src_seqs == 0
-                tgt_key_padding_mask = (tgt_seqs == 0).to(self.decoder_device)
+                src_key_padding_mask = input_ids == 0
+                tgt_key_padding_mask = (labels == 0).to(self.decoder_device)
 
-                predicted_sequences = model(input_ids=src_seqs, labels=tgt_seqs, attention_mask=src_key_padding_mask, decoder_attention_mask=tgt_key_padding_mask)[0]
+                outputs = model(input_ids=input_ids, labels=labels, attention_mask=src_key_padding_mask, decoder_attention_mask=tgt_key_padding_mask, return_dict=True)
 
-                tgt_seqs = tgt_seqs.to(self.decoder_device)
+                total_loss = outputs.total_loss
 
-                loss: torch.Tensor = self.criterion(inputs=predicted_sequences, targets=tgt_seqs[:, 1:], lengths=tgt_seq_lengths - 1)
-
-                losses.update(loss.item(), (tgt_seq_lengths - 1).sum().item())
+                losses.update(total_loss.item())
 
             self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.steps)
             print("\nValidation loss: %.3f\n\n" % losses.avg)

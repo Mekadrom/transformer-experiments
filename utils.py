@@ -155,7 +155,7 @@ def get_tensor_positional_encoding(args, device):
     positional_encoding.requires_grad = bool(args.learnable_positional_encoding)
     return positional_encoding
 
-def load_tokenizers(run_dir) -> Tuple[yttm.BPE, yttm.BPE]:
+def load_yttm_tokenizers(run_dir) -> Tuple[yttm.BPE, yttm.BPE]:
     src_tokenizer_file = os.path.join(run_dir, 'src_tokenizer.model')
     tgt_tokenizer_file = os.path.join(run_dir, 'tgt_tokenizer.model')
 

@@ -17,7 +17,7 @@ if __name__ == '__main__':
         print(f"run directory {run_dir} does not exist")
         exit(1)
 
-    src_bpe_model, tgt_bpe_model = utils.load_tokenizers(os.path.join('runs', args.tokenizer_run_name))
+    src_bpe_model, tgt_bpe_model = utils.load_yttm_tokenizers(os.path.join('runs', args.tokenizer_run_name))
 
     print('Initializing model...')
 
