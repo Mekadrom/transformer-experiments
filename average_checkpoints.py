@@ -24,4 +24,4 @@ src_bpe_model, tgt_bpe_model = utils.load_yttm_tokenizers(os.path.join('runs', a
 
 model, optimizer = utils.load_translation_checkpoint_or_generate_new(args, run_dir, utils.vocab_size(args, src_bpe_model), utils.vocab_size(args, tgt_bpe_model), tie_embeddings=src_bpe_model==tgt_bpe_model, checkpoint_model_name=args.model_checkpoint)
 
-utils.average_checkpoints(args.start_epoch, optimizer, run_dir, args.early_stop_checkpoint_window, model_name_prefix='step')
+utils.average_checkpoints(args.start_step, optimizer, run_dir, args.early_stop_checkpoint_window, model_name_prefix='step')

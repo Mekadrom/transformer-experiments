@@ -95,35 +95,18 @@ class BaseTrainer:
         if args.save_initial_checkpoint:
             utils.save_checkpoint(-1, self.model, self.optimizer, f"runs/{args.run_name}/")
 
-        self.sacrebleu_epochs = []
         self.target_sequence_transform: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = lambda source_sequences, target_sequences: (target_sequences)
 
-        self.steps = 0
-        self.start_epoch = int(self.args.start_epoch)
+        self.step = 0
+        self.start_step = int(self.args.start_step)
+        self.n_steps = int(self.args.n_steps)
 
         print(f"Loading data...")
         self.train_loader, self.val_loader, self.test_loader = self.load_data()
-        if hasattr(self.train_loader, 'create_batches'):
-            self.epochs = (self.args.n_steps // ((self.train_loader.n_batches * len(self.train_loader.src_file_paths)) // self.args.batches_per_step)) + 1
-        else:
-            if hasattr(self.args, 'n_epochs') and self.args.n_epochs is not None and int(self.args.n_epochs) > 0:
-                self.epochs = int(self.args.n_epochs)
-            elif hasattr(self.args, 'n_steps') and self.args.n_steps is not None and int(self.args.n_steps) > 0:
-                self.epochs = int(self.args.n_steps) // len(self.train_loader)
-            else:
-                raise ValueError("n_epochs must be set to a positive integer if using non SequenceLoader dataloader")
-        if hasattr(self.args, 'n_epochs') and self.args.n_epochs is not None and int(self.args.n_epochs) > 0:
-            self.epochs = int(self.args.n_epochs)
-
-        if hasattr(self.args, 'n_steps') and self.args.n_steps is not None and int(self.args.n_steps) > 0:
-            self.n_steps = self.args.n_steps
-        elif hasattr(self.args, 'n_epochs') and self.args.n_epochs is not None and int(self.args.n_epochs) > 0:
-            self.n_steps = (self.args.n_epochs * len(self.train_loader)) // self.args.batches_per_step
 
         if hasattr(self, 'batch_size'):
             print(f"batch_size: {self.batch_size}")
-        if hasattr(self, 'n_steps'):
-            print(f"n_steps: {self.n_steps}")
+        print(f"n_steps: {self.n_steps}")
 
         self.lr_scheduler = None
         if hasattr(args, 'lr_scheduler') and args.lr_scheduler is not None:
@@ -148,41 +131,33 @@ class BaseTrainer:
         raise NotImplementedError
 
     def train(self, model_name_prefix=''):
-        print(f"Training for {self.epochs} epochs...")
-        for epoch in range(self.start_epoch, self.epochs):
-            if hasattr(self.train_loader, 'create_batches'):
-                self.train_loader.create_batches()
-            self.train_epoch(self.compiled_model, epoch=epoch)
+        print(f"Training for {self.n_steps} steps...")
+        while self.step < self.n_steps:
+            self.training(self.compiled_model)
 
-            if hasattr(self.val_loader, 'create_batches'):
-                self.val_loader.create_batches()
-            val_loss_avg = self.validate_epoch(self.model)
+            val_loss_avg = self.validation(self.model)
 
-            utils.save_checkpoint(epoch, self.model, self.optimizer, prefix=f"{self.run_dir}/{model_name_prefix}")
+            utils.save_checkpoint(self.step, self.model, self.optimizer, prefix=f"{self.run_dir}/{model_name_prefix}")
 
             if self.early_stopping is not None:
                 if self.early_stopping(val_loss_avg):
                     print("Early stopping")
-                    utils.average_checkpoints(self.epochs, self.optimizer, self.run_dir, self.args.early_stop_checkpoint_window, model_name_prefix='step')
+                    utils.average_checkpoints(self.step, self.optimizer, self.run_dir, self.args.early_stop_checkpoint_window, model_name_prefix='step')
 
                     print(f"Training complete. Evaluating one last time...")
-                    if hasattr(self.val_loader, 'create_batches'):
-                        self.val_loader.create_batches()
-                    self.validate_epoch(self.model)
+                    self.validation(self.model)
                     break
 
         print(f"Training complete. Averaging checkpoints...")
-        utils.average_checkpoints(self.epochs, self.optimizer, self.run_dir, model_name_prefix='step')
+        utils.average_checkpoints(self.step, self.optimizer, self.run_dir, model_name_prefix='step')
 
         print(f"Training complete. Evaluating one last time...")
-        if hasattr(self.val_loader, 'create_batches'):
-            self.val_loader.create_batches()
-        self.validate_epoch(self.model)
+        self.validation(self.model)
 
-    def train_epoch(self, model: megatransformer.MegaTransformer, epoch):
+    def training(self, model: megatransformer.MegaTransformer):
         raise NotImplementedError
     
-    def validate_epoch(self, model: megatransformer.MegaTransformer):
+    def validation(self, model: megatransformer.MegaTransformer):
         raise NotImplementedError
     
     def evaluate(self, src, tgt):
