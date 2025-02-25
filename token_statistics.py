@@ -22,15 +22,17 @@ def collect_dataset_token_statistics(path, name, tokenizer_name):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
     token_counts = {}
+    example_lengths = []
     for example in tqdm(dataset):
         tokens = tokenizer.encode(example['text'])
+        example_lengths.append(len(tokens))
         for token_id in tokens:
             token = tokenizer.convert_ids_to_tokens(token_id)
             if token not in token_counts:
                 token_counts[token] = 0
             token_counts[token] += 1
 
-    return token_counts
+    return token_counts, example_lengths
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
@@ -41,7 +43,7 @@ if __name__ == '__main__':
 
     args = argparser.parse_args()
 
-    token_counts = collect_dataset_token_statistics(args.dataset_path, args.dataset_name, args.tokenizer_name)
+    token_counts, example_lengths = collect_dataset_token_statistics(args.dataset_path, args.dataset_name, args.tokenizer_name)
 
     print(f"Found {len(token_counts)} unique tokens in the dataset.")
     print(f"The dataset contains {sum(token_counts.values())} tokens in total using the {args.tokenizer_name} tokenizer.")
@@ -52,6 +54,10 @@ if __name__ == '__main__':
     print(f"Top 10 least common tokens:")
     for token, count in sorted(token_counts.items(), key=lambda x: x[1])[:10]:
         print(f"{token}: {count}")
+
+    print(f"Average example length: {sum(example_lengths) / len(example_lengths)}")
+    print(f"Max example length: {max(example_lengths)}")
+    print(f"Min example length: {min(example_lengths)}")
 
     while True:
         token = input("Enter a token to check its frequency: ")

@@ -1,4 +1,4 @@
-from dataloaders import streaming_dataloader
+from dataloaders import gpt2_dataset_loader, large_dataset_loader
 from datasets import load_dataset
 from model_provider import CausalTransformerModelProvider
 from megatransformer import megatransformer, grokfast, transformer_utils, visualization_helper
@@ -35,9 +35,9 @@ class CausalTrainer(base_trainer.BaseTrainer):
 
         if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
             checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
-            if hasattr(self.args, 'start_epoch') and self.args.start_epoch == 0:
-                self.args.start_epoch = checkpoint['epoch'] + 1
-                print('\nLoaded checkpoint from epoch %d.\n' % self.args.start_epoch)
+            if hasattr(self.args, 'start_step') and self.args.start_step == 0:
+                self.args.start_step = checkpoint['step'] + 1
+                print('\nLoaded checkpoint from step %d.\n' % self.args.start_step)
 
             model = CausalTransformerModelProvider().provide_transformer(self.args, run_dir, self.src_tokenizer, tie_embeddings=tie_embeddings)
 
@@ -79,24 +79,16 @@ class CausalTrainer(base_trainer.BaseTrainer):
         path = "wikitext"
         name = "wikitext-103-raw-v1"
 
-        dataloaders = streaming_dataloader.create_causal_lm_dataloaders(
-            tokenizer=self.src_tokenizer,
-            dataset_name=path,
-            dataset_config_name=name,
+        return gpt2_dataset_loader.create_gpt2_dataloaders(
+            self.src_tokenizer,
+            path,
+            name,
             batch_size=self.batch_size,
             sequence_length=self.args.maxlen,
-            num_workers=1,
-            seed=self.args.seed,
         )
 
-        train_loader = dataloaders['train']
-        val_loader = dataloaders['validation']
-        test_loader = dataloaders['test']
-        
-        return train_loader, val_loader, test_loader
-    
     def train(self, model_name_prefix=''):
-        if self.args.start_epoch == 0:
+        if self.args.start_step == 0 and not bool(self.args.debug):
             print("Visualizing attention weights before training...")
             # get attention weight visualization before any updates are made to the model
             with torch.no_grad():
@@ -105,9 +97,17 @@ class CausalTrainer(base_trainer.BaseTrainer):
 
         super().train()
 
-    def forward_pass(self, model, input_ids: torch.Tensor, labels: torch.Tensor, key_padding_mask: torch.Tensor):
+    def forward_pass(self, model, input_ids: torch.Tensor, labels: torch.Tensor, attention_mask: torch.Tensor):
         with autocast('cuda' if 'cuda' in self.args.decoder_device else 'cpu'):
-            outputs = model(input_ids=input_ids, labels=labels, decoder_attention_mask=key_padding_mask, return_dict=True)
+            outputs = model(input_ids=input_ids, labels=labels, decoder_attention_mask=attention_mask, return_dict=True)
+
+        logits = outputs.logits
+
+        self.summary_writer.add_scalar('train/logits_mean', logits.mean().item(), self.step)
+        self.summary_writer.add_scalar('train/logits_std', logits.std().item(), self.step)
+        self.summary_writer.add_scalar('train/logits_max', logits.max().item(), self.step)
+        self.summary_writer.add_scalar('train/logits_min', logits.min().item(), self.step)
+        self.summary_writer.add_scalar('train/logits_norm', logits.norm().item(), self.step)
 
         loss = outputs.loss
         causal_loss = outputs.prediction_loss
@@ -118,7 +118,7 @@ class CausalTrainer(base_trainer.BaseTrainer):
 
         return loss, causal_loss, moe_loss, gating_variances
     
-    def train_epoch(self, model: megatransformer.MegaTransformer, epoch):
+    def training(self, model: megatransformer.MegaTransformer):
         # training mode enables dropout
         model.train()
 
@@ -133,18 +133,24 @@ class CausalTrainer(base_trainer.BaseTrainer):
         start_data_time = time.time()
         start_step_time = time.time()
 
-        for i, batch in enumerate(self.train_loader):
-            input_ids = batch['input_ids'].to(self.args.decoder_device)
-            labels = batch['labels'].to(self.args.decoder_device)
-            key_padding_mask = batch['attention_mask'].to(self.args.decoder_device)
+        for i, batch in enumerate(tqdm(self.train_loader, desc='Training')):
+            input_ids = batch['input_ids']
+            labels = batch['labels']
+            attention_mask = batch['attention_mask']
 
-            input_ids = self.target_sequence_transform(labels, input_ids)
-            labels = self.target_sequence_transform(input_ids, labels)
+            input_ids = input_ids.to(self.args.decoder_device)
+            labels = labels.to(self.args.decoder_device)
+            attention_mask = attention_mask.to(self.args.decoder_device)
 
+            # input_ids = self.target_sequence_transform(labels, input_ids)
+            # labels = self.target_sequence_transform(input_ids, labels)
+            
             if self.args.debug:
                 first_example_input_seq = input_ids[0].tolist()#self.src_tokenizer.decode(input_ids[0].tolist(), skip_special_tokens=False)
-                first_example_label_seq = labels[0].tolist()#self.src_tokenizer.decode(labels[0].tolist(), skip_special_tokens=False)
-                first_example_mask = key_padding_mask[0].tolist()
+                # labels_to_print = labels[0].clone().detach()
+                # labels_to_print[labels_to_print == -100] = self.src_tokenizer.pad_token_id
+                first_example_label_seq = labels[0].tolist()#self.src_tokenizer.decode(labels_to_print.tolist(), skip_special_tokens=False)
+                first_example_mask = attention_mask[0].tolist()
 
                 print(f"############# Input #############: {first_example_input_seq}")
                 print(f"############# Label #############: {first_example_label_seq}")
@@ -152,12 +158,15 @@ class CausalTrainer(base_trainer.BaseTrainer):
 
             data_time.update(time.time() - start_data_time)
 
-            loss, causal_loss, moe_loss, gating_variances = self.forward_pass(model, input_ids, labels, key_padding_mask)
-            losses.update(loss.item())
-            causal_losses.update(causal_loss.item())
+            loss, causal_loss, moe_loss, gating_variances = self.forward_pass(model, input_ids, labels, attention_mask)
+            ppl = torch.exp(loss).item()
+            loss = loss.item()
+            causal_loss = causal_loss.item()
+            losses.update(loss)
+            causal_losses.update(causal_loss)
             moe_losses.update(moe_loss.item())
             avg_gating_variances.update(gating_variances.mean().item())
-            ppls.update(torch.exp(loss).item())
+            ppls.update(ppl)
 
             # Update model (i.e. perform a training step) only after gradients are accumulated from batches_per_step batches
             if (i + 1) % self.batches_per_step == 0:
@@ -173,69 +182,72 @@ class CausalTrainer(base_trainer.BaseTrainer):
 
                 grad_norms = utils.get_grad_norms(model)
                 avg_grad_norm = sum(grad_norms) / len(grad_norms)
-                self.summary_writer.add_scalar('train/avg_grad_norm', avg_grad_norm, self.steps)
+                self.summary_writer.add_scalar('train/avg_grad_norm', avg_grad_norm, self.step)
 
                 self.optimizer.zero_grad()
 
-                self.steps += 1
+                self.step += 1
 
                 if self.lr_scheduler is None:
-                    utils.change_lr(self.optimizer, new_lr=utils.get_lr(self.steps, self.args.d_model, self.warmup_steps))
+                    utils.change_lr(self.optimizer, new_lr=utils.get_lr(self.step, self.args.d_model, self.warmup_steps))
                 else:
                     self.lr_scheduler.step()
 
                 lr = self.lr_scheduler.get_last_lr()[0]
-                self.summary_writer.add_scalar('train/lr', lr, self.steps)
+                self.summary_writer.add_scalar('train/lr', lr, self.step)
 
                 step_time.update(time.time() - start_step_time)
 
-                if self.steps % self.print_frequency == 0:
-                    print('Epoch {0}/{1}-----Step {2}/{3}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
-                          'Loss {losses.val:.4f} ({losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(epoch + 1, self.epochs, self.steps, self.n_steps, step_time=step_time, data_time=data_time, losses=losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
+                if self.step % self.print_frequency == 0:
+                    print('Step {step}/{n_steps}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
+                          'Loss {losses.val:.4f} ({losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(step=self.step, n_steps=self.n_steps, step_time=step_time, data_time=data_time, losses=losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
                     for i, (src, tgt) in enumerate(zip(self.args.print_examples, self.args.print_example_tgts)):
                         predictions = self.evaluate(src, tgt)
                         for j, prediction in enumerate(predictions):
-                            self.summary_writer.add_text(f"train/prediction_{i}_{j}", prediction, self.steps)
-                            self.summary_writer.add_text(f"train/expected_{i}_{j}", tgt, self.steps)
+                            self.summary_writer.add_text(f"train/prediction_{i}_{j}", prediction, self.step)
+                            self.summary_writer.add_text(f"train/expected_{i}_{j}", tgt, self.step)
 
-                self.summary_writer.add_scalar('train/avg_perplexity', ppls.avg, self.steps)
-                self.summary_writer.add_scalar('train/avg_loss', losses.avg, self.steps)
-                self.summary_writer.add_scalar('train/causal_loss', causal_losses.avg, self.steps)
+                self.summary_writer.add_scalar('train/perplexity', ppl, self.step)
+                self.summary_writer.add_scalar('train/loss', loss, self.step)
+                self.summary_writer.add_scalar('train/causal_loss', causal_loss, self.step)
                 if moe_loss > 0:
-                    self.summary_writer.add_scalar('MoE Loss', moe_losses.avg, self.steps)
-                    self.summary_writer.add_scalar('Decoder Gating Variance', avg_gating_variances.avg, self.steps)
+                    self.summary_writer.add_scalar('MoE Loss', moe_losses.avg, self.step)
+                    self.summary_writer.add_scalar('Decoder Gating Variance', avg_gating_variances.avg, self.step)
 
                 start_step_time = time.time()
 
-                # epoch is 0-indexed
                 # early stopping requires the ability to average the last few checkpoints so just save all of them
-                if (epoch in [self.epochs - 1, self.epochs - 2] or bool(self.args.early_stop)) and self.steps % 1500 == 0:
-                    utils.save_checkpoint(epoch, self.model, self.optimizer, prefix=f"{self.run_dir}/step{str(self.steps)}_")
+                if (self.step > 0.95 * self.n_steps or bool(self.args.early_stop)) and self.step % 2000 == 0:
+                    utils.save_checkpoint(self.step, self.model, self.optimizer, prefix=f"{self.run_dir}/step{str(self.step)}_")
             start_data_time = time.time()
     
-    def validate_epoch(self, model):
+    def validation(self, model):
         model.eval()
 
         with torch.no_grad():
-            self.viz_model(self.steps, model, random.choice(self.args.print_example_tgts))
+            self.viz_model(self.step, model, random.choice(self.args.print_example_tgts))
             if self.val_loader is not None:
                 losses = avg_meter.AverageMeter()
                 ppls = avg_meter.AverageMeter()
 
                 for batch in tqdm(self.val_loader):
-                    input_ids = batch['input_ids'].to(self.args.decoder_device)
-                    labels = batch['labels'].to(self.args.decoder_device)
-                    key_padding_mask = batch['attention_mask'].to(self.args.decoder_device)
-
-                    outputs = model(input_ids=input_ids, labels=labels, decoder_attention_mask=key_padding_mask, return_dict=True)
+                    input_ids = batch['input_ids']
+                    labels = batch['labels']
+                    attention_mask = batch['attention_mask']
+                    
+                    input_ids = input_ids.to(self.args.decoder_device)
+                    labels = labels.to(self.args.decoder_device)
+                    attention_mask = attention_mask.to(self.args.decoder_device)
+                    
+                    outputs = model(input_ids=input_ids, labels=labels, decoder_attention_mask=attention_mask, return_dict=True)
 
                     loss = outputs.loss
 
                     losses.update(loss.item())
                     ppls.update(torch.exp(loss).item())
 
-                self.summary_writer.add_scalar('val/avg_perplexity', ppls.avg, self.steps)
-                self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.steps)
+                self.summary_writer.add_scalar('val/perplexity', ppls.avg, self.step)
+                self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.step)
                 print("\nValidation loss: %.3f\n\n" % losses.avg)
 
                 return losses.avg, ppls.avg
@@ -248,11 +260,14 @@ class CausalTrainer(base_trainer.BaseTrainer):
             result = self.model.generate(
                 seq,
                 max_length=self.args.maxlen,
-                do_sample=False,
+                do_sample=True,
+                top_p=0.95,
+                temperature=0.9,
                 eos_token_id=self.src_tokenizer.eos_token_id
             ).squeeze(0).tolist()
             predictions.append(self.src_tokenizer.decode(result, skip_special_tokens=True))
 
+        self.model.train()
         debug_validate_table = PrettyTable(["Rank", "Prediction", "Expected"])
         for i, prediction in enumerate(predictions):
             debug_validate_table.add_row([i + 1, prediction, tgt])

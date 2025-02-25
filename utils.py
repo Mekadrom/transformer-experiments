@@ -138,7 +138,7 @@ def create_warmup_cosine_scheduler(optimizer: torch.optim.Optimizer, warmup_step
     # Linear warmup from 0 to initial_lr
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer,
-        start_factor=0.1,  # Start from 0
+        start_factor=0.001,  # Start from very close to 0
         end_factor=1.0,    # Go to initial_lr
         total_iters=warmup_steps
     )
@@ -299,14 +299,14 @@ def load_causal_data(args, tokens_in_batch, run_dir, bpe_model, pad_to_length=No
     )
     return train_loader, val_loader, test_loader
 
-def save_checkpoint(epoch, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
+def save_checkpoint(step, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
     if isinstance(model, MultiGPUTranslationWrapper):
         state = model.save_checkpoint()
     else:
-        state = {'epoch': epoch, 'model': model, 'optimizer': optimizer}
+        state = {'step': step, 'model': model, 'optimizer': optimizer}
     torch.save(state, f"{prefix}transformer_checkpoint.pth.tar")
 
-def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=None, model_name_prefix='step', model_name_suffix='_transformer_checkpoint.pth.tar'):
+def average_checkpoints(step, optimizer, source_folder, num_latest_checkpoints=None, model_name_prefix='step', model_name_suffix='_transformer_checkpoint.pth.tar'):
     # Get list of checkpoint names
     checkpoint_names = [f for f in os.listdir(source_folder) if f.startswith(model_name_prefix) and f.endswith(model_name_suffix)]
     assert len(checkpoint_names) > 0, "Did not find any checkpoints!"
@@ -337,7 +337,7 @@ def average_checkpoints(epoch, optimizer, source_folder, num_latest_checkpoints=
     averaged_checkpoint.load_state_dict(averaged_params)
 
     # Save averaged checkpoint
-    torch.save({'epoch': epoch, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
+    torch.save({'step': step, 'model': averaged_checkpoint, 'optim': optimizer}, f"{source_folder}/averaged_transformer_checkpoint.pth.tar")
 
 def beam_search_translate(args, src, start_token, model: nn.Module, src_tokenizer: yttm.BPE, tgt_tokenizer: yttm.BPE, beam_size=4, length_norm_coefficient=0.6):
     """
@@ -593,7 +593,7 @@ def get_args():
     args.beta2 = float(args.beta2)
 
     if hasattr(args, 'n_epochs'):
-        setattr(args, 'n_epochs', int(args.n_epochs))
+        raise Exception("n_epochs is not a valid argument for this script, use n_steps instead")
 
     torch.set_printoptions(profile='full')
 

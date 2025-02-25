@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 import argparse
 import codecs
-import custom_datasets
+import single_text_file_dataset
 import itertools
 import os
 import re

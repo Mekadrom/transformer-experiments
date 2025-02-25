@@ -31,9 +31,9 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
         if os.path.exists(os.path.join(run_dir, checkpoint_model_name)):
             checkpoint = torch.load(os.path.join(run_dir, checkpoint_model_name))
-            if hasattr(self.args, 'start_epoch') and self.args.start_epoch == 0:
-                self.args.start_epoch = checkpoint['epoch'] + 1
-                print('\nLoaded checkpoint from epoch %d.\n' % self.args.start_epoch)
+            if hasattr(self.args, 'start_step') and self.args.start_step == 0:
+                self.args.start_step = checkpoint['step'] + 1
+                print('\nLoaded checkpoint from step %d.\n' % self.args.start_step)
 
             model = TranslationTransformerModelProvider().provide_transformer(self.args, utils.vocab_size(self.args, self.src_tokenizer), utils.vocab_size(self.args, self.tgt_tokenizer), tie_embeddings=tie_embeddings)
 
@@ -63,7 +63,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         return utils.load_translation_data(self.args, int(self.args.tokens_in_batch), self.tokenizer_run_dir, self.src_tokenizer, self.tgt_tokenizer, pad_to_length=self.args.maxlen if self.args.attn_impl == 'infini' else None)
     
     def train(self, model_name_prefix=''):
-        if self.args.start_epoch == 0:
+        if self.args.start_step == 0:
             print("Visualizing attention weights before training...")
             # get attention weight visualization before any updates are made to the model
             with torch.no_grad():
@@ -77,7 +77,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         print(f"Training complete. Scoring with sacrebleu...")
         return utils.sacrebleu_evaluate(self.args, self.run_dir, self.src_tokenizer, self.tgt_tokenizer, self.model, sacrebleu_in_python=True, test_loader=self.test_loader).score, time_taken, utils.count_parameters(self.model)
 
-    def forward_pass(self, model, epoch,
+    def forward_pass(self, model,
                      src_seqs: torch.Tensor,
                      tgt_seqs: torch.Tensor,
                      src_key_padding_mask: torch.Tensor,
@@ -94,7 +94,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
         
         return loss, translation_loss, moe_loss, encoder_gating_variances, decoder_gating_variances
     
-    def train_epoch(self, model: megatransformer.MegaTransformer, epoch):
+    def training(self, model: megatransformer.MegaTransformer):
         # training mode enables dropout
         model.train()
 
@@ -118,7 +118,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
             data_time.update(time.time() - start_data_time)
 
-            loss, forward_translation_loss, moe_loss, encoder_gating_variances, decoder_gating_variances = self.forward_pass(model, epoch, input_ids, labels, src_key_padding_mask, tgt_key_padding_mask)
+            loss, forward_translation_loss, moe_loss, encoder_gating_variances, decoder_gating_variances = self.forward_pass(model, input_ids, labels, src_key_padding_mask, tgt_key_padding_mask)
             translation_losses.update(forward_translation_loss.item())
             losses.update(loss.item())
             moe_losses.update(moe_loss.item(), 1)
@@ -126,7 +126,7 @@ class TranslationTrainer(base_trainer.BaseTrainer):
             decoder_moe_gating_variance_losses.update(decoder_gating_variances.item(), 1)
 
             if bool(self.args.multilang):
-                loss, backward_translation_loss, moe_loss, encoder_gating_variances, decoder_gating_variances = self.forward_pass(model, epoch, labels, input_ids, tgt_key_padding_mask, src_key_padding_mask)
+                loss, backward_translation_loss, moe_loss, encoder_gating_variances, decoder_gating_variances = self.forward_pass(model, labels, input_ids, tgt_key_padding_mask, src_key_padding_mask)
                 translation_losses.update(backward_translation_loss.item())
                 losses.update(loss.item())
                 moe_losses.update(moe_loss.item(), 1)
@@ -146,15 +146,15 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-                self.steps += 1
+                self.step += 1
 
-                utils.change_lr(self.optimizer, new_lr=utils.get_lr(self.steps, self.args.d_model, self.warmup_steps))
+                utils.change_lr(self.optimizer, new_lr=utils.get_lr(self.step, self.args.d_model, self.warmup_steps))
 
                 step_time.update(time.time() - start_step_time)
 
-                if self.steps % self.print_frequency == 0:
-                    print('Epoch {0}/{1}-----Batch {2}/{3}-----Step {4}/{5}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
-                          'Loss {losses.val:.4f} ({losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(epoch + 1, self.epochs, i + 1,  self.train_loader.n_batches * len(self.train_loader.src_file_paths), self.steps, self.n_steps, step_time=step_time, data_time=data_time, losses=losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
+                if self.step % self.print_frequency == 0:
+                    print('Step {step}/{n_steps}-----Data Time {data_time.val:.3f} ({data_time.avg:.3f})-----Step Time {step_time.val:.3f} ({step_time.avg:.3f})-----'
+                          'Loss {losses.val:.4f} ({losses.avg:.4f})-----Early Stopping Counter: {early_stop_counter}/{early_stop_patience}'.format(self.step, self.n_steps, step_time=step_time, data_time=data_time, losses=losses, early_stop_counter=self.early_stopping.counter if self.early_stopping is not None else 0, early_stop_patience=self.early_stopping.patience if self.early_stopping is not None else 0))
                     if self.args.multilang:
                         self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.', src_lang_code='en', tgt_lang_code='de')
                         self.evaluate(src='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.', tgt='Anyone who retains the ability to recognise beauty will never become old.', src_lang_code='de', tgt_lang_code='en')
@@ -164,21 +164,20 @@ class TranslationTrainer(base_trainer.BaseTrainer):
                     else:
                         self.evaluate(src='Anyone who retains the ability to recognise beauty will never become old.', tgt='Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.')
 
-                self.summary_writer.add_scalar('train/translation_loss', translation_losses.avg, self.steps)
-                self.summary_writer.add_scalar('train/avg_loss', loss.avg, self.steps)
+                self.summary_writer.add_scalar('train/translation_loss', translation_losses.avg, self.step)
+                self.summary_writer.add_scalar('train/avg_loss', loss.avg, self.step)
                 if moe_loss > 0:
-                    self.summary_writer.add_scalar('Encoder MoE Gating Variances', encoder_moe_gating_variance_losses.avg, self.steps)
-                    self.summary_writer.add_scalar('Decoder MoE Gating Variances', decoder_moe_gating_variance_losses.avg, self.steps)
+                    self.summary_writer.add_scalar('Encoder MoE Gating Variances', encoder_moe_gating_variance_losses.avg, self.step)
+                    self.summary_writer.add_scalar('Decoder MoE Gating Variances', decoder_moe_gating_variance_losses.avg, self.step)
 
                 start_step_time = time.time()
 
-                # epoch is 0-indexed
                 # early stopping requires the ability to average the last few checkpoints so just save all of them
-                if (epoch in [self.epochs - 1, self.epochs - 2] or bool(self.args.early_stop)) and self.steps % 1500 == 0:
-                    utils.save_checkpoint(epoch, self.model, self.optimizer, prefix=f"{self.run_dir}/step{str(self.steps)}_")
+                if (self.step > 0.95 * self.n_steps or bool(self.args.early_stop)) and self.step % 2000 == 0:
+                    utils.save_checkpoint(self.step, self.model, self.optimizer, prefix=f"{self.run_dir}/step{str(self.step)}_")
             start_data_time = time.time()
     
-    def validate_epoch(self, model):
+    def validation(self, model):
         model.eval()
 
         with torch.no_grad():
@@ -196,10 +195,10 @@ class TranslationTrainer(base_trainer.BaseTrainer):
 
                 losses.update(loss.item())
 
-            self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.steps)
+            self.summary_writer.add_scalar('val/avg_loss', losses.avg, self.step)
             print("\nValidation loss: %.3f\n\n" % losses.avg)
 
-            self.viz_model(self.steps, model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", src_lang_code="en", tgt_lang_code="de")
+            self.viz_model(self.step, model, "Anyone who retains the ability to recognise beauty will never become old.", "Wer die Fähigkeit behält, Schönheit zu erkennen, wird niemals alt.", src_lang_code="en", tgt_lang_code="de")
 
             return losses.avg
 

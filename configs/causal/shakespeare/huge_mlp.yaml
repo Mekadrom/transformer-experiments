@@ -36,7 +36,7 @@ moe_replace: False
 moe_n_experts: 0
 moe_top_k: 0
 moe_diversity_loss_coefficient: 0.0
-moe_diversity_inclusion_epoch: 0
+moe_diversity_inclusion: 0
 millions_moe_n_heads: 0
 millions_moe_d_keys: 0
 millions_moe_dropout: 0.0
@@ -73,7 +73,7 @@ early_stop_checkpoint_window: 3
 
 distillation_teacher_run_name:
 
-start_epoch: 0
+start_step: 0
 print_frequency: 200
 print_examples:
   - "To be or not to be,"

@@ -20,7 +20,7 @@ initial_run_args:
   moe_n_experts: 1
   moe_top_k: 1
   moe_diversity_loss_coefficient: 0.0
-  moe_diversity_inclusion_epoch: 0
+  moe_diversity_inclusion: 0
   n_encoder_layers: 6
   n_decoder_layers: 6
   dropout: 0.1
@@ -105,7 +105,7 @@ bayesian_arg_ranges:
     min: 0.0
     max: 1.0
 
-  - name: moe_diversity_inclusion_epoch
+  - name: moe_diversity_inclusion
     type: int
     min: 0
     max: 65

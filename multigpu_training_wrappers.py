@@ -133,12 +133,12 @@ class MultiGPUTranslationWrapper:
         for model in self.models[1:]:
             model.load_state_dict(main_state)
             
-    def save_checkpoint(self, epoch: int, prefix: str = ""):
+    def save_checkpoint(self, step: int, prefix: str = ""):
         """
         Save a checkpoint using the first GPU's model (since they're synced).
         """
         return {
-            'epoch': epoch,
+            'step': step,
             'model': self.models[0],
             'optimizer': self.optimizer
         }
