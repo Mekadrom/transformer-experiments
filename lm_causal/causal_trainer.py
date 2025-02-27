@@ -1,20 +1,15 @@
-from dataloaders import gpt2_dataset_loader, large_dataset_loader
-from datasets import load_dataset
-from model_provider import CausalTransformerModelProvider
 from megatransformer import megatransformer, grokfast, transformer_utils, visualization_helper
 from prettytable import PrettyTable
 from torch.amp import autocast
 from tqdm import tqdm
 from trainer import base_trainer
 from transformers import AutoTokenizer
-from multigpu_training_wrappers import MultiGPUCausalWrapper
+from utils import multigpu_training_wrappers, avg_meter, utils
 
-import avg_meter
 import os
 import random
 import time
 import torch
-import utils
 
 class CausalTrainer(base_trainer.BaseTrainer):
     def __init__(self, args):
@@ -60,7 +55,7 @@ class CausalTrainer(base_trainer.BaseTrainer):
             )
 
         if hasattr(self.args, 'multidevice') and bool(self.args.multidevice):
-            self.model = MultiGPUCausalWrapper(
+            self.model = multigpu_training_wrappers.MultiGPUCausalWrapper(
                 model=model,
                 optimizer=optimizer,
                 gpu_ids=list(range(torch.cuda.device_count())),

@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from dataloader import SequenceLoader
+from lm_seq2seq.dataloader import SequenceLoader
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from megatransformer import swiglu
 from multigpu_training_wrappers import MultiGPUTranslationWrapper
@@ -260,44 +260,17 @@ def load_translation_data(args, tokens_in_batch, run_dir, src_bpe_model, tgt_bpe
     )
     return train_loader, val_loader, test_loader
 
-def load_causal_data(args, tokens_in_batch, run_dir, bpe_model, pad_to_length=None) -> Tuple[SequenceLoader, SequenceLoader, SequenceLoader]:
-    print('Loading training data SequenceLoader...')
-
-    train_loader = SequenceLoader(
-        args=args,
-        src_tokenizer=bpe_model,
-        tgt_tokenizer=None,
-        data_folder=os.path.join(run_dir),
-        source_suffix="txt",
-        split="train",
-        tokens_in_batch=tokens_in_batch,
-        pad_to_length=pad_to_length
-    )
-
-    print('Loading validation data SequenceLoader...')
-    val_loader = SequenceLoader(
-        args=args,
-        src_tokenizer=bpe_model,
-        tgt_tokenizer=None,
-        data_folder=os.path.join(run_dir),
-        source_suffix="txt",
-        split="val",
-        tokens_in_batch=tokens_in_batch,
-        pad_to_length=pad_to_length
-    )
-
-    print('Loading test data SequenceLoader...')
-    test_loader = SequenceLoader(
-        args=args,
-        src_tokenizer=bpe_model,
-        tgt_tokenizer=None,
-        data_folder=os.path.join(run_dir),
-        source_suffix="txt",
-        split="test",
-        tokens_in_batch=tokens_in_batch,
-        pad_to_length=pad_to_length
-    )
-    return train_loader, val_loader, test_loader
+def get_lr_scheduler(lr_scheduler, optimizer, warmup_steps, total_steps, min_lr=0.):
+    if lr_scheduler == 'cosine':
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=total_steps, eta_min=min_lr)
+    elif lr_scheduler == 'cosine_warmup':
+        lr_scheduler = create_warmup_cosine_scheduler(optimizer, warmup_steps, total_steps, min_lr=min_lr)
+    elif lr_scheduler == 'noam':
+        pass
+    elif lr_scheduler == 'constant':
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+    else:
+        raise ValueError(f"Invalid lr_scheduler: {lr_scheduler}")
 
 def save_checkpoint(step, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
     if isinstance(model, MultiGPUTranslationWrapper):
