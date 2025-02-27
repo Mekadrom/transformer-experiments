@@ -2,6 +2,7 @@ from megatransformer import megatransformer, multihead_attn
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from typing import Callable, Tuple
+from utils import utils
 
 import io
 import matplotlib.pyplot as plt
@@ -9,7 +10,6 @@ import os
 import seaborn as sns
 import torch
 import time
-import utils
 
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0):
@@ -108,18 +108,8 @@ class BaseTrainer:
             print(f"batch_size: {self.batch_size}")
         print(f"n_steps: {self.n_steps}")
 
-        self.lr_scheduler = None
-        if hasattr(args, 'lr_scheduler') and args.lr_scheduler is not None:
-            if args.lr_scheduler == 'cosine':
-                self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=self.optimizer, T_max=self.n_steps)
-            elif args.lr_scheduler == 'cosine_warmup':
-                self.lr_scheduler = utils.create_warmup_cosine_scheduler(self.optimizer, self.warmup_steps, self.n_steps, min_lr=0.)
-            elif args.lr_scheduler == 'noam':
-                pass
-            elif args.lr_scheduler == 'constant':
-                self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lambda _: 1.0)
-            else:
-                raise ValueError(f"Invalid lr_scheduler: {args.lr_scheduler}")
+        if args.lr_scheduler.strip() is not None:
+            self.lr_scheduler = utils.get_lr_scheduler(self.optimizer, args.lr_scheduler, args.warmup_steps, args.n_steps)
 
     def load_tokenizers(self, identifier):
         raise NotImplementedError

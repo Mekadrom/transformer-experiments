@@ -1,7 +1,7 @@
-from trainer.causal_trainer import CausalTrainer
-from trainer.bayesian_translation_trainer import BayesianIter
-from trainer.translation_trainer import TranslationTrainer
-from trainer.translation_distillation_trainer import DistillationTrainer
+from lm_causal.causal_trainer import CausalTrainer
+from lm_seq2seq.bayesian_translation_trainer import BayesianIter
+from lm_seq2seq.translation_trainer import TranslationTrainer
+from lm_seq2seq.translation_distillation_trainer import DistillationTrainer
 
 import os
 import sys
@@ -21,8 +21,6 @@ def train():
         trainer = BayesianIter(args)
     elif args.distillation_teacher_run_name is not None:
         trainer = DistillationTrainer(args)
-    elif (hasattr(args, 'causal_lm') and bool(args.causal_lm)) or (hasattr(unk, 'causal_lm') and bool(unk.causal_lm)):
-        trainer = CausalTrainer(args)
     else:
         trainer = TranslationTrainer(args)
 

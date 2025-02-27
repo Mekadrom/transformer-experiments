@@ -3,7 +3,6 @@ maxlen: 1024
 tokenizer_run_name: gpt2
 dataset_name: wikitext
 dataset_config_name: wikitext-103-raw-v1
-batch_tokenization_padding: max_length
 
 precision: bf16
 multilang: False
@@ -18,10 +17,10 @@ n_gqa_groups: 1
 n_heads: 8
 d_queries: 64
 d_values: 64
-q_bias: True
-k_bias: True
-v_bias: True
-o_bias: True
+q_bias: False
+k_bias: False
+v_bias: False
+o_bias: False
 d_inner: 2048
 ffn_bias: True
 attn_impl: mha
@@ -32,22 +31,21 @@ dropout: 0.1
 norm_type: layer
 norm_eps: 0.00001
 optimizer: adamw
-weight_decay: 0.0
+weight_decay: 0.01
 use_grok_scaled_attn: False
-use_grokfast: none
+use_grokfast: ema
 use_huginn: False
-pre_self_attn_norm: True
-post_self_attn_norm: False
+pre_self_attn_norm: False
+post_self_attn_norm: True
 pre_cross_attn_norm: False
 post_cross_attn_norm: False
-pre_ffn_norm: True
-post_ffn_norm: False
-post_block_norm: True
+pre_ffn_norm: False
+post_ffn_norm: True
 
 grokfast_lambda: 2.0
 grokfast_alpha: 0.98
 
-ffn_type: simple
+ffn_type: phi3
 
 moe_replace: False
 moe_n_experts: 0
@@ -59,8 +57,8 @@ millions_moe_n_heads: 0
 millions_moe_d_keys: 0
 millions_moe_dropout: 0.0
 
-init_weights_from: glorot_normal
-init_weights_gain: 1.0
+init_weights_from: normal
+init_weights_gain: 0.2
 init_weights_scale_residual: False
 use_admin: False
 
@@ -70,15 +68,15 @@ learnable_positional_encoding: False
 
 decoder_param_sharing_type: none
 m_decoder_independent_layers: 0
-activation_function: relu
+activation_function: swiglu
 heads_activation: none
 embedding_compression_dim: 0
 embedding_activation: none
 embedding_scale: 1.0
 
-tokens_in_batch: 8192
-target_tokens_per_batch: 32768
-warmup_steps: 1000
+batch_size: 8
+batch_accumulation_steps: 128
+warmup_steps: 8000
 beta1: 0.9
 beta2: 0.98
 epsilon: 1.e-9

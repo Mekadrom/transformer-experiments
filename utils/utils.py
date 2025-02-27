@@ -1,15 +1,14 @@
 from collections import OrderedDict
-from dataloader import SequenceLoader
+from lm_seq2seq.dataloader import SequenceLoader
 from positional_encodings.torch_encodings import PositionalEncoding2D
 from megatransformer import swiglu
-from multigpu_training_wrappers import MultiGPUTranslationWrapper
 from torch import nn
 from torch.nn import functional as F
 from torch.backends import cudnn
-from torch.amp import autocast
-from transformers import AutoTokenizer
 from tqdm import tqdm
 from typing import Optional, Tuple, Union
+from utils import yaml_dict
+from utils.multigpu_training_wrappers import MultiGPUTranslationWrapper
 
 import argparse
 import codecs
@@ -21,7 +20,6 @@ import sacrebleu
 import time
 import torch
 import torch.nn.functional as F
-import yaml_dict
 import youtokentome as yttm
 
 lang_tag_token_ids = {
@@ -260,44 +258,17 @@ def load_translation_data(args, tokens_in_batch, run_dir, src_bpe_model, tgt_bpe
     )
     return train_loader, val_loader, test_loader
 
-def load_causal_data(args, tokens_in_batch, run_dir, bpe_model, pad_to_length=None) -> Tuple[SequenceLoader, SequenceLoader, SequenceLoader]:
-    print('Loading training data SequenceLoader...')
-
-    train_loader = SequenceLoader(
-        args=args,
-        src_tokenizer=bpe_model,
-        tgt_tokenizer=None,
-        data_folder=os.path.join(run_dir),
-        source_suffix="txt",
-        split="train",
-        tokens_in_batch=tokens_in_batch,
-        pad_to_length=pad_to_length
-    )
-
-    print('Loading validation data SequenceLoader...')
-    val_loader = SequenceLoader(
-        args=args,
-        src_tokenizer=bpe_model,
-        tgt_tokenizer=None,
-        data_folder=os.path.join(run_dir),
-        source_suffix="txt",
-        split="val",
-        tokens_in_batch=tokens_in_batch,
-        pad_to_length=pad_to_length
-    )
-
-    print('Loading test data SequenceLoader...')
-    test_loader = SequenceLoader(
-        args=args,
-        src_tokenizer=bpe_model,
-        tgt_tokenizer=None,
-        data_folder=os.path.join(run_dir),
-        source_suffix="txt",
-        split="test",
-        tokens_in_batch=tokens_in_batch,
-        pad_to_length=pad_to_length
-    )
-    return train_loader, val_loader, test_loader
+def get_lr_scheduler(optimizer, lr_scheduler, warmup_steps, total_steps, min_lr=0.):
+    if lr_scheduler == 'cosine':
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=total_steps, eta_min=min_lr)
+    elif lr_scheduler == 'cosine_warmup':
+        return create_warmup_cosine_scheduler(optimizer, warmup_steps, total_steps, min_lr=min_lr)
+    elif lr_scheduler == 'noam':
+        pass
+    elif lr_scheduler == 'constant':
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+    else:
+        raise ValueError(f"Invalid lr_scheduler: {lr_scheduler}")
 
 def save_checkpoint(step, model: nn.Module, optimizer: torch.optim.Optimizer, prefix=''):
     if isinstance(model, MultiGPUTranslationWrapper):
@@ -579,6 +550,9 @@ def get_args():
     if hasattr(args, 'tokens_in_batch'):
         setattr(args, 'tokens_in_batch', int(args.tokens_in_batch))
         setattr(args, 'batches_per_step', int(args.target_tokens_per_batch) // args.tokens_in_batch)
+    elif hasattr(args, 'batch_size'):
+        setattr(args, 'batch_size', int(args.batch_size))
+        setattr(args, 'batches_per_step', int(args.batch_accumulation_steps))
 
     if hasattr(args, 'lr'):
         setattr(args, 'lr', float(args.lr))
@@ -591,6 +565,8 @@ def get_args():
     args.grokfast_alpha = float(args.grokfast_alpha)
     args.beta1 = float(args.beta1)
     args.beta2 = float(args.beta2)
+    args.n_steps = int(args.n_steps)
+    args.maxlen = int(args.maxlen)
 
     if hasattr(args, 'n_epochs'):
         raise Exception("n_epochs is not a valid argument for this script, use n_steps instead")

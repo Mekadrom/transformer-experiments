@@ -1,20 +1,18 @@
-from dataloaders import gpt2_dataset_loader, large_dataset_loader
-from datasets import load_dataset
-from model_provider import CausalTransformerModelProvider
+from datasets import load_dataset, Dataset
 from megatransformer import megatransformer, grokfast, transformer_utils, visualization_helper
 from prettytable import PrettyTable
 from torch.amp import autocast
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from trainer import base_trainer
 from transformers import AutoTokenizer
-from multigpu_training_wrappers import MultiGPUCausalWrapper
+from utils import multigpu_training_wrappers, avg_meter, utils, model_provider
 
-import avg_meter
 import os
 import random
+import re
 import time
 import torch
-import utils
 
 class CausalTrainer(base_trainer.BaseTrainer):
     def __init__(self, args):
@@ -39,7 +37,7 @@ class CausalTrainer(base_trainer.BaseTrainer):
                 self.args.start_step = checkpoint['step'] + 1
                 print('\nLoaded checkpoint from step %d.\n' % self.args.start_step)
 
-            model = CausalTransformerModelProvider().provide_transformer(self.args, run_dir, self.src_tokenizer, tie_embeddings=tie_embeddings)
+            model = model_provider.CausalTransformerModelProvider().provide_transformer(self.args, run_dir, self.src_tokenizer, tie_embeddings=tie_embeddings)
 
             model.load_state_dict(checkpoint['model'].state_dict())
 
@@ -49,7 +47,7 @@ class CausalTrainer(base_trainer.BaseTrainer):
                 optimizer = None
         else:
             print("Starting from scratch...")
-            model = CausalTransformerModelProvider().provide_transformer(self.args, run_dir, self.src_tokenizer, tie_embeddings=tie_embeddings)
+            model = model_provider.CausalTransformerModelProvider().provide_transformer(self.args, run_dir, self.src_tokenizer, tie_embeddings=tie_embeddings)
 
             optimizer = torch.optim.AdamW(
                 params=model.parameters(),
@@ -60,7 +58,7 @@ class CausalTrainer(base_trainer.BaseTrainer):
             )
 
         if hasattr(self.args, 'multidevice') and bool(self.args.multidevice):
-            self.model = MultiGPUCausalWrapper(
+            self.model = multigpu_training_wrappers.MultiGPUCausalWrapper(
                 model=model,
                 optimizer=optimizer,
                 gpu_ids=list(range(torch.cuda.device_count())),
@@ -72,20 +70,70 @@ class CausalTrainer(base_trainer.BaseTrainer):
     def load_data(self):
         if hasattr(self.args, 'batch_size'):
             self.batch_size = self.args.batch_size
+            self.batch_accumulation_steps = self.args.batch_accumulation_steps
         else:
             tokens_in_batch = self.args.tokens_in_batch
             self.batch_size = tokens_in_batch // self.args.maxlen
 
-        path = "wikitext"
-        name = "wikitext-103-raw-v1"
+        def make_dataloader(tokenizer, dataset_name, dataset_config_name, split, batch_size, maxlen, batch_tokenization_padding):
+            class CausalLMDataset(Dataset):
+                def __init__(self, tokenizer, dataset_name, dataset_config_name, split, sequence_length):
+                    self.tokenizer = tokenizer
+                    self.sequence_length = sequence_length
+                    
+                    # Load and preprocess dataset
+                    dataset = load_dataset(dataset_name, dataset_config_name, split=split)
+                    
+                    # Tokenize entire dataset at once with map function
+                    self.tokenized_dataset = dataset.map(
+                        lambda examples: self.tokenize_function(examples),
+                        batched=True,
+                        remove_columns=['text']
+                    )
+                
+                def tokenize_function(self, examples):
+                    # Tokenize with appropriate padding and truncation
+                    return self.tokenizer(
+                        examples['text'], 
+                        padding=batch_tokenization_padding,
+                        truncation=True,
+                        max_length=self.sequence_length + 1,
+                        return_tensors='pt'
+                    )
+                
+                def __len__(self):
+                    return len(self.tokenized_dataset)
+                
+                def __getitem__(self, idx):
+                    item = self.tokenized_dataset[idx]
+                    input_ids = item['input_ids'][:-1]
+                    labels = item['input_ids'][1:]
+                    attention_mask = item['attention_mask'][:-1]
+                    
+                    # Mask padding tokens in labels
+                    labels[labels == self.tokenizer.pad_token_id] = -100
+                    
+                    return {
+                        'input_ids': input_ids,
+                        'attention_mask': attention_mask,
+                        'labels': labels
+                    }
+                
+            dataset = CausalLMDataset(tokenizer, dataset_name, dataset_config_name, split, maxlen)
+            return DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=2
+            )
 
-        return gpt2_dataset_loader.create_gpt2_dataloaders(
-            self.src_tokenizer,
-            path,
-            name,
-            batch_size=self.batch_size,
-            sequence_length=self.args.maxlen,
-        )
+        train_dataloader = make_dataloader(self.src_tokenizer, self.args.dataset_name, self.args.dataset_config_name, 'train', self.batch_size, self.args.maxlen, self.args.batch_tokenization_padding)
+        val_dataloader = make_dataloader(self.src_tokenizer, self.args.dataset_name, self.args.dataset_config_name, 'validation', self.batch_size, self.args.maxlen, self.args.batch_tokenization_padding)
+        test_dataloader = make_dataloader(self.src_tokenizer, self.args.dataset_name, self.args.dataset_config_name, 'test', self.batch_size, self.args.maxlen, self.args.batch_tokenization_padding)
+
+        print(len(train_dataloader.dataset), len(val_dataloader.dataset), len(test_dataloader.dataset))
+
+        return train_dataloader, val_dataloader, test_dataloader
 
     def train(self, model_name_prefix=''):
         if self.args.start_step == 0 and not bool(self.args.debug):
@@ -97,7 +145,7 @@ class CausalTrainer(base_trainer.BaseTrainer):
 
         super().train()
 
-    def forward_pass(self, model, input_ids: torch.Tensor, labels: torch.Tensor, attention_mask: torch.Tensor):
+    def forward_pass(self, model, input_ids: torch.Tensor, labels: torch.Tensor, attention_mask: torch.Tensor=None):
         with autocast('cuda' if 'cuda' in self.args.decoder_device else 'cpu'):
             outputs = model(input_ids=input_ids, labels=labels, decoder_attention_mask=attention_mask, return_dict=True)
 
@@ -136,11 +184,11 @@ class CausalTrainer(base_trainer.BaseTrainer):
         for i, batch in enumerate(tqdm(self.train_loader, desc='Training')):
             input_ids = batch['input_ids']
             labels = batch['labels']
-            attention_mask = batch['attention_mask']
+            # attention_mask = batch['attention_mask']
 
             input_ids = input_ids.to(self.args.decoder_device)
             labels = labels.to(self.args.decoder_device)
-            attention_mask = attention_mask.to(self.args.decoder_device)
+            # attention_mask = attention_mask.to(self.args.decoder_device)
 
             # input_ids = self.target_sequence_transform(labels, input_ids)
             # labels = self.target_sequence_transform(input_ids, labels)
@@ -150,15 +198,15 @@ class CausalTrainer(base_trainer.BaseTrainer):
                 # labels_to_print = labels[0].clone().detach()
                 # labels_to_print[labels_to_print == -100] = self.src_tokenizer.pad_token_id
                 first_example_label_seq = labels[0].tolist()#self.src_tokenizer.decode(labels_to_print.tolist(), skip_special_tokens=False)
-                first_example_mask = attention_mask[0].tolist()
+                # first_example_mask = attention_mask[0].tolist()
 
                 print(f"############# Input #############: {first_example_input_seq}")
                 print(f"############# Label #############: {first_example_label_seq}")
-                print(f"############# Mask  ##############: {first_example_mask}")
+                # print(f"############# Mask  ##############: {first_example_mask}")
 
             data_time.update(time.time() - start_data_time)
 
-            loss, causal_loss, moe_loss, gating_variances = self.forward_pass(model, input_ids, labels, attention_mask)
+            loss, causal_loss, moe_loss, gating_variances = self.forward_pass(model, input_ids, labels)#, attention_mask)
             ppl = torch.exp(loss).item()
             loss = loss.item()
             causal_loss = causal_loss.item()
@@ -265,7 +313,10 @@ class CausalTrainer(base_trainer.BaseTrainer):
                 temperature=0.9,
                 eos_token_id=self.src_tokenizer.eos_token_id
             ).squeeze(0).tolist()
-            predictions.append(self.src_tokenizer.decode(result, skip_special_tokens=True))
+
+            text = self.src_tokenizer.decode(result, skip_special_tokens=True)
+            text = re.sub(r'\s([,.!?;:])', r'\1', text)
+            predictions.append(text)
 
         self.model.train()
         debug_validate_table = PrettyTable(["Rank", "Prediction", "Expected"])

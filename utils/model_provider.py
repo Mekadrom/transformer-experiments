@@ -54,6 +54,7 @@ class CausalTransformerModelProvider:
             post_self_attn_norm=bool(args.post_self_attn_norm),
             pre_ffn_norm=bool(args.pre_ffn_norm),
             post_ffn_norm=bool(args.post_ffn_norm),
+            post_block_norm=bool(args.post_block_norm),
             moe_diversity_loss_coefficient=args.moe_diversity_loss_coefficient,
         )
 
@@ -96,17 +97,17 @@ class CausalTransformerModelProvider:
 
         model = model.to(args.decoder_device)
 
-        transformer_utils.init_weights(
-            model,
-            d_model=args.d_model,
-            d_head=args.d_model // args.n_heads,
-            d_ff=args.d_inner,
-            n_layers=args.n_decoder_layers,
-            init_weights_from=args.init_weights_from,
-            init_weights_gain=args.init_weights_gain,
-            tie_embeddings=tie_embeddings,
-            scale_residual=args.init_weights_scale_residual,
-        )
+        # transformer_utils.init_weights(
+        #     model,
+        #     d_model=args.d_model,
+        #     d_head=args.d_model // args.n_heads,
+        #     d_ff=args.d_inner,
+        #     n_layers=args.n_decoder_layers,
+        #     init_weights_from=args.init_weights_from,
+        #     init_weights_gain=args.init_weights_gain,
+        #     tie_embeddings=tie_embeddings,
+        #     scale_residual=args.init_weights_scale_residual,
+        # )
 
         return model
 

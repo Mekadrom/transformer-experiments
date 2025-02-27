@@ -1,0 +1,41 @@
+# training config
+tokenizer: gpt2
+dataset_name: wikitext
+dataset_config_name: wikitext-103-raw-v1
+
+precision: bf16
+
+batch_size: 8
+batch_accum_factor: 4
+lr: 5e-5
+lr_scheduler: cosine_warmup
+beta1: 0.9
+beta2: 0.95
+weight_decay: 0.01
+warmup_steps: 2000
+n_steps: 100000
+
+# model config
+maxlen: 1024
+d_model: 512
+dropout: 0.1
+
+positional_encoding: rotary
+positional_embedding_dim: 64
+
+tie_embeddings: False
+ignore_token_id: -100
+
+decoder_config:
+  device: cuda:0
+  self_attn_config:
+    n_heads: 8
+    n_gqa_groups: 1
+    d_queries: 64
+    d_values: 64
+  n_layers: 6
+
+ffn_config:
+  ffn_type: phi3
+  d_inner: 2048
+  activation_function: swiglu
